@@ -1,4 +1,4 @@
-# TalkToAi Code — Windows desktop preview
+# Build and test games TalkToAi Code — Windows desktop preview
 
 ![TalkToAi Code connects a coding workspace to a game world](assets/talktoai-code-hero.png)
 
