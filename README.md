@@ -1,5 +1,9 @@
 # TalkToAi Code — Windows desktop preview
 
+![TalkToAi Code connects a coding workspace to a game world](assets/talktoai-code-hero.png)
+
+TalkToAi Code is a native Windows coding workspace for people who want to build software and games with local or self-hosted AI. The preview is designed around one clear request: describe the outcome, let the agent inspect and act, then review the evidence.
+
 An independent native desktop AI assistant from TalkToAI for coding, games and general project work. Use your local Ollama models, your own SSH-connected Ollama server, or an optional API provider. This is a preview, not an OpenAI product, and no model or subscription is included.
 
 ## Install
