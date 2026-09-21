@@ -1,6 +1,8 @@
 """Select an available installed model before executing any tools."""
 import json
 import urllib.request
+import subprocess
+import shutil
 from concurrent.futures import ThreadPoolExecutor
 
 def inventory(port):
@@ -8,6 +10,23 @@ def inventory(port):
         with urllib.request.urlopen(f'http://127.0.0.1:{port}/api/tags',timeout=3) as r:
             return [m['name'] for m in json.load(r).get('models',[])]
     except Exception:return []
+
+def model_present(port, model):
+    names=inventory(port)
+    return model in names or model+':latest' in names
+
+def ensure_local_model(model, emit=None, timeout=7200):
+    """Install a missing local Ollama model on demand; never attempts remote pulls."""
+    if model_present(11434, model): return True
+    ollama=shutil.which('ollama')
+    if not ollama:
+        raise ConnectionError('Ollama is not installed or is not on PATH. Install Ollama, then retry.')
+    if emit: emit('status', 'Downloading local model '+model+' · this happens once and may take a while')
+    result=subprocess.run([ollama,'pull',model],capture_output=True,text=True,timeout=timeout)
+    if result.returncode!=0:
+        detail=(result.stderr or result.stdout or 'ollama pull failed').strip()[-1200:]
+        raise RuntimeError('Could not download '+model+': '+detail)
+    return model_present(11434, model)
 
 def choose_route(config, preference='auto', benchmarks=None):
     ports={'local':11434,'server':11435,'local_large':11434}

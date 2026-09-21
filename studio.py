@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout, 
     QTextBrowser, QPlainTextEdit, QFileDialog, QMessageBox, QFrame, QInputDialog,
     QSystemTrayIcon, QMenu, QDialog, QLineEdit, QCheckBox, QDialogButtonBox)
 from agent_core import ProjectTools, run_agent, restore_checkpoint, set_active_remote, set_agent_preferences, set_active_provider
-from routing import choose_route
+from routing import choose_route, ensure_local_model
 from ssh_tools import SSHProfile, SSHSession, load_profiles, save_profiles
 from providers import ProviderProfile, load_profiles as load_provider_profiles, save_profiles as save_provider_profiles
 from desktop_inventory import inspect_desktop
@@ -92,7 +92,7 @@ class Studio(QMainWindow):
         self.config = {
             'project': str(HOME.parent),
             'local_model': 'qwen3.5:4b',
-            'local_large_model': 'qwen3:4b',
+            'local_large_model': 'smtek/Qwen3.8-27B',
             'server_model': 'openzero-qwen3-coder-30b-a3b-q3',
             'approval_policy': 'ask_remote',
             'auto_context': True,
@@ -115,6 +115,11 @@ class Studio(QMainWindow):
             self.tasks = json.loads(SESSION.read_text(encoding='utf-8'))
         except (OSError, ValueError):
             self.tasks = []
+        if not isinstance(self.tasks, list):
+            self.tasks = []
+        for task in self.tasks:
+            if isinstance(task, dict):
+                task.setdefault('pinned', False)
         self.task = None
         self.build()
         if self.config.get('approval_policy')=='plan':self.mode.setCurrentText('Plan')
@@ -187,6 +192,7 @@ class Studio(QMainWindow):
         self.access_label = QLabel(); self.access_label.setWordWrap(True); self.access_label.setObjectName('muted'); side.addWidget(self.access_label)
         label = QLabel('TASKS'); label.setObjectName('muted'); side.addWidget(label)
         self.task_search=QLineEdit();self.task_search.setPlaceholderText('Search tasks…');self.task_search.textChanged.connect(self.filter_tasks);side.addWidget(self.task_search)
+        self.pin_task_button = self.button('📌  Pin current task', self.toggle_pin_task, side)
         self.task_list = QListWidget(); self.task_list.currentRowChanged.connect(self.select_task); side.addWidget(self.task_list,1)
         self.button('⚙  Settings', self.settings, side)
         self.button('⌁  Connections', self.connections_dialog, side)
@@ -211,7 +217,7 @@ class Studio(QMainWindow):
         box = QFrame(); box.setObjectName('composer'); composer = QVBoxLayout(box)
         self.prompt = Composer(); self.prompt.setPlaceholderText('Ask anything, or describe what to build…'); self.prompt.setFixedHeight(104); self.prompt.submitted.connect(self.send); composer.addWidget(self.prompt)
         options = QHBoxLayout()
-        self.route = QComboBox(); self.route.addItems(['Auto · tested coding route', 'Local · compact', 'AMD · Qwen Coder', 'Local · alternate', 'API · optional provider']); options.addWidget(self.route)
+        self.route = QComboBox(); self.route.addItems(['Auto · AMD 30B / fallback', 'Local · compact CPU', 'AMD · Qwen Coder 30B-A3B', 'Local · Qwen3.8 27B', 'API · optional provider']); options.addWidget(self.route)
         self.mode = QComboBox(); self.mode.addItems(['Act', 'Plan']); self.mode.setToolTip('Act permits file edits and host commands. Plan only reads project files. Commands are not OS-sandboxed.'); options.addWidget(self.mode)
         options.addStretch()
         self.stop = self.button('Stop', self.stop_task, options); self.stop.setEnabled(False)
@@ -264,6 +270,20 @@ class Studio(QMainWindow):
         name,ok=QInputDialog.getText(self,'Rename task','Task name:',text=self.task['title'])
         if ok and name.strip():self.task['title']=name.strip()[:120];self.title.setText(self.task['title']);self.refresh_tasks();self.persist()
 
+    def toggle_pin_task(self):
+        if self.busy or not self.task:return
+        self.task['pinned'] = not self.task.get('pinned', False)
+        task_id = self.task['id']
+        self.persist(); self.refresh_tasks(); self.select_task_by_id(task_id)
+        self.status.setText('Task pinned to the top' if self.task.get('pinned') else 'Task unpinned')
+
+    def select_task_by_id(self, task_id):
+        for row in range(self.task_list.count()):
+            if self.task_list.item(row).data(Qt.UserRole) == task_id:
+                self.task_list.setCurrentRow(row)
+                self.select_task(row)
+                return
+
     def fork_task(self):
         if self.busy:return
         self.save_draft();task=copy.deepcopy(self.task);task['id']=uuid.uuid4().hex;task['title']='Branch · '+task['title'];task['changes']=[]
@@ -274,7 +294,7 @@ class Studio(QMainWindow):
         if self.busy:self.status.setText('Use Steer or Stop while a task is running.');return
         dialog=QDialog(self);dialog.setWindowTitle('Actions');dialog.resize(600,480);layout=QVBoxLayout(dialog)
         query=QLineEdit();query.setPlaceholderText('Find an action…');layout.addWidget(query);items=QListWidget();layout.addWidget(items)
-        actions=[('Open project',self.choose_project),('Open Desktop',lambda:self.quick_command('open desktop')),('Inspect project',lambda:self.quick_command('inspect project')),('Run tests',lambda:self.quick_command('run tests')),('Launch game',lambda:self.quick_command('launch game')),('Capture screenshot',lambda:self.quick_command('take a screenshot')),('Map project',lambda:self.quick_command('map project')),('Rename task',self.rename_task),('Branch conversation',self.fork_task),('Export task report',self.export_task),('Settings',self.settings),('SSH connections',self.connections_dialog),('API providers',self.providers_dialog),('Model choices and storage',self.models_dialog),('Open Cline',self.cline),('FAQ / How to',self.faq_dialog)]
+        actions=[('Open project',self.choose_project),('Open Desktop',lambda:self.quick_command('open desktop')),('Inspect project',lambda:self.quick_command('inspect project')),('Run tests',lambda:self.quick_command('run tests')),('Launch game',lambda:self.quick_command('launch game')),('Capture screenshot',lambda:self.quick_command('take a screenshot')),('Map project',lambda:self.quick_command('map project')),('Rename task',self.rename_task),('Pin or unpin task',self.toggle_pin_task),('Branch conversation',self.fork_task),('Export task report',self.export_task),('Settings',self.settings),('SSH connections',self.connections_dialog),('API providers',self.providers_dialog),('Model choices and storage',self.models_dialog),('Open Cline',self.cline),('FAQ / How to',self.faq_dialog)]
         for label,callback in actions:items.addItem(label)
         def filter_items(text):
             for i in range(items.count()):items.item(i).setHidden(text.casefold() not in items.item(i).text().casefold())
@@ -286,23 +306,36 @@ class Studio(QMainWindow):
         query.textChanged.connect(filter_items);query.returnPressed.connect(activate);items.itemActivated.connect(lambda _:activate());items.setCurrentRow(0);query.setFocus();dialog.exec()
 
     def refresh_tasks(self):
+        selected_id = self.task.get('id') if self.task else None
         self.task_list.blockSignals(True); self.task_list.clear()
-        for task in self.tasks: self.task_list.addItem(task['title'])
+        ordered = sorted(enumerate(self.tasks), key=lambda pair: (not pair[1].get('pinned', False), pair[0]))
+        for _, task in ordered:
+            item = QListWidgetItem(('📌  ' if task.get('pinned') else '') + task.get('title', 'Untitled task'))
+            item.setData(Qt.UserRole, task.get('id'))
+            item.setToolTip(task.get('project', ''))
+            self.task_list.addItem(item)
         self.task_list.blockSignals(False)
+        if selected_id:
+            self.select_task_by_id(selected_id)
 
     def new_task(self):
         if self.busy: return
-        task={'id':uuid.uuid4().hex,'title':'New task','project':self.task['project'] if self.task else self.config['project'],'messages':[],'changes':[]}
+        task={'id':uuid.uuid4().hex,'title':'New task','project':self.task['project'] if self.task else self.config['project'],'messages':[],'changes':[],'pinned':False}
         self.tasks.insert(0,task); self.refresh_tasks(); self.task_list.setCurrentRow(0); self.select_task(0); self.persist()
 
     def select_task(self,row):
-        if self.busy or row<0 or row>=len(self.tasks): return
+        if self.busy or row<0 or row>=self.task_list.count(): return
         if self.task:self.task['draft']=self.prompt.toPlainText()
-        self.task=self.tasks[row]; self.partial=''; self.current_file=None; self.editor.clear(); self.output.clear()
+        item=self.task_list.item(row)
+        task_id=item.data(Qt.UserRole) if item else None
+        self.task=next((task for task in self.tasks if task.get('id')==task_id), None)
+        if not self.task:return
+        self.partial=''; self.current_file=None; self.editor.clear(); self.output.clear()
         self.prompt.setPlainText(self.task.get('draft',''))
         self.task.setdefault('artifacts',[]);self.task.setdefault('activity',[]);self.refresh_artifacts()
         for line in self.task['activity'][-60:]:self.output.appendPlainText(line)
         self.title.setText(self.task['title']); self.project_label.setText(Path(self.task['project']).name)
+        self.pin_task_button.setText('📌  Unpin current task' if self.task.get('pinned') else '📌  Pin current task')
         self.project_label.setToolTip(self.task['project']); self.render(); self.refresh_changes()
         self.files.clear(); self.filter_label.setText('Double-click a file to edit · Refresh to list')
 
@@ -442,6 +475,9 @@ class Studio(QMainWindow):
                     selected={'route':'provider','url':profile.base_url,'model':profile.model,'reason':'selected user provider; free-tier status is controlled by the provider'}
                 else:
                     set_active_provider(None)
+                    if preference in ('local','local_large'):
+                        requested_model=self.config['local_model'] if preference=='local' else self.config.get('local_large_model', self.config['local_model'])
+                        ensure_local_model(requested_model, self.bus.event.emit)
                     selected=choose_route(self.config,preference,benchmarks)
                 if self.cancel.is_set():return
                 self.bus.event.emit('route',selected)
@@ -786,7 +822,9 @@ Use Auto or AMD, stop a task, or steer it into a smaller request. The AMD route 
         info=QTextBrowser();info.setOpenExternalLinks(True)
         info.setMarkdown('''## Choose a model for your hardware
 
-**AMD Qwen3-Coder 30B-A3B** — preferred coding route. Passed the live fix-and-test task. Model stays on your server.
+**AMD Qwen3-Coder 30B-A3B** — default coding route. This is a 30B total / 3B active MoE model and stays on your AMD server. TalkToAi Code checks the server inventory before every task.
+
+**Qwen3.8 27B** — the larger local option for this PC. Select **Local · Qwen3.8 27B** and TalkToAi Code will run `ollama pull smtek/Qwen3.8-27B` once if it is missing. It is a large download and needs substantial RAM; the first run can be slow.
 
 **Qwen3.5 4B · about 3.4 GB** — compact local option with tool and image support. Suitable for trials on this PC; check local test results before expecting AMD performance. [Model details](https://ollama.com/library/qwen3.5:4b)
 
@@ -798,7 +836,7 @@ Use Auto or AMD, stop a task, or steer it into a smaller request. The AMD route 
 
 **Granite 4 micro 3.4B · about 2.1 GB** — optional IBM tool-capable model for smaller tasks. Not installed or benchmarked here. [Model details](https://ollama.com/library/granite4:micro)
 
-The official Qwen3.8 catalog currently lists 27B weights, not a 4B or 9B variant. Its roughly 18 GB download performed poorly on this CPU. Models are never downloaded simply by opening this panel.
+The compact model is intentionally kept as the weak-CPU fallback. TalkToAi Code never pulls a large model merely by opening this panel: downloads happen only when you choose that route and send a task, with progress shown in the status line.
 ''');layout.addWidget(info)
         row=QHBoxLayout();self.button('Use installed local model…',self.select_installed_model,row);self.button('Close',dialog.accept,row);layout.addLayout(row)
         dialog.exec()
