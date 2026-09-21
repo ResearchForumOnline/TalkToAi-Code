@@ -1,0 +1,13 @@
+config_version=5
+
+[application]
+config/name="TalkToAi Code - Score Arena"
+run/main_scene="res://main.tscn"
+
+[display]
+window/size/viewport_width=960
+window/size/viewport_height=640
+
+[rendering]
+renderer/rendering_method="gl_compatibility"
+environment/defaults/default_clear_color=Color(0.055, 0.067, 0.094, 1)

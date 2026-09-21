@@ -1,0 +1,154 @@
+[
+  {
+    "path": ".gitignore",
+    "sha256": "38b762b1f82cb2a25eccc66549d209fe6a699b6c25c072bb397aee75590c5ebf"
+  },
+  {
+    "path": "agent_core.py",
+    "sha256": "8a15dd34becc6ca837c1f0b478c35e0864d315632e813064327a3601122d77d5"
+  },
+  {
+    "path": "browser_tools.py",
+    "sha256": "fa6e717f3da3f5b87c929e4d38c9e9550d28059dc5ce19d55efcce1d224a2c75"
+  },
+  {
+    "path": "Build-Studio.ps1",
+    "sha256": "0ab575512506705b1afb4ccd6f1aabf4bbb9b01c611827594d523db541f0bc27"
+  },
+  {
+    "path": "computer_tools.py",
+    "sha256": "8d6f841a72524296f529092ff34dadcab8ac3e2c555f467eb4a5756412e8bafb"
+  },
+  {
+    "path": "desktop_inventory.py",
+    "sha256": "3b9b732ab1ebe3ef99c217438bec7cdc436ae48ede9f369f13cb710f03206944"
+  },
+  {
+    "path": "desktop_tools.py",
+    "sha256": "3d4514376d1c3c45124533c75c13908132b47e697c546ec271419f024d467f11"
+  },
+  {
+    "path": "Install.cmd",
+    "sha256": "ad18900f6f37839a9258e0b66c13aa2bac862e8acdc43d0f55c4feafae0535b7"
+  },
+  {
+    "path": "LICENSE",
+    "sha256": "bc57d66b1779679aec5ad90acec40d4c323f2c37aeedeede67cd3b2e92f64eeb"
+  },
+  {
+    "path": "project_checks.py",
+    "sha256": "7e633419f2a27b0986d89960e5e773dbea49b2e80202a2672fd83f4abb8d1d35"
+  },
+  {
+    "path": "project_context.py",
+    "sha256": "ac8512ab71fc8356e1d0eb418c6e33f470797f5abb28bb9e62e28356b0940999"
+  },
+  {
+    "path": "providers.py",
+    "sha256": "428f748e29c2988f54ac90cccac4b04be150f785cd9545cb57e36c1d8c1b7a7f"
+  },
+  {
+    "path": "README.md",
+    "sha256": "b02c5ea7f7f9d202b2f3c98a927feff3161b3a265829ce53323555147cbca0ad"
+  },
+  {
+    "path": "RELEASE-NOTES.md",
+    "sha256": "fa5d8237acafac6d4c6d6dcabae2f7f69a9b0cc40e1b34ab0aaf1bcef8692bd9"
+  },
+  {
+    "path": "release_checks.py",
+    "sha256": "ff7fc70da82f92e018441c20d40fa369a6662bec5805121c0ddf984190f0b095"
+  },
+  {
+    "path": "requirements-desktop.txt",
+    "sha256": "d7162291ecdc712b7eb2e2ee56816653ff0b850d96d540002191fa3cfb75fbb0"
+  },
+  {
+    "path": "requirements-runtime.txt",
+    "sha256": "0d7ed9f5feb36ee8d3a2d7570cbfe62d3feff326743a25188e6eba220498f798"
+  },
+  {
+    "path": "routing.py",
+    "sha256": "9b73cd5633fedd7f0def187f49844098ae687aa393803073989d4a7fdcb06738"
+  },
+  {
+    "path": "samples/score-arena/main.gd",
+    "sha256": "8e5fb0864b6837e96834be562b78bf6b21860a58a4497790df0bbf4ef2e92d58"
+  },
+  {
+    "path": "samples/score-arena/main.gd.uid",
+    "sha256": "f4a750f1639be10f836e4aa6a49655f6e51d9c207304ed6f13004c844bf09132"
+  },
+  {
+    "path": "samples/score-arena/main.tscn",
+    "sha256": "527aa038aa438795db7e8985ac75da3087f16b361a1ca1414fbcfeb44218164c"
+  },
+  {
+    "path": "samples/score-arena/project.godot",
+    "sha256": "ea3e35de811f6fd63b5443167ce6f51e59f37c4ceb16996016c34a943a4e85d0"
+  },
+  {
+    "path": "samples/score-arena/tests/score_test.gd",
+    "sha256": "1f99af20d68df901a3ef1593ed21eb86edbab7816092ca18cf2ca35059b646f4"
+  },
+  {
+    "path": "Setup-Windows.ps1",
+    "sha256": "66adfd0763ccdbec788dab72269f5d1d0f0a4c7f5b615abc9b6f6bd2a866f8a6"
+  },
+  {
+    "path": "ssh_tools.py",
+    "sha256": "e77dd76968288cec52fb9b0976f35b70a0a5d532d1cf6386d70f802606f8af41"
+  },
+  {
+    "path": "studio.py",
+    "sha256": "3ebfd67efbae0d82c642cce052aa91fdfee5a2f2db29094360b6ba840b9978e7"
+  },
+  {
+    "path": "test_agent_core.py",
+    "sha256": "a2d253c08cae97eb10bf8c064918ba401a6d263b0bb97e84e64bb8fb1b6e9d89"
+  },
+  {
+    "path": "test_computer.py",
+    "sha256": "892f076e73f8dbcf6fd2b7535ba1b01bf9af9243ec9a6ddb55a1c4be87b6890c"
+  },
+  {
+    "path": "test_inventory_providers.py",
+    "sha256": "e6edfa004b07f86b2bc2c9a8c1a60d579faa2d2449257c13e392402002522187"
+  },
+  {
+    "path": "test_project_checks.py",
+    "sha256": "335c507c77cf97c7e5996eb312b74d62c659fc5f7d28a01f3463a284a52d5650"
+  },
+  {
+    "path": "test_project_context.py",
+    "sha256": "8d1f31d3db8e44a50cc90078fcf4f7d17056ab606c4b7112ea9e1124ae8f0297"
+  },
+  {
+    "path": "test_release.py",
+    "sha256": "a5c4fdabd2d1660c367175429a15dcfa7e8571380d92fd680a195a97659e2eab"
+  },
+  {
+    "path": "test_ssh_tools.py",
+    "sha256": "20e6312adb3c4004c6f7f669b0509c1781cd950beecdf3ee58554d68545cb199"
+  },
+  {
+    "path": "test_studio.py",
+    "sha256": "65c689028f4b11929caf86dc429365732417e6e8d0a2ab750e6d328e46684cdf"
+  },
+  {
+    "path": "test_subagents.py",
+    "sha256": "286a88ad421edd85f799fbd8c0e004ad58d1c59f90971d5d59d6cc74253ec945"
+  },
+  {
+    "path": "test_zerothink_link.py",
+    "sha256": "9302dd9542ce6130ba19b8b37e8cc5879c6f0513934d2771847bb168a8241d1a"
+  },
+  {
+    "path": "THIRD-PARTY-NOTICES.md",
+    "sha256": "207f5b65f77eec0ebafe38fbe84b03923c88688b67b090c3826714ed33d57561"
+  },
+  {
+    "path": "zerothink_link.py",
+    "sha256": "8328b31ed2c21484aba2b0b1155d1a9d9ae898b0c9b7c29c26f62ba3a7a9b582"
+  }
+]
