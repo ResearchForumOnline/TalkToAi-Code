@@ -2,6 +2,20 @@
 
 ![TalkToAi Code connects a coding workspace to a game world](assets/talktoai-code-hero.png)
 
+## Product tour
+
+The preview is built around a simple loop: describe the outcome, let the agent inspect and act, steer it when needed, then review evidence.
+
+| Ask and edit | Steer a running task |
+| --- | --- |
+| ![TalkToAi Code coding workspace with conversation and files panel](assets/screens/studio-chat.png) | ![TalkToAi Code steering an active task](assets/screens/studio-steer.png) |
+
+| Review the result | Build and test games |
+| --- | --- |
+| ![TalkToAi Code completed coding response](assets/screens/studio-evidence.png) | ![TalkToAi Code Game Lab with Godot and Blender tools](assets/screens/studio-game-lab.png) |
+
+The screenshots are from the Windows preview. They show the conversation workspace, automatic tested coding route, task steering, evidence-oriented responses, and Game Lab controls for Godot, Blender and capture workflows.
+
 TalkToAi Code is a native Windows coding workspace for people who want to build software and games with local or self-hosted AI. The preview is designed around one clear request: describe the outcome, let the agent inspect and act, then review the evidence.
 
 An independent native desktop AI assistant from TalkToAI for coding, games and general project work. Use your local Ollama models, your own SSH-connected Ollama server, or an optional API provider. This is a preview, not an OpenAI product, and no model or subscription is included.
