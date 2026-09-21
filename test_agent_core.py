@@ -6,11 +6,18 @@ import unittest
 from unittest.mock import patch
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from agent_core import ProjectTools, restore_checkpoint, run_agent, stream_chat, context_window, image_for_model, set_active_remote, set_agent_preferences
+from agent_core import ProjectTools, restore_checkpoint, run_agent, stream_chat, context_window, image_for_model, set_active_remote, set_agent_preferences, load_project_instructions
 from ssh_tools import SSHProfile, SSHSession
 from routing import choose_route
 
 class CoreTests(unittest.TestCase):
+    def test_workspace_agents_instructions_are_loaded_and_bounded(self):
+        with tempfile.TemporaryDirectory() as folder:
+            p=Path(folder)/'AGENTS.md';p.write_text('# Game rules\nRun the Godot import check after edits.\n',encoding='utf-8')
+            self.assertIn('Godot import check',load_project_instructions(folder))
+            p.write_text('x'*25000,encoding='utf-8')
+            self.assertEqual(load_project_instructions(folder),'')
+
     def test_router_filters_stale_benchmarks_and_falls_back(self):
         config={'local_model':'new','server_model':'coder'}
         with patch('routing.inventory',side_effect=lambda port:['new:latest'] if port==11434 else []):
