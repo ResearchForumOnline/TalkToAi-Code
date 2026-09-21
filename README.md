@@ -27,6 +27,14 @@ An independent native desktop AI assistant from TalkToAI for coding, games and g
 3. Double-click `Install.cmd`. It creates a local virtual environment, installs the pinned dependencies from PyPI, and creates a **TalkToAi Code Preview** desktop shortcut. Internet and sufficient disk space for the dependencies are required. Setup does not download an AI model.
 4. Open the shortcut, select your project, and choose a runtime. Local Ollama defaults to `qwen3.5:4b`; install a suitable model separately or change it in Model choices. A remote runtime needs your own SSH tunnel to localhost port 11435 and model settings. No private TalkToAI server is included.
 
+### Platform installers
+
+- **Windows:** use the `TalkToAi-Code-0.1.1-Windows-Setup.exe` installer or the portable ZIP from the [0.1.1 preview release](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/tag/v0.1.1-preview). The installer downloads the verified portable runtime, installs it under `%LOCALAPPDATA%`, and creates Desktop and Start Menu shortcuts.
+- **Linux:** install Python 3, extract the source ZIP, and run `bash install-linux.sh`. This creates a virtual environment, a `talktoai-code` launcher, and a desktop entry.
+- **macOS:** install Python 3, extract the source ZIP, and run `bash install-macos.sh`. This creates a local virtual environment and a `talktoai-code` launcher.
+
+The Windows native runtime is currently packaged for Windows x64. Linux and macOS use the source installers because native signed builds for those operating systems are not produced on this Windows build host.
+
 ## ZeroThink / AgentZero account and vault
 
 Click **Link ZeroThink account**, choose your vault provider and exact model ID, and complete the normal web sign-in and device approval. The desktop remembers its own session using Windows DPAPI. Provider keys remain in the server vault. Do not copy your Google password or vault keys into chat. `link zerothink` also opens the dialog. The existing account/device API is used; no server auth change is required.
