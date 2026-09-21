@@ -104,6 +104,8 @@ CONTEXT_TOOLS=[
     schema('search_code','Find literal text in project source with file names and line numbers.',{'query':'Literal search text'}),
     schema('project_map','Compact file/function overview; query prioritizes matching file paths.',{'query':'Relevant topic or empty string'}),
     schema('git_changes','Inspect Git working-tree and staged change summaries without changing Git state.',{}),
+    schema('review_changes','Run a local Jev-inspired advisory review of the current diff for weakened tests, possible secrets and scope drift. Never edits or approves changes.',{'task':'The original task or acceptance goal'}),
+    schema('triage_failures','Classify failure-like lines from a supplied test/build log. Advisory only; it does not replace rerunning tests.',{'log':'The relevant test or build output'}),
 ]
 REMOTE_TOOLS=[
     schema('remote_status', 'Verify the configured SSH host with a harmless marker and report only safe endpoint metadata. Use first when a user asks about AMD, SSH, or a remote server.', {}),
@@ -401,6 +403,12 @@ class ProjectTools:
             if name=='search_code':return search_code(self,args['query'])
             if name=='project_map':return project_map(self,args.get('query',''))
             return git_changes(self)
+        if name == 'review_changes':
+            from jev_guard import check_changes
+            return json.dumps(check_changes(self.root,args.get('task','')),indent=2)
+        if name == 'triage_failures':
+            from jev_guard import triage_failures
+            return json.dumps(triage_failures(args.get('log','')),indent=2)
         if name in ('remote_status', 'remote_project_info', 'remote_run_command'):
             if not ACTIVE_REMOTE_ALLOWED or not REMOTE_PILOT:
                 raise PermissionError('Remote Pilot is off. Enable it in Settings before using the configured SSH host.')
@@ -593,9 +601,9 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
             active_tools += [schema('computer','Windows computer use through accessibility. First windows then inspect a returned handle. Click, fill, select or focus a control id from inspect; inspect again after every input. Wait up to 10 seconds for an app transition. Screenshots are evidence only, not vision input. Never infer success from input delivery. Do not access passwords or credentials.',{'action':'windows, inspect, click, fill, select, focus, key, click_point, wait or screenshot','target':'Window handle for inspect; control id for click/fill/select/focus; otherwise empty','value':'Literal text for fill/select; key such as enter, tab, ctrl+s; seconds for wait; window-relative x,y for click_point based on observed bounds'})]
     if any(w in latest for w in ('desktop','server login','login','ssh','remote','connection')):
         active_tools += DISCOVERY_TOOLS
-    if not act:active_tools=[t for t in active_tools if t['function']['name'] in ('list_files','read_file','file_fingerprint','project_info','search_code','project_map','git_changes','desktop_server_inventory','desktop_list','desktop_read_file','remote_status','remote_project_info')]
+    if not act:active_tools=[t for t in active_tools if t['function']['name'] in ('list_files','read_file','file_fingerprint','project_info','search_code','project_map','git_changes','review_changes','triage_failures','desktop_server_inventory','desktop_list','desktop_read_file','remote_status','remote_project_info')]
     if worker_mode:
-        active_tools=[t for t in TOOLS+CONTEXT_TOOLS if t['function']['name'] in ('list_files','read_file','file_fingerprint','project_info','search_code','project_map')]
+        active_tools=[t for t in TOOLS+CONTEXT_TOOLS if t['function']['name'] in ('list_files','read_file','file_fingerprint','project_info','search_code','project_map','review_changes','triage_failures')]
     else:
         active_tools.append(schema('delegate_review','Delegate a focused local-project review/investigation to a separate read-only context on the current model. No shell, desktop, remote access, edits or nested workers. Maximum two sequential workers per turn; each has five model steps. Use for complex work, not trivial questions.',{'role':'reviewer, investigator or test_planner','task':'Self-contained question, relevant paths and any necessary context; no secrets'}))
     performance=performance or {}
