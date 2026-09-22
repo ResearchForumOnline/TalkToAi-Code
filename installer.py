@@ -38,7 +38,16 @@ Read-Host 'Press Enter to close'
 '''
 
 def shortcut(path, target):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
     script = f'''$s=New-Object -ComObject WScript.Shell;$l=$s.CreateShortcut('{path}');$l.TargetPath='{target}';$l.WorkingDirectory='{Path(target).parent}';$l.Description='TalkToAi Code native coding and game workspace';$l.Save()'''
+    subprocess.run(['powershell.exe','-NoProfile','-Command',script], check=True, creationflags=subprocess.CREATE_NO_WINDOW)
+
+def powershell_shortcut(path, target, arguments='', working_directory=None, description='TalkToAi Code'):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    working_directory = working_directory or Path(target).parent
+    script = f'''$s=New-Object -ComObject WScript.Shell;$l=$s.CreateShortcut('{path}');$l.TargetPath='{target}';$l.Arguments='{arguments}';$l.WorkingDirectory='{working_directory}';$l.Description='{description}';$l.Save()'''
     subprocess.run(['powershell.exe','-NoProfile','-Command',script], check=True, creationflags=subprocess.CREATE_NO_WINDOW)
 
 def install():
@@ -60,12 +69,15 @@ def install():
     shutil.copytree(payload, target)
     (root / 'uninstall.ps1').write_text(UNINSTALL, encoding='utf-8')
     exe = root / 'TalkToAiCode' / 'TalkToAiCode.exe'
-    shortcut(Path(os.environ['USERPROFILE']) / 'Desktop' / 'TalkToAi Code.lnk', exe)
-    shortcut(Path(os.environ.get('APPDATA', root)) / 'Microsoft/Windows/Start Menu/Programs/TalkToAi Code.lnk', exe)
+    desktop_link = Path(os.environ['USERPROFILE']) / 'Desktop' / 'TalkToAi Code.lnk'
+    start_menu = Path(os.environ.get('APPDATA', root)) / 'Microsoft/Windows/Start Menu/Programs'
+    shortcut(desktop_link, exe)
+    shortcut(start_menu / 'TalkToAi Code.lnk', exe)
     # Create a safe, data-preserving uninstall shortcut.
     uninstall_link = Path(os.environ.get('APPDATA', root)) / 'Microsoft/Windows/Start Menu/Programs/Uninstall TalkToAi Code.lnk'
-    script = f'''$s=New-Object -ComObject WScript.Shell;$l=$s.CreateShortcut('{uninstall_link}');$l.TargetPath='powershell.exe';$l.Arguments='-NoProfile -ExecutionPolicy Bypass -File "{root / 'uninstall.ps1'}"';$l.WorkingDirectory='{root}';$l.Description='Uninstall TalkToAi Code while preserving local data';$l.Save()'''
-    subprocess.run(['powershell.exe','-NoProfile','-Command',script], check=True, creationflags=subprocess.CREATE_NO_WINDOW)
+    powershell_shortcut(uninstall_link, 'powershell.exe',
+        f'-NoProfile -ExecutionPolicy Bypass -File "{root / "uninstall.ps1"}"',
+        root, 'Uninstall TalkToAi Code while preserving local data')
     archive.unlink(missing_ok=True)
     shutil.rmtree(staging, ignore_errors=True)
     status.set('Installed. Launching TalkToAi Code...')
