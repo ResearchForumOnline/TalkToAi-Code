@@ -8,9 +8,9 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import messagebox, ttk
 
-VERSION = '0.1.3'
+VERSION = '0.1.4'
 ASSET = 'TalkToAi-Code-0.1.3-Windows-Portable.zip'
-URL = f'https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v{VERSION}-preview/{ASSET}'
+URL = 'https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v0.1.3-preview/' + ASSET
 
 UNINSTALL = r'''param([switch]$RemoveUserData)
 $root = Join-Path $env:LOCALAPPDATA 'TalkToAiCode'
