@@ -10,7 +10,7 @@ from tkinter import messagebox, ttk
 from win32com.client import Dispatch
 import pythoncom
 
-VERSION = '0.1.7'
+VERSION = '0.1.8'
 ASSET = 'TalkToAi-Code-0.1.3-Windows-Portable.zip'
 URL = 'https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v0.1.3-preview/' + ASSET
 
@@ -80,7 +80,9 @@ def install():
     # Keep user data safe during upgrades. The portable payload is unpacked
     # into a staging folder and only runtime files are refreshed.
     staging = Path(tempfile.mkdtemp(prefix='talktoai-code-install-'))
-    root.mkdir(parents=True)
+    # Reinstalls and upgrades must retain existing conversations/settings in
+    # %LOCALAPPDATA%\TalkToAiCode rather than failing when that folder exists.
+    root.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(archive) as z: z.extractall(staging)
     payload = staging / 'TalkToAiCode'
     target = root / 'TalkToAiCode'

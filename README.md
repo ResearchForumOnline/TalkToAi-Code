@@ -1,6 +1,6 @@
 # Build and test games TalkToAi Code — Windows desktop preview
 
-> **Latest release: 0.1.7** — [Download the installer with diagnostics](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v0.1.7-preview/TalkToAi-Code-0.1.7-Windows-Setup.exe) · [View release notes and checksums](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/tag/v0.1.7-preview)
+> **Latest release: 0.1.8** — [Download the latest Windows installer](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v0.1.8-preview/TalkToAi-Code-0.1.8-Windows-Setup.exe) · [View release notes and checksums](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/tag/v0.1.8-preview)
 
 ![TalkToAi Code connects a coding workspace to a game world](assets/talktoai-code-hero.png)
 
@@ -31,7 +31,7 @@ An independent native desktop AI assistant from TalkToAI for coding, games and g
 
 ### Platform installers
 
-- **Windows:** use the [0.1.7 installer with diagnostics](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v0.1.7-preview/TalkToAi-Code-0.1.7-Windows-Setup.exe). It installs the verified runtime under `%LOCALAPPDATA%`, creates Desktop, Start Menu and uninstall shortcuts, and includes an opt-in **Start with Windows** setting that launches to the tray. Version 0.1.7 fixes the shortcut-creation hang and shows a visible error plus log if Windows blocks installation.
+- **Windows:** use the [latest 0.1.8 installer](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v0.1.8-preview/TalkToAi-Code-0.1.8-Windows-Setup.exe). It installs the verified runtime under `%LOCALAPPDATA%`, preserves existing local task data during upgrades, creates Desktop, Start Menu and uninstall shortcuts, and includes an opt-in **Start with Windows** setting that launches to the tray.
 - **Portable Windows:** use the [0.1.3 portable ZIP](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v0.1.3-preview/TalkToAi-Code-0.1.3-Windows-Portable.zip) when you do not want an installer.
 - **Linux:** install Python 3, extract the source ZIP, and run `bash install-linux.sh`. This creates a virtual environment, a `talktoai-code` launcher, and a desktop entry.
 - **macOS:** install Python 3, extract the source ZIP, and run `bash install-macos.sh`. This creates a local virtual environment and a `talktoai-code` launcher.
