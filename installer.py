@@ -7,8 +7,9 @@ import zipfile
 from pathlib import Path
 import tkinter as tk
 from tkinter import messagebox, ttk
+from win32com.client import Dispatch
 
-VERSION = '0.1.5'
+VERSION = '0.1.6'
 ASSET = 'TalkToAi-Code-0.1.3-Windows-Portable.zip'
 URL = 'https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v0.1.3-preview/' + ASSET
 
@@ -40,15 +41,24 @@ Read-Host 'Press Enter to close'
 def shortcut(path, target):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    script = f'''$s=New-Object -ComObject WScript.Shell;$l=$s.CreateShortcut('{path}');$l.TargetPath='{target}';$l.WorkingDirectory='{Path(target).parent}';$l.Description='TalkToAi Code native coding and game workspace';$l.Save()'''
-    subprocess.run(['powershell.exe','-NoProfile','-Command',script], check=True, creationflags=subprocess.CREATE_NO_WINDOW)
+    shell = Dispatch('WScript.Shell')
+    link = shell.CreateShortcut(str(path))
+    link.TargetPath = str(target)
+    link.WorkingDirectory = str(Path(target).parent)
+    link.Description = 'TalkToAi Code native coding and game workspace'
+    link.Save()
 
 def powershell_shortcut(path, target, arguments='', working_directory=None, description='TalkToAi Code'):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     working_directory = working_directory or Path(target).parent
-    script = f'''$s=New-Object -ComObject WScript.Shell;$l=$s.CreateShortcut('{path}');$l.TargetPath='{target}';$l.Arguments='{arguments}';$l.WorkingDirectory='{working_directory}';$l.Description='{description}';$l.Save()'''
-    subprocess.run(['powershell.exe','-NoProfile','-Command',script], check=True, creationflags=subprocess.CREATE_NO_WINDOW)
+    shell = Dispatch('WScript.Shell')
+    link = shell.CreateShortcut(str(path))
+    link.TargetPath = str(target)
+    link.Arguments = arguments
+    link.WorkingDirectory = str(working_directory)
+    link.Description = description
+    link.Save()
 
 def install():
     root = Path(os.environ.get('LOCALAPPDATA', Path.home())) / 'TalkToAiCode'
