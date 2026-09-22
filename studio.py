@@ -111,6 +111,10 @@ class Studio(QMainWindow):
         except (OSError, ValueError):
             pass
         self.ssh_profiles = load_profiles(CONNECTIONS)
+        try:
+            self.config.update(json.loads((STATE/'config.json').read_text(encoding='utf-8')))
+        except (OSError, ValueError):
+            pass
         self.provider_profiles = load_provider_profiles(PROVIDERS)
         try:
             self.tasks = json.loads(SESSION.read_text(encoding='utf-8'))
@@ -196,6 +200,7 @@ class Studio(QMainWindow):
         self.pin_task_button = self.button('📌  Pin current task', self.toggle_pin_task, side)
         self.task_list = QListWidget(); self.task_list.currentRowChanged.connect(self.select_task); side.addWidget(self.task_list,1)
         self.button('⚙  Settings', self.settings, side)
+        self.button('About & updates', self.updates_dialog, side)
         self.button('⌁  Connections', self.connections_dialog, side)
         self.button('Link ZeroThink account', self.link_zerothink, side)
         self.button('❔  FAQ / How to', self.faq_dialog, side)
@@ -720,7 +725,12 @@ class Studio(QMainWindow):
         layout.addLayout(actions);dialog.exec();self.refresh_connection_label()
 
     def write_config(self):
-        tmp=HOME/'config.json.tmp';tmp.write_text(json.dumps(self.config,indent=2),encoding='utf-8');tmp.replace(HOME/'config.json')
+        tmp=STATE/'config.json.tmp';tmp.write_text(json.dumps(self.config,indent=2),encoding='utf-8');tmp.replace(STATE/'config.json')
+
+    def updates_dialog(self):
+        from update_dialog import UpdateDialog
+        if not getattr(self, '_updates', None):self._updates=UpdateDialog(self, STATE)
+        self._updates.show();self._updates.raise_()
 
     def startup_link_path(self):
         return Path(os.environ.get('APPDATA', str(STATE))) / 'Microsoft/Windows/Start Menu/Programs/Startup/TalkToAi Code.lnk'
@@ -730,9 +740,9 @@ class Studio(QMainWindow):
         if enabled:
             link.parent.mkdir(parents=True, exist_ok=True)
             if getattr(sys, 'frozen', False):
-                target=str(Path(sys.executable)); args=''
+                target=str(Path(sys.executable)); args='--tray'
             else:
-                target=sys.executable; args=f'"{SOURCE / "studio.py"}"'
+                target=sys.executable; args=f'"{SOURCE / "studio.py"}" --tray'
             work=str(Path(target).parent)
             script=f'''$s=New-Object -ComObject WScript.Shell;$l=$s.CreateShortcut('{link}');$l.TargetPath='{target}';$l.Arguments='{args}';$l.WorkingDirectory='{work}';$l.Description='Start TalkToAi Code in the Windows notification area';$l.Save()'''
             subprocess.run(['powershell.exe','-NoProfile','-Command',script],check=True,creationflags=subprocess.CREATE_NO_WINDOW)
@@ -951,7 +961,8 @@ if __name__=='__main__':
         if not instance.listen(instance_name):
             QLocalServer.removeServer(instance_name)
             if not instance.listen(instance_name):raise RuntimeError('Cannot create desktop instance channel.')
-    window=Studio();window.show()
+    window=Studio()
+    if '--tray' not in sys.argv or not window.tray:window.show()
     if instance:
         def activate():
             client=instance.nextPendingConnection();window.show_from_tray();client.close();client.deleteLater()

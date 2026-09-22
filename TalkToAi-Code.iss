@@ -3,7 +3,7 @@
 ; %LOCALAPPDATA%\TalkToAiCode, so upgrades/uninstalls do not erase it.
 
 #define AppName "TalkToAi Code"
-#define AppVersion "0.2.0"
+#define AppVersion "0.2.1"
 #define AppExeName "TalkToAiCode.exe"
 
 [Setup]
@@ -17,7 +17,7 @@ DefaultDirName={localappdata}\Programs\TalkToAi Code
 DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
 OutputDir=dist-installer
-OutputBaseFilename=TalkToAi-Code-0.2.0-Windows-Setup
+OutputBaseFilename=TalkToAi-Code-0.2.1-Windows-Setup
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
@@ -34,7 +34,7 @@ Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExeName}"; WorkingDir: 
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; WorkingDir: "{app}"; Tasks: desktopicon
 
 [Tasks]
-Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription: "Additional shortcuts:"; Flags: unchecked
+Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription: "Additional shortcuts:"
 
 [Run]
 Filename: "{app}\{#AppExeName}"; Description: "Launch {#AppName}"; Flags: nowait postinstall skipifsilent
