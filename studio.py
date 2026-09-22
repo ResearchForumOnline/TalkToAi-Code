@@ -272,6 +272,13 @@ class Studio(QMainWindow):
         al.addWidget(QLabel('Screenshots and generated evidence'))
         self.artifacts=QListWidget();self.artifacts.itemDoubleClicked.connect(self.open_artifact);al.addWidget(self.artifacts)
         self.right.addTab(artifacts,'Evidence')
+        progress=QWidget();progress_layout=QVBoxLayout(progress)
+        self.context_summary=QLabel('Project overview appears when an agent task starts.');self.context_summary.setWordWrap(True);progress_layout.addWidget(self.context_summary)
+        self.verification_summary=QLabel('Checks: not run for this task');self.verification_summary.setWordWrap(True);progress_layout.addWidget(self.verification_summary)
+        self.plan_summary=QLabel('For multi-step work, the agent can maintain a checklist here. Steps are agent-reported; review tool evidence before trusting a completion claim.');self.plan_summary.setWordWrap(True);self.plan_summary.setObjectName('muted');progress_layout.addWidget(self.plan_summary)
+        self.plan_list=QListWidget();self.plan_list.setWordWrap(True);self.plan_list.setTextElideMode(Qt.ElideNone);self.plan_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff);progress_layout.addWidget(self.plan_list,1)
+        self.button('Continue unfinished work',self.continue_task,progress_layout)
+        self.right.addTab(progress,'Steps')
 
     def persist(self):
         save_tasks(SESSION,self.tasks)
@@ -330,6 +337,28 @@ class Studio(QMainWindow):
             self.status.setText('Your existing draft was kept; send it or clear it before choosing a starter.');return
         self.prompt.setPlainText(STARTERS[name]);self.prompt.setFocus()
         self.status.setText('Starter ready · edit the prompt, then Send. Nothing has run yet.')
+
+    def continue_task(self):
+        if self.busy:return
+        if self.prompt.toPlainText().strip():
+            self.status.setText('Your draft is still here; send or clear it before continuing.');return
+        self.quick_command(STARTERS['Continue unfinished work'])
+
+    def refresh_plan(self):
+        from agent_workflow import normalize_plan
+        self.plan_list.clear()
+        plan=self.task.get('plan') or {}
+        try:plan=normalize_plan(plan.get('steps'),plan.get('explanation',''))
+        except (ValueError,TypeError,AttributeError):plan={}
+        labels={'pending':'To do','in_progress':'Working','completed':'Done (reported)','blocked':'Blocked'}
+        for step in plan.get('steps',[]):
+            item=QListWidgetItem(labels[step['status']]+' · '+step['step']);item.setToolTip(step['step']);self.plan_list.addItem(item)
+        self.plan_summary.setText((plan.get('explanation')+'\n\n' if plan.get('explanation') else '')+'Checklist status is agent-reported, not independent proof. Inspect checks and evidence before relying on it.')
+        context=self.task.get('project_context',{})
+        checks=context.get('checks',{}) if isinstance(context,dict) else {}
+        self.context_summary.setText(('Project: '+str(context.get('engine','General'))+'\nDetected check commands: '+str(len(checks.get('commands',[])))) if context else 'Project overview appears when an agent task starts.')
+        verification=self.task.get('verification') or {}
+        self.verification_summary.setText('Checks: '+verification.get('status','not run')+'\n'+verification.get('summary','Run relevant checks after changes.'))
 
     def copy_last_reply(self):
         for message in reversed(self.task['messages']):
@@ -403,6 +432,7 @@ class Studio(QMainWindow):
         actions += [('Archive or restore conversation',self.toggle_archive_task),('Search chats · Ctrl+Shift+F',self.focus_task_search),('Find in conversation · Ctrl+F',self.find_in_chat),('Copy last reply',self.copy_last_reply)]
         actions += [('Starter: '+name,lambda n=name:self.use_starter(n)) for name in STARTERS]
         actions += [('Open example game · Score Arena',lambda:self.quick_command('open score arena'))]
+        actions += [('Continue unfinished work',self.continue_task)]
         for label,callback in actions:items.addItem(label)
         def filter_items(text):
             for i in range(items.count()):items.item(i).setHidden(text.casefold() not in items.item(i).text().casefold())
@@ -448,7 +478,7 @@ class Studio(QMainWindow):
         self.task.setdefault('artifacts',[]);self.task.setdefault('activity',[]);self.refresh_artifacts()
         for line in self.task['activity'][-60:]:self.output.appendPlainText(line)
         self.title.setText(self.task['title']+(' · Archived' if self.task.get('archived') else '')); self.project_label.setText(Path(self.task['project']).name)
-        self.project_label.setToolTip(self.task['project']); self.render(); self.refresh_changes()
+        self.project_label.setToolTip(self.task['project']); self.render(); self.refresh_changes();self.refresh_plan()
         self.files.clear(); self.filter_label.setText('Double-click a file to edit · Refresh to list')
 
     def render(self):
@@ -504,6 +534,9 @@ class Studio(QMainWindow):
                     self.bus.event.emit('tool',{'name':name,'args':{}})
                     result=ProjectTools(project,act,self.cancel).execute(name,{})
                     self.bus.event.emit('result',result)
+                    if name=='run_checks':
+                        from agent_workflow import check_evidence
+                        self.bus.event.emit('verification',check_evidence(result))
                     self.bus.event.emit('message',{'role':'assistant','content':result})
                     if name=='capture_screenshot':self.bus.event.emit('artifact',json.loads(result))
                     self.bus.event.emit('status','Ready')
@@ -548,7 +581,7 @@ class Studio(QMainWindow):
         if self.busy or not self.current_file:return
         try:
             tools=ProjectTools(self.task['project'],True); tools.execute('write_file',{'path':self.current_file,'content':self.editor.toPlainText()})
-            self.task['changes']+=tools.changes; self.persist(); self.refresh_changes(); self.status.setText('File saved · checkpoint created')
+            self.task['changes']+=tools.changes;self.task['verification']={'status':'stale','summary':'File edited; rerun relevant checks.'};self.refresh_plan(); self.persist(); self.refresh_changes(); self.status.setText('File saved · checkpoint created')
         except Exception as exc:self.error(exc)
 
     def send(self):
@@ -619,6 +652,12 @@ class Studio(QMainWindow):
 
     def handle_event(self,kind,data):
         if kind=='delta':self.partial+=data;self.stream_dirty=True
+        elif kind=='project_context':
+            self.task['project_context']=data;self.refresh_plan();self.persist()
+        elif kind=='plan':
+            self.task['plan']=data;self.refresh_plan();self.persist()
+        elif kind=='verification':
+            self.task['verification']=data;self.refresh_plan();self.persist()
         elif kind=='message':self.task['messages'].append(data);self.partial='';self.persist();self.render()
         elif kind=='tool':
             line='→ '+data['name']+'\n'+json.dumps(data['args'],ensure_ascii=False)[:2000]
@@ -920,6 +959,14 @@ Search chats by title, project, draft or conversation text with **Ctrl+Shift+F**
 **Task starters** provides editable prompts for coding, websites, games, debugging, release reviews and SSH inspection. Selecting one does not run a tool or model. Fill in its placeholders, check the project and mode, then Send. Existing drafts are never replaced by a starter.
 
 **More** holds project memory, API providers, ZeroThink linking, model choices, help and the app-data shortcut. Task history is saved atomically with a previous-save `studio.json.bak` recovery copy. Damaged history files are preserved and a valid backup is recovered on startup with a visible notice. This protects chat history, not project files, model weights or credentials; keep your normal backups too.
+
+## Ask for an outcome; let the agent choose tools
+
+The agent receives a compact project overview when automatic context is enabled. It can load browser, game, code-navigation, desktop and SSH tool sets as needed, without requiring a special keyword in the original request. Existing Plan/Act and access settings still apply; loading a tool set never grants a new permission or performs an action on its own.
+
+For multi-step work, the agent can maintain a saved checklist in **Steps**. It reviews unfinished items before finishing, and can continue automatically after an output-length limit up to twice within the normal turn budget. **Stop** still cancels the run. Use **Continue unfinished work** to resume a saved conversation; the agent must inspect current state before repeating actions.
+
+Invalid tool batches are retried before any action from that batch executes. Repeated identical failures are capped until another successful action changes the approach. Automated checks are always available in Act mode; an unrelated shell command no longer counts as verification. These controls improve follow-through, but a checklist marked complete is still a model report, not a guarantee.
 
 ## If something is slow
 

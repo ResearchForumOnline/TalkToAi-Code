@@ -82,5 +82,22 @@ class WorkspaceUITests(unittest.TestCase):
         self.assertEqual(Path(w.task['project']).resolve(),(self.root/'projects/score-arena').resolve())
         self.assertTrue((Path(w.task['project'])/'project.godot').is_file())
 
+    def test_plan_and_check_evidence_persist_and_render(self):
+        w=self.window
+        plan={'steps':[{'step':'Inspect project','status':'completed'},{'step':'Fix the menu','status':'in_progress'}],'explanation':'Working on the menu'}
+        w.handle_event('plan',plan)
+        w.handle_event('verification',{'status':'failed','summary':'The test command failed.'})
+        self.assertEqual(w.plan_list.count(),2)
+        self.assertIn('Done (reported)',w.plan_list.item(0).text())
+        self.assertIn('failed',w.verification_summary.text())
+        saved=load_tasks(studio.SESSION)[0][0]
+        self.assertEqual(saved['plan'],plan);self.assertEqual(saved['verification']['status'],'failed')
+
+    def test_continue_button_preserves_an_existing_draft(self):
+        w=self.window;w.prompt.setPlainText('Keep this draft')
+        with patch.object(w,'quick_command') as execute:
+            w.continue_task();execute.assert_not_called()
+        self.assertEqual(w.prompt.toPlainText(),'Keep this draft')
+
 
 if __name__=='__main__':unittest.main()

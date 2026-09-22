@@ -11,7 +11,7 @@ from PySide6.QtGui import QFontDatabase
 import studio
 
 
-def render(path, width=1440, height=900):
+def render(path, width=1440, height=900, steps=False):
     app=QApplication.instance() or QApplication([])
     # Qt's offscreen Windows platform needs explicit font registration.
     fonts=Path(os.environ.get('WINDIR','C:/Windows'))/'Fonts'
@@ -35,6 +35,11 @@ def render(path, width=1440, height=900):
         window.health_label.setText('Choose your local or self-hosted model')
         window.connection_label.setText('Your own SSH connections')
         window.use_starter('Build a game feature')
+        if steps:
+            window.task['plan']={'steps':[{'step':'Inspect the project and conventions','status':'completed'},{'step':'Implement the requested game feature','status':'in_progress'},{'step':'Run checks and collect evidence','status':'pending'}],'explanation':'UI demonstration only: a task checklist maintained by the agent.'}
+            window.task['verification']={'status':'not run','summary':'This demonstration has not executed a check.'}
+            window.task['project_context']={'engine':'Godot (demo)','checks':{'commands':[]}}
+            window.refresh_plan();window.right.setCurrentIndex(5)
         window.show();app.processEvents()
         target=Path(path);target.parent.mkdir(parents=True,exist_ok=True)
         if not window.grab().save(str(target)):raise RuntimeError('Preview rendering failed')
@@ -42,5 +47,5 @@ def render(path, width=1440, height=900):
 
 
 if __name__=='__main__':
-    parser=argparse.ArgumentParser();parser.add_argument('path');parser.add_argument('--width',type=int,default=1440);parser.add_argument('--height',type=int,default=900)
-    args=parser.parse_args();render(args.path,args.width,args.height)
+    parser=argparse.ArgumentParser();parser.add_argument('path');parser.add_argument('--width',type=int,default=1440);parser.add_argument('--height',type=int,default=900);parser.add_argument('--steps',action='store_true')
+    args=parser.parse_args();render(args.path,args.width,args.height,args.steps)

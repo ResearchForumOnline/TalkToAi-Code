@@ -1,12 +1,12 @@
 # TalkToAi Code — Your projects. Your AI. Your workspace.
 
-> **Latest release: 0.2.4** — [Download the Windows installer](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v0.2.4-preview/TalkToAi-Code-0.2.4-Windows-Setup.exe) · [View release notes and checksums](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/tag/v0.2.4-preview)
+> **Latest release: 0.2.5** — [Download the Windows installer](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v0.2.5-preview/TalkToAi-Code-0.2.5-Windows-Setup.exe) · [View release notes and checksums](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/tag/v0.2.5-preview)
 
 ![TalkToAi Code connects a coding workspace to a game world](assets/talktoai-code-hero.png)
 
 ## Product tour
 
-![TalkToAi Code 0.2.4 with chat search, archive views, a compact sidebar, task starters and Game Lab](assets/screens/studio-workspace-024.png)
+![TalkToAi Code 0.2.5 with saved agent steps and check evidence](assets/screens/studio-automation-025.png)
 
 The latest workspace above is rendered from the actual app with a disposable demonstration conversation; it is not a model-performance result. Earlier Windows screenshots below show real user conversations.
 
@@ -31,6 +31,18 @@ An independent native desktop AI assistant from TalkToAI for coding, games and g
 **Recommended for Windows:** download the installer linked above, run setup and open **TalkToAi Code** from Start. Python is bundled; you do not need the source setup below. Future releases can be checked from **About & updates** inside the app.
 
 ## Updates and saved settings
+
+### More automatic tool use in 0.2.5
+
+Describe the outcome, not the name of a tool. The agent receives a bounded project overview and can call `enable_tools` to load additional code-navigation, browser, game, desktop or SSH tools as needed. This removes keyword-only availability for authorized capabilities. Loading a tool set does not execute it, grant a permission, configure a server, or bypass Plan/Act settings.
+
+For multi-step work, `update_plan` maintains a saved checklist in **Steps**. Unfinished checklist items get a follow-through prompt before the agent finishes. Output-length limits can trigger up to two automatic continuations within the existing turn budget; Stop still cancels. The **Continue unfinished work** button resumes a saved task without replacing a draft.
+
+The Steps panel separates **agent-reported progress** from **check-runner evidence**. Detected check commands report passed, failed or unverified status; subsequent tool-recorded edits make that status stale. Arbitrary shell commands no longer count as checking edits. This does not monitor filesystem changes made outside the tracked file tools or guarantee full product/game verification.
+
+Invalid structured tool batches are rejected before any action in the batch executes, then the model can correct its request. An incomplete batch at an output limit is never executed. Identical consecutive failures stop being re-executed after two attempts; a successful intervening tool call resets that guard.
+
+Automation still depends on the model. The deterministic test suite covers the controller, not general model competence. A bounded local `qwen3.5:4b` acceptance check on the build machine timed out after 120 seconds before producing tool calls; it did **not** establish live-model completion or responsiveness. No paid API was used for that check.
 
 **Project memory** (More menu or Ctrl+Shift+M) stores editable project notes in `.talktoai-code/PROJECT_MEMORY.md`: goals, decisions, test commands and next steps. Future tasks in the same project receive these notes. They are sent to your selected model, so do not store passwords or private keys. Conflicting edits are detected; memory is capped at 12,000 characters. This is explicit project context rather than automatic recall of all past chats.
 
@@ -65,7 +77,7 @@ In Act mode, try: **“Connect to my website server using my existing SSH config
 
 ### Platform installers
 
-- **Windows:** use the [0.2.4 Windows installer](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v0.2.4-preview/TalkToAi-Code-0.2.4-Windows-Setup.exe). This is a standard per-user Windows installer: it installs the native application, creates normal Start Menu/Desktop shortcuts and a Windows uninstaller, and preserves local task data during upgrades.
+- **Windows:** use the [0.2.5 Windows installer](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v0.2.5-preview/TalkToAi-Code-0.2.5-Windows-Setup.exe). This is a standard per-user Windows installer: it installs the native application, creates normal Start Menu/Desktop shortcuts and a Windows uninstaller, and preserves local task data during upgrades.
 - **Portable Windows:** use the [0.1.3 portable ZIP](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v0.1.3-preview/TalkToAi-Code-0.1.3-Windows-Portable.zip) when you do not want an installer.
 - **Linux:** install Python 3, extract the source ZIP, and run `bash install-linux.sh`. This creates a virtual environment, a `talktoai-code` launcher, and a desktop entry.
 - **macOS:** install Python 3, extract the source ZIP, and run `bash install-macos.sh`. This creates a local virtual environment and a `talktoai-code` launcher.
