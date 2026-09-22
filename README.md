@@ -24,6 +24,8 @@ An independent native desktop AI assistant from TalkToAI for coding, games and g
 
 ## Install
 
+**Recommended for Windows:** download the installer linked above, run setup and open **TalkToAi Code** from Start. Python is bundled; you do not need the source setup below. Future releases can be checked from **About & updates** inside the app.
+
 ## Updates and saved settings
 
 Open **About & updates** in the sidebar to check GitHub, read release notes and download a newer installer. Downloads are verified against GitHub's SHA-256 asset digest before installation is offered. Finish or stop an active task before installing. Checking releases consumes no AI tokens; updates never install automatically.
