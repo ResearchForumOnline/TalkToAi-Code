@@ -9,6 +9,7 @@ import urllib.request
 import time
 import re
 import copy
+import subprocess
 from PySide6.QtCore import Qt, Signal, QObject, QTimer, QEvent
 from PySide6.QtGui import QFont, QTextCursor, QKeySequence, QShortcut, QDesktopServices, QIcon, QPixmap, QPainter, QColor
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
@@ -721,6 +722,24 @@ class Studio(QMainWindow):
     def write_config(self):
         tmp=HOME/'config.json.tmp';tmp.write_text(json.dumps(self.config,indent=2),encoding='utf-8');tmp.replace(HOME/'config.json')
 
+    def startup_link_path(self):
+        return Path(os.environ.get('APPDATA', str(STATE))) / 'Microsoft/Windows/Start Menu/Programs/Startup/TalkToAi Code.lnk'
+
+    def set_start_with_windows(self, enabled):
+        link=self.startup_link_path()
+        if enabled:
+            link.parent.mkdir(parents=True, exist_ok=True)
+            if getattr(sys, 'frozen', False):
+                target=str(Path(sys.executable)); args=''
+            else:
+                target=sys.executable; args=f'"{SOURCE / "studio.py"}"'
+            work=str(Path(target).parent)
+            script=f'''$s=New-Object -ComObject WScript.Shell;$l=$s.CreateShortcut('{link}');$l.TargetPath='{target}';$l.Arguments='{args}';$l.WorkingDirectory='{work}';$l.Description='Start TalkToAi Code in the Windows notification area';$l.Save()'''
+            subprocess.run(['powershell.exe','-NoProfile','-Command',script],check=True,creationflags=subprocess.CREATE_NO_WINDOW)
+        else:
+            link.unlink(missing_ok=True)
+        self.config['start_with_windows']=bool(enabled);self.write_config()
+
     def faq_dialog(self):
         dialog=QDialog(self);dialog.setWindowTitle('TalkToAi Code · FAQ / How to');dialog.resize(820,650)
         layout=QVBoxLayout(dialog)
@@ -803,12 +822,18 @@ Use Auto or AMD, stop a task, or steer it into a smaller request. The AMD route 
         form.addWidget(remote_pilot)
         auto=QCheckBox('Automatically include project map/search tools for coding requests');auto.setChecked(bool(self.config.get('auto_context',True)));form.addWidget(auto)
         activity=QCheckBox('Show tool activity in the Tools panel');activity.setChecked(bool(self.config.get('show_tool_activity',True)));form.addWidget(activity)
+        startup=QCheckBox('Start TalkToAi Code with Windows (minimized to the notification area)')
+        startup.setChecked(bool(self.config.get('start_with_windows',False)))
+        startup.setToolTip('This creates a per-user Startup shortcut. It does not run as administrator and can be disabled here or from the Startup folder.')
+        form.addWidget(startup)
         form.addWidget(QLabel('Say “use my AMD server” in Act mode; no Connections step is needed for the configured profile.'))
         status=QLabel('Current active SSH: '+(self.config.get('active_ssh_alias') or 'none'));status.setObjectName('muted');form.addWidget(status);form.addStretch()
         buttons=QDialogButtonBox(QDialogButtonBox.Save|QDialogButtonBox.Cancel);buttons.accepted.connect(dialog.accept);buttons.rejected.connect(dialog.reject);layout.addWidget(buttons)
         if dialog.exec()==QDialog.Accepted:
             self.config['approval_policy']=policy.currentData();self.config['auto_context']=auto.isChecked();self.config['show_tool_activity']=activity.isChecked()
             self.config['access_mode']=access.currentData();self.config['pc_pilot']=pilot.isChecked();self.config['remote_pilot']=remote_pilot.isChecked();self.config['remote_enabled']=remote_pilot.isChecked() or self.config.get('remote_enabled',False)
+            try:self.set_start_with_windows(startup.isChecked())
+            except Exception as exc:self.error('Could not update Windows startup: '+str(exc))
             if remote_pilot.isChecked() and policy.currentData()!='plan':self.config['approval_policy']='auto_remote'
             if self.config['approval_policy']=='plan':self.mode.setCurrentText('Plan')
             self.write_config();self.refresh_connection_label();self.refresh_access_label();self.status.setText('Settings saved')
