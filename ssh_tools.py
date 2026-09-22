@@ -15,6 +15,33 @@ from pathlib import Path
 
 SAFE_ALIAS = re.compile(r"^[A-Za-z0-9_.@:-]{1,128}$")
 
+def discover_aliases(config=None):
+    """Read only Host declarations, including bounded OpenSSH Include files."""
+    import shlex
+    import glob
+    root=Path(config) if config else Path.home()/'.ssh/config'
+    aliases=[]; seen=set()
+    def visit(path):
+        path=Path(path).expanduser().resolve()
+        if path in seen or len(seen)>=20:return
+        seen.add(path)
+        try: lines=path.read_text(encoding='utf-8-sig').splitlines()
+        except (OSError,UnicodeError):return
+        for line in lines:
+            try: parts=shlex.split(line,comments=True)
+            except ValueError:continue
+            if not parts:continue
+            if parts[0].lower()=='host':
+                for alias in parts[1:]:
+                    if SAFE_ALIAS.fullmatch(alias) and not alias.startswith('-') and alias not in aliases:aliases.append(alias)
+            elif parts[0].lower()=='include':
+                for pattern in parts[1:]:
+                    candidate=Path(pattern).expanduser()
+                    if not candidate.is_absolute():candidate=root.parent/candidate
+                    for match in sorted(glob.glob(str(candidate)))[:20]:visit(match)
+    visit(root)
+    return aliases[:200]
+
 
 def validate_alias(alias: str) -> str:
     value = str(alias or "").strip()

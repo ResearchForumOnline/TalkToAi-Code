@@ -56,4 +56,6 @@ def inspect_desktop(app_profiles=None):
         except OSError:
             continue
     result["desktop_server_files"] = result["desktop_server_files"][:100]
+    from ssh_tools import discover_aliases
+    result['available_ssh_aliases']=discover_aliases()
     return result

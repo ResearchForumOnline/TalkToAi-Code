@@ -388,6 +388,19 @@ class ProjectTools:
             data=p.read_bytes()
             return json.dumps({'path':args['path'],'exists':True,'sha256':hashlib.sha256(data).hexdigest(),'bytes':len(data)})
         if name == 'project_info':return json.dumps(self.info())
+        if name == 'connect_remote':
+            if not self.act or not ACTIVE_REMOTE_ALLOWED or not REMOTE_PILOT:
+                raise PermissionError('Request an SSH connection in Act mode or enable Remote Pilot in Settings.')
+            from ssh_tools import discover_aliases, SSHProfile, SSHSession, load_profiles
+            state=Path(os.environ.get('LOCALAPPDATA',str(self.root)))/'TalkToAiCode'/'connections.json'
+            profiles={p.alias:p for p in load_profiles(state)}
+            alias=args.get('alias','')
+            if alias not in set(discover_aliases())|set(profiles):
+                raise ValueError('Choose an exact alias from desktop_server_inventory. Do not guess a server.')
+            profile=profiles.get(alias) or SSHProfile(alias,alias)
+            verification=SSHSession(profile).test()
+            self.remote=profile
+            return json.dumps({'connected':True,'alias':alias,'verification':verification,'next':'Use remote_project_info before making changes.'})
         if name == 'desktop_server_inventory':
             from desktop_inventory import inspect_desktop
             from ssh_tools import load_profiles
@@ -593,13 +606,17 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
     if AUTO_CONTEXT or any(w in latest for w in ('search','find','where','map','overview','inspect','review','git','refactor')):active_tools+=CONTEXT_TOOLS
     if any(w in latest for w in ('game','godot','blender','screenshot')):active_tools+=GAME_TOOLS
     elif any(w in latest for w in ('test','check','build')):active_tools+=GAME_TOOLS[:1]
-    if ACTIVE_REMOTE and ACTIVE_REMOTE_ALLOWED and REMOTE_PILOT:
+    if ACTIVE_REMOTE_ALLOWED and REMOTE_PILOT:
         active_tools += REMOTE_TOOLS
+        prompt_note='For a request to log in or connect to a named server, first call desktop_server_inventory and select a matching existing alias with connect_remote. Ask if several aliases could be the intended host. Do not claim a connection until the tool succeeds.'
+        messages[0]['content']+=' '+prompt_note
+        if act:
+            active_tools += [schema('connect_remote','Connect to an existing SSH alias for the server the user requested. First use desktop_server_inventory. If aliases are ambiguous ask which server. Credentials remain in OpenSSH. After connecting inspect the remote project before edits.',{'alias':'Exact existing SSH alias from inventory'})]
     if DESKTOP_ACCESS:
         active_tools += DESKTOP_TOOLS
         if PC_PILOT:
             active_tools += [schema('computer','Windows computer use through accessibility. First windows then inspect a returned handle. Click, fill, select or focus a control id from inspect; inspect again after every input. Wait up to 10 seconds for an app transition. Screenshots are evidence only, not vision input. Never infer success from input delivery. Do not access passwords or credentials.',{'action':'windows, inspect, click, fill, select, focus, key, click_point, wait or screenshot','target':'Window handle for inspect; control id for click/fill/select/focus; otherwise empty','value':'Literal text for fill/select; key such as enter, tab, ctrl+s; seconds for wait; window-relative x,y for click_point based on observed bounds'})]
-    if any(w in latest for w in ('desktop','server login','login','ssh','remote','connection')):
+    if (ACTIVE_REMOTE_ALLOWED and REMOTE_PILOT) or any(w in latest for w in ('desktop','server login','login','ssh','remote','connection')):
         active_tools += DISCOVERY_TOOLS
     if not act:active_tools=[t for t in active_tools if t['function']['name'] in ('list_files','read_file','file_fingerprint','project_info','search_code','project_map','git_changes','review_changes','triage_failures','desktop_server_inventory','desktop_list','desktop_read_file','remote_status','remote_project_info')]
     if worker_mode:

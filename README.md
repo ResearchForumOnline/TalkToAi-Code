@@ -1,6 +1,6 @@
 # Build and test games TalkToAi Code — Windows desktop preview
 
-> **Latest release: 0.2.1** — [Download the Windows installer](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v0.2.1-preview/TalkToAi-Code-0.2.1-Windows-Setup.exe) · [View release notes and checksums](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/tag/v0.2.1-preview)
+> **Latest release: 0.2.2** — [Download the Windows installer](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v0.2.2-preview/TalkToAi-Code-0.2.2-Windows-Setup.exe) · [View release notes and checksums](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/tag/v0.2.2-preview)
 
 ![TalkToAi Code connects a coding workspace to a game world](assets/talktoai-code-hero.png)
 
@@ -32,6 +32,12 @@ Settings and task history are saved in `%LOCALAPPDATA%\TalkToAiCode`. Enable **S
 
 ### Source installation
 
+### Ask the agent to connect to a server
+
+In Act mode, try: **“Connect to my website server using my existing SSH config, inspect the project, and report its status.”** The agent can call `desktop_server_inventory` to discover aliases, then `connect_remote` to verify an existing connection before inspecting or changing remote files. Existing app profiles also work. If several hosts match, specify the alias. Keys stay in OpenSSH; password-only accounts and first-time host verification require normal interactive setup. Desktop discovery does not import plaintext password files into the model.
+
+### Python source setup
+
 1. Install Python 3.12 for Windows from https://www.python.org/downloads/windows/ (include the Python launcher).
 2. Download and extract the Windows setup ZIP into a permanent user-writable folder.
 3. Double-click `Install.cmd`. It creates a local virtual environment, installs the pinned dependencies from PyPI, and creates a **TalkToAi Code Preview** desktop shortcut. Internet and sufficient disk space for the dependencies are required. Setup does not download an AI model.
@@ -39,7 +45,7 @@ Settings and task history are saved in `%LOCALAPPDATA%\TalkToAiCode`. Enable **S
 
 ### Platform installers
 
-- **Windows:** use the [0.2.1 Windows installer](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v0.2.1-preview/TalkToAi-Code-0.2.1-Windows-Setup.exe). This is a standard per-user Windows installer: it installs the native application, creates normal Start Menu/Desktop shortcuts and a Windows uninstaller, and preserves local task data during upgrades.
+- **Windows:** use the [0.2.2 Windows installer](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v0.2.2-preview/TalkToAi-Code-0.2.2-Windows-Setup.exe). This is a standard per-user Windows installer: it installs the native application, creates normal Start Menu/Desktop shortcuts and a Windows uninstaller, and preserves local task data during upgrades.
 - **Portable Windows:** use the [0.1.3 portable ZIP](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v0.1.3-preview/TalkToAi-Code-0.1.3-Windows-Portable.zip) when you do not want an installer.
 - **Linux:** install Python 3, extract the source ZIP, and run `bash install-linux.sh`. This creates a virtual environment, a `talktoai-code` launcher, and a desktop entry.
 - **macOS:** install Python 3, extract the source ZIP, and run `bash install-macos.sh`. This creates a local virtual environment and a `talktoai-code` launcher.

@@ -462,13 +462,14 @@ class Studio(QMainWindow):
         self.started_at=time.monotonic();self.route_description='Selecting runtime';self.status.setText('Checking installed models…')
         project=self.task['project']; history=list(self.task['messages']); act=self.mode.currentText()=='Act'
         active_remote=self.active_remote()
+        requested_ssh=act and bool(re.search(r'\b(ssh|log ?in|connect)\b',text,re.I)) and bool(re.search(r'\b(server|host|ssh)\b|\.[a-z]{2,}',text,re.I))
         set_active_remote(active_remote if self.config.get('remote_enabled') and self.config.get('remote_pilot',True) else None)
         set_agent_preferences(
-            remote_allowed=bool(self.config.get('remote_enabled')) and self.config.get('approval_policy') == 'auto_remote' and bool(self.config.get('remote_pilot',True)),
+            remote_allowed=requested_ssh or (bool(self.config.get('remote_enabled')) and self.config.get('approval_policy') == 'auto_remote' and bool(self.config.get('remote_pilot',True))),
             auto_context=bool(self.config.get('auto_context', True)),
             desktop_access=self.config.get('access_mode','full_user')=='full_user',
             pc_pilot=bool(self.config.get('pc_pilot',True)),
-            remote_pilot=bool(self.config.get('remote_pilot',True)),
+            remote_pilot=requested_ssh or bool(self.config.get('remote_pilot',True)),
         )
         def work():
             try:

@@ -5,7 +5,7 @@ import re
 import urllib.request
 from pathlib import Path
 
-VERSION = '0.2.1'
+VERSION = '0.2.2'
 REPO = 'https://github.com/ResearchForumOnline/TalkToAi-Code'
 API = 'https://api.github.com/repos/ResearchForumOnline/TalkToAi-Code/releases/latest'
 
