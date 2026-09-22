@@ -1,10 +1,14 @@
-# Build and test games TalkToAi Code — Windows desktop preview
+# TalkToAi Code — Your projects. Your AI. Your workspace.
 
-> **Latest release: 0.2.3** — [Download the Windows installer](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v0.2.3-preview/TalkToAi-Code-0.2.3-Windows-Setup.exe) · [View release notes and checksums](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/tag/v0.2.3-preview)
+> **Latest release: 0.2.4** — [Download the Windows installer](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v0.2.4-preview/TalkToAi-Code-0.2.4-Windows-Setup.exe) · [View release notes and checksums](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/tag/v0.2.4-preview)
 
 ![TalkToAi Code connects a coding workspace to a game world](assets/talktoai-code-hero.png)
 
 ## Product tour
+
+![TalkToAi Code 0.2.4 with chat search, archive views, a compact sidebar, task starters and Game Lab](assets/screens/studio-workspace-024.png)
+
+The latest workspace above is rendered from the actual app with a disposable demonstration conversation; it is not a model-performance result. Earlier Windows screenshots below show real user conversations.
 
 The preview is built around a simple loop: describe the outcome, let the agent inspect and act, steer it when needed, then review evidence.
 
@@ -28,7 +32,17 @@ An independent native desktop AI assistant from TalkToAI for coding, games and g
 
 ## Updates and saved settings
 
-**Project memory** (Ctrl+Shift+M) stores editable project notes in `.talktoai-code/PROJECT_MEMORY.md`: goals, decisions, test commands and next steps. Future tasks in the same project receive these notes. They are sent to your selected model, so do not store passwords or private keys. Conflicting edits are detected; memory is capped at 12,000 characters. This is explicit project context rather than automatic recall of all past chats.
+**Project memory** (More menu or Ctrl+Shift+M) stores editable project notes in `.talktoai-code/PROJECT_MEMORY.md`: goals, decisions, test commands and next steps. Future tasks in the same project receive these notes. They are sent to your selected model, so do not store passwords or private keys. Conflicting edits are detected; memory is capped at 12,000 characters. This is explicit project context rather than automatic recall of all past chats.
+
+### A tidier, more resilient workspace in 0.2.4
+
+- **Search across conversations:** titles, projects, unsent drafts and user/assistant messages. Ctrl+Shift+F focuses search; Ctrl+F finds text in the open conversation.
+- **Archive without deleting:** switch between Active, Archived and All chats. Right-click a chat, or use **Chat ···**, to rename, pin, branch, archive/restore, copy the last reply or export a report.
+- **Recover saved chats:** atomic saves keep a validated previous-save `studio.json.bak`. If history is damaged, the app preserves the unreadable file and recovers the valid backup with a visible notice. This is local chat recovery, not a substitute for project or off-device backups.
+- **Start with a useful request:** seven editable starters cover coding, websites, games, debugging, release review, SSH inspection and unfinished work. They do not execute automatically or replace existing drafts; edit the placeholders and press Send.
+- **A bundled game to learn with:** Game → Open example game (or `open score arena`) creates an editable Score Arena copy under the app's persistent data folder. Reopening it preserves your changes. Install Godot separately to run it.
+- **Less sidebar clutter:** More groups project memory, API providers, ZeroThink linking, model choices and help. Settings, Connections and About & updates remain immediately visible.
+- **Reliability fixes:** new/branched chats select correctly even with pinned conversations, refreshing the chat list preserves the current file editor, and local model choices save with user settings.
 
 Drafts autosave after a short typing pause. Ctrl+, opens Settings. Ctrl+K includes project memory, update checks and shortcuts to the project and app-data folders.
 
@@ -51,7 +65,7 @@ In Act mode, try: **“Connect to my website server using my existing SSH config
 
 ### Platform installers
 
-- **Windows:** use the [0.2.3 Windows installer](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v0.2.3-preview/TalkToAi-Code-0.2.3-Windows-Setup.exe). This is a standard per-user Windows installer: it installs the native application, creates normal Start Menu/Desktop shortcuts and a Windows uninstaller, and preserves local task data during upgrades.
+- **Windows:** use the [0.2.4 Windows installer](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v0.2.4-preview/TalkToAi-Code-0.2.4-Windows-Setup.exe). This is a standard per-user Windows installer: it installs the native application, creates normal Start Menu/Desktop shortcuts and a Windows uninstaller, and preserves local task data during upgrades.
 - **Portable Windows:** use the [0.1.3 portable ZIP](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v0.1.3-preview/TalkToAi-Code-0.1.3-Windows-Portable.zip) when you do not want an installer.
 - **Linux:** install Python 3, extract the source ZIP, and run `bash install-linux.sh`. This creates a virtual environment, a `talktoai-code` launcher, and a desktop entry.
 - **macOS:** install Python 3, extract the source ZIP, and run `bash install-macos.sh`. This creates a local virtual environment and a `talktoai-code` launcher.
@@ -60,7 +74,7 @@ The Windows native runtime is currently packaged for Windows x64. Linux and macO
 
 ## ZeroThink / AgentZero account and vault
 
-Click **Link ZeroThink account**, choose your vault provider and exact model ID, and complete the normal web sign-in and device approval. The desktop remembers its own session using Windows DPAPI. Provider keys remain in the server vault. Do not copy your Google password or vault keys into chat. `link zerothink` also opens the dialog. The existing account/device API is used; no server auth change is required.
+Open **More → Link ZeroThink account**, choose your vault provider and exact model ID, and complete the normal web sign-in and device approval. The desktop remembers its own session using Windows DPAPI. Provider keys remain in the server vault. Do not copy your Google password or vault keys into chat. `link zerothink` also opens the dialog. The existing account/device API is used; no server auth change is required.
 
 The vault adapter is experimental: it requests a structured JSON reply from the selected model and validates the whole tool batch before execution. Invalid replies fail without executing that batch. Model tool reliability varies. Local/AMD routes use native Ollama tool calls. The adapter's mock protocol, Windows token encryption and URL checks were tested; a real signed-in vault inference has not yet been verified. Account entitlements and provider quotas still apply. APIs are not guaranteed free; no paid provider is selected automatically.
 

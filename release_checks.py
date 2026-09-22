@@ -21,6 +21,9 @@ def smoke(destination):
         server=ThreadingHTTPServer(('127.0.0.1',0),Handler)
         threading.Thread(target=server.serve_forever,daemon=True).start()
         with tempfile.TemporaryDirectory(prefix='talktoai-release-') as folder:
+            from sample_projects import ensure_score_arena, SCORE_ARENA_FILES
+            sample=ensure_score_arena(Path(__file__).resolve().parent,Path(folder)/'projects')
+            result['bundled_example']=all((sample/name).is_file() for name in SCORE_ARENA_FILES)
             browser=BrowserTools(folder,threading.Event())
             browser.execute('open',f'http://127.0.0.1:{server.server_port}')
             browser.execute('fill','Player','Builder');browser.execute('click','Start')
@@ -30,7 +33,7 @@ def smoke(destination):
             from agent_core import image_for_model
             result['vision_attachment']=len(image_for_model(artifact['artifact']))>1000
             browser.close();browser=None
-        result['passed']=result['browser_interaction'] and result['browser_screenshot'] and result['vision_attachment']
+        result['passed']=result['bundled_example'] and result['browser_interaction'] and result['browser_screenshot'] and result['vision_attachment']
     except Exception as exc:result.update(passed=False,error=f'{type(exc).__name__}: {exc}')
     finally:
         if browser:browser.close()

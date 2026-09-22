@@ -1,0 +1,10 @@
+"""Editable task starters. Selecting one never runs commands or calls a model."""
+STARTERS = {
+    'Improve this project': 'Inspect this project and its instructions. Identify the most useful bounded improvement for its purpose, implement it while preserving unrelated work, and run relevant tests. Finish with the changed files, test evidence, and any limitations.',
+    'Build a website feature': 'Inspect this website and its existing design. Build this feature: [describe the feature]. Make it responsive and keyboard-accessible. Run the available checks, test the affected flow in the browser, and capture screenshots if the preview can run. Report what you actually verified.',
+    'Build a game feature': 'Inspect this game and identify its engine and existing conventions. Build this feature: [describe the feature]. Preserve existing art and game behavior outside the request. Run engine/project checks, test the affected flow if possible, and capture evidence. Distinguish import checks from actual gameplay testing.',
+    'Debug a failing test': 'Inspect this project and reproduce this problem: [describe the error or failing test]. Find the cause, make a focused fix, add a regression test where practical, and rerun the relevant checks. Report the result and any remaining failures.',
+    'Review before release': 'Review this project for release readiness. Inspect changes, run available tests and build checks, and report concrete bugs, installation risks, missing documentation and unverified behavior. Do not publish, deploy or change files during this review.',
+    'Inspect an SSH project': 'Connect using this existing SSH host alias: [host alias]. Inspect this remote project: [remote path]. Verify the connection and report project status, Git changes and available test commands. Do not deploy or change files during this inspection.',
+    'Continue unfinished work': 'Review this conversation, the current project files, Git changes and project memory. Summarize what is complete and what remains. Continue the agreed unfinished coding work and verify it; do not blindly repeat commands or external actions that may already have succeeded.',
+}

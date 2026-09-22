@@ -23,6 +23,8 @@ from routing import choose_route, ensure_local_model
 from ssh_tools import SSHProfile, SSHSession, load_profiles, save_profiles
 from providers import ProviderProfile, load_profiles as load_provider_profiles, save_profiles as save_provider_profiles
 from desktop_inventory import inspect_desktop
+from session_store import load_tasks, save_tasks, matches_task
+from task_starters import STARTERS
 
 SOURCE = Path(__file__).resolve().parent
 HOME = Path(os.environ.get('TALKTOAI_CODE_HOME', str(Path(sys.executable).parent if getattr(sys, 'frozen', False) else SOURCE)))
@@ -43,6 +45,10 @@ QPushButton:hover { background:#333333; border-color:#515151; }
 QPushButton:disabled { color:#666; }
 QPushButton#accent { background:#ededed; color:#151515; font-weight:600; }
 QComboBox { background:#242424; border:1px solid #383838; border-radius:6px; padding:6px 10px; }
+QLineEdit { background:#202020; border:1px solid #383838; border-radius:6px; padding:7px; selection-background-color:#435266; }
+QMenu { background:#202020; border:1px solid #414141; padding:5px; }
+QMenu::item { padding:8px 16px; border-radius:4px; }
+QMenu::item:selected { background:#353535; }
 QListWidget { background:transparent; border:0; outline:0; }
 QListWidget::item { padding:10px; margin:2px 0; border-radius:7px; color:#e7e7e7; }
 QListWidget::item:selected { background:#303030; }
@@ -54,7 +60,7 @@ QFrame#composer QPlainTextEdit { background:transparent; border:0; }
 QFrame#composer QWidget { background:transparent; }
 QFrame#composer QPushButton#accent { background:#ededed; color:#151515; }
 QTabWidget::pane { border:1px solid #303030; }
-QTabBar::tab { background:#202020; padding:10px 14px; color:#aaa; }
+QTabBar::tab { background:#202020; padding:9px 10px; font-size:12px; color:#aaa; }
 QTabBar::tab:selected { color:white; border-bottom:2px solid #d1d1d1; }
 QSplitter::handle { background:#2c2c2c; width:1px; }
 QScrollBar:vertical { background:transparent; width:8px; }
@@ -116,20 +122,12 @@ class Studio(QMainWindow):
         except (OSError, ValueError):
             pass
         self.provider_profiles = load_provider_profiles(PROVIDERS)
-        try:
-            self.tasks = json.loads(SESSION.read_text(encoding='utf-8'))
-        except (OSError, ValueError):
-            self.tasks = []
-        if not isinstance(self.tasks, list):
-            self.tasks = []
-        for task in self.tasks:
-            if isinstance(task, dict):
-                task.setdefault('pinned', False)
+        self.tasks, recovery_notice = load_tasks(SESSION)
         self.task = None
         self.build()
         if self.config.get('approval_policy')=='plan':self.mode.setCurrentText('Plan')
         self.refresh_tasks()
-        if self.tasks:
+        if self.task_list.count():
             self.select_task(0)
         else:
             self.new_task()
@@ -140,6 +138,8 @@ class Studio(QMainWindow):
         QShortcut(QKeySequence('F1'), self, self.faq_dialog)
         QShortcut(QKeySequence('Ctrl+,'), self, self.settings)
         QShortcut(QKeySequence('Ctrl+Shift+M'), self, self.memory_dialog)
+        QShortcut(QKeySequence('Ctrl+Shift+F'), self, self.focus_task_search)
+        QShortcut(QKeySequence('Ctrl+F'), self, self.find_in_chat)
         self.draft_timer=QTimer(self);self.draft_timer.setSingleShot(True)
         self.draft_timer.timeout.connect(self.autosave_draft)
         self.prompt.textChanged.connect(self.save_draft)
@@ -149,6 +149,9 @@ class Studio(QMainWindow):
         self.install_tray()
         self.refresh_connection_label()
         self.refresh_access_label()
+        if recovery_notice:
+            self.recovery_label.setText(recovery_notice + '  ·  More → Open app data folder')
+            self.recovery_label.show()
 
     def install_tray(self):
         icon=QPixmap(64,64);icon.fill(Qt.transparent)
@@ -182,7 +185,7 @@ class Studio(QMainWindow):
             QTimer.singleShot(0,self.hide)
 
     def button(self, text, callback, parent, accent=False):
-        b = QPushButton(text)
+        b = QPushButton(text.replace('&','&&'))
         if accent:
             b.setObjectName('accent')
         b.clicked.connect(callback)
@@ -195,32 +198,38 @@ class Studio(QMainWindow):
         sidebar = QWidget(); sidebar.setObjectName('sidebar'); sidebar.setFixedWidth(248)
         side = QVBoxLayout(sidebar); side.setContentsMargins(14,12,14,16); side.setSpacing(10)
         label = QLabel('◈  TalkToAi Code'); label.setObjectName('brand'); side.addWidget(label)
-        self.new_button = self.button('＋  New task', self.new_task, side)
+        self.new_button = self.button('+  New task', self.new_task, side)
         self.project_button = self.button('▱  Open project', self.choose_project, side)
         self.project_label = QLabel(); self.project_label.setWordWrap(True); self.project_label.setObjectName('muted'); side.addWidget(self.project_label)
         self.access_label = QLabel(); self.access_label.setWordWrap(True); self.access_label.setObjectName('muted'); side.addWidget(self.access_label)
         label = QLabel('TASKS'); label.setObjectName('muted'); side.addWidget(label)
-        self.task_search=QLineEdit();self.task_search.setPlaceholderText('Search tasks…');self.task_search.textChanged.connect(self.filter_tasks);side.addWidget(self.task_search)
-        self.pin_task_button = self.button('📌  Pin current task', self.toggle_pin_task, side)
+        self.task_search=QLineEdit();self.task_search.setPlaceholderText('Search chats & projects…');self.task_search.setClearButtonEnabled(True);self.task_search.textChanged.connect(self.filter_tasks);side.addWidget(self.task_search)
+        self.task_view=QComboBox();self.task_view.addItems(['Active chats','Archived chats','All chats']);self.task_view.currentIndexChanged.connect(self.change_task_view);side.addWidget(self.task_view)
         self.task_list = QListWidget(); self.task_list.currentRowChanged.connect(self.select_task); side.addWidget(self.task_list,1)
+        self.task_list.setContextMenuPolicy(Qt.CustomContextMenu);self.task_list.customContextMenuRequested.connect(self.task_context_menu)
         self.button('⚙  Settings', self.settings, side)
         self.button('About & updates', self.updates_dialog, side)
-        self.button('Project memory', self.memory_dialog, side)
         self.button('⌁  Connections', self.connections_dialog, side)
-        self.button('Link ZeroThink account', self.link_zerothink, side)
-        self.button('❔  FAQ / How to', self.faq_dialog, side)
-        self.button('Actions  ·  Ctrl+K',self.command_palette,side)
+        more=QPushButton('More  ·  tools && help');more_menu=QMenu(more)
+        for title,callback in [('Actions · Ctrl+K',self.command_palette),('Project memory · Ctrl+Shift+M',self.memory_dialog),('API providers',self.providers_dialog),('Link ZeroThink account',self.link_zerothink),('Model choices and storage',self.models_dialog),('FAQ / How to · F1',self.faq_dialog),('Open app data folder',lambda:QDesktopServices.openUrl(QUrl.fromLocalFile(str(STATE))))]:
+            more_menu.addAction(title,callback)
+        more.setMenu(more_menu);side.addWidget(more)
         self.connection_label = QLabel('⌁  No SSH connection'); self.connection_label.setObjectName('muted'); side.addWidget(self.connection_label)
         self.health_label = QLabel('○  Checking models'); self.health_label.setObjectName('muted'); side.addWidget(self.health_label)
         outer.addWidget(sidebar)
         split = QSplitter(); outer.addWidget(split,1)
         center = QWidget(); chat = QVBoxLayout(center); chat.setContentsMargins(30,18,30,20); chat.setSpacing(12)
         bar = QHBoxLayout(); self.title = QLabel('New task'); self.title.setFont(QFont('Segoe UI',14,QFont.DemiBold)); bar.addWidget(self.title,1)
+        self.button('Chat ···',self.chat_menu,bar)
         self.button('Workspace  ▥', lambda: self.right.setVisible(not self.right.isVisible()), bar)
         chat.addLayout(bar)
+        self.recovery_label=QLabel();self.recovery_label.setWordWrap(True);self.recovery_label.setObjectName('muted');self.recovery_label.hide();chat.addWidget(self.recovery_label)
         shortcuts=QHBoxLayout()
         for title,command in [('Inspect project','inspect project'),('Run tests','run tests'),('Open Desktop','open desktop')]:
             self.button(title,lambda checked=False,c=command:self.quick_command(c),shortcuts)
+        starter=QPushButton('Task starters');starter_menu=QMenu(starter)
+        for name in STARTERS:starter_menu.addAction(name,lambda checked=False,n=name:self.use_starter(n))
+        starter.setMenu(starter_menu);shortcuts.addWidget(starter)
         chat.addLayout(shortcuts)
         self.transcript = QTextBrowser(); self.transcript.setOpenExternalLinks(False); self.transcript.document().setDefaultStyleSheet('p {line-height:1.6;} pre {background:#242424; padding:12px;} code {font-family:Consolas;} h2 {font-size:17px;}')
         chat.addWidget(self.transcript,1)
@@ -252,6 +261,7 @@ class Studio(QMainWindow):
         lab=QLabel('Game Lab'); lab.setFont(QFont('Segoe UI',20,QFont.DemiBold)); gl.addWidget(lab)
         desc=QLabel('Launch a project, run an import check,\nand keep visual evidence with your task.'); desc.setWordWrap(True); desc.setObjectName('muted'); gl.addWidget(desc)
         self.button('▶  Run Godot project',lambda:self.game_command(False),gl)
+        self.button('Open example game',lambda:self.quick_command('open score arena'),gl)
         self.button('✓  Godot import check',lambda:self.game_command(True),gl)
         self.button('Open Blender',self.blender,gl)
         self.button('Capture this app',self.capture,gl)
@@ -264,7 +274,7 @@ class Studio(QMainWindow):
         self.right.addTab(artifacts,'Evidence')
 
     def persist(self):
-        tmp=SESSION.with_suffix('.tmp'); tmp.write_text(json.dumps(self.tasks,ensure_ascii=False,indent=2),encoding='utf-8'); tmp.replace(SESSION)
+        save_tasks(SESSION,self.tasks)
 
     def save_draft(self):
         if self.task:self.task['draft']=self.prompt.toPlainText()
@@ -272,7 +282,7 @@ class Studio(QMainWindow):
 
     def autosave_draft(self):
         try:self.persist()
-        except OSError as exc:self.status.setText('Draft could not be saved: '+str(exc))
+        except (OSError,ValueError) as exc:self.status.setText('Draft could not be saved: '+str(exc))
 
     def memory_dialog(self):
         from project_memory import read_memory, save_memory, TEMPLATE
@@ -295,7 +305,62 @@ class Studio(QMainWindow):
         dialog.exec()
 
     def filter_tasks(self,text):
-        for i in range(self.task_list.count()):self.task_list.item(i).setHidden(text.casefold() not in self.task_list.item(i).text().casefold())
+        lookup={task['id']:task for task in self.tasks}
+        for i in range(self.task_list.count()):
+            item=self.task_list.item(i);item.setHidden(not matches_task(lookup[item.data(Qt.UserRole)],text))
+
+    def focus_task_search(self):
+        self.task_search.setFocus();self.task_search.selectAll()
+
+    def change_task_view(self):
+        if not hasattr(self,'task_list'):return
+        self.refresh_tasks()
+
+    def find_in_chat(self):
+        text,ok=QInputDialog.getText(self,'Find in conversation','Search the visible conversation:')
+        if ok and text:
+            if not self.transcript.find(text):
+                cursor=self.transcript.textCursor();cursor.movePosition(QTextCursor.Start);self.transcript.setTextCursor(cursor)
+                if not self.transcript.find(text):self.status.setText('No matching text in this conversation')
+
+    def use_starter(self,name):
+        if self.busy:return
+        current=self.prompt.toPlainText().strip()
+        if current:
+            self.status.setText('Your existing draft was kept; send it or clear it before choosing a starter.');return
+        self.prompt.setPlainText(STARTERS[name]);self.prompt.setFocus()
+        self.status.setText('Starter ready · edit the prompt, then Send. Nothing has run yet.')
+
+    def copy_last_reply(self):
+        for message in reversed(self.task['messages']):
+            if message.get('role')=='assistant' and message.get('content'):
+                QApplication.clipboard().setText(message['content']);self.status.setText('Last reply copied');return
+        self.status.setText('No assistant reply to copy yet')
+
+    def make_chat_menu(self):
+        menu=QMenu(self)
+        for title,callback in [('Rename',self.rename_task),('Unpin' if self.task.get('pinned') else 'Pin to top',self.toggle_pin_task),('Branch conversation',self.fork_task),('Restore from archive' if self.task.get('archived') else 'Archive conversation',self.toggle_archive_task),('Copy last reply',self.copy_last_reply),('Find in conversation · Ctrl+F',self.find_in_chat),('Export task report',self.export_task)]:
+            action=menu.addAction(title,callback)
+            if self.busy and callback!=self.find_in_chat:action.setEnabled(False)
+        return menu
+
+    def chat_menu(self):
+        from PySide6.QtGui import QCursor
+        menu=self.make_chat_menu();menu.exec(QCursor.pos());menu.deleteLater()
+
+    def task_context_menu(self,position):
+        if self.busy:return
+        item=self.task_list.itemAt(position)
+        if not item:return
+        self.select_task_by_id(item.data(Qt.UserRole))
+        menu=self.make_chat_menu();menu.exec(self.task_list.viewport().mapToGlobal(position));menu.deleteLater()
+
+    def toggle_archive_task(self):
+        if self.busy or not self.task:return
+        self.save_draft();self.task['archived']=not self.task.get('archived',False)
+        archived=self.task['archived'];self.persist();self.refresh_tasks()
+        self.title.setText(self.task['title']+(' · Archived' if archived else ''))
+        self.status.setText('Conversation archived · find it under Archived chats; nothing was deleted.' if archived else 'Conversation restored to Active chats')
 
     def quick_command(self,text):
         if self.busy:return
@@ -316,14 +381,17 @@ class Studio(QMainWindow):
     def select_task_by_id(self, task_id):
         for row in range(self.task_list.count()):
             if self.task_list.item(row).data(Qt.UserRole) == task_id:
+                self.task_list.blockSignals(True)
                 self.task_list.setCurrentRow(row)
-                self.select_task(row)
+                self.task_list.blockSignals(False)
+                if not self.task or self.task['id']!=task_id:self.select_task(row)
                 return
 
     def fork_task(self):
         if self.busy:return
-        self.save_draft();task=copy.deepcopy(self.task);task['id']=uuid.uuid4().hex;task['title']='Branch · '+task['title'];task['changes']=[]
-        self.tasks.insert(0,task);self.refresh_tasks();self.select_task(0);self.persist()
+        self.save_draft();task=copy.deepcopy(self.task);task['id']=uuid.uuid4().hex;task['title']='Branch · '+task['title'];task['changes']=[];task['pinned']=False;task['archived']=False
+        self.task_search.clear();self.task_view.setCurrentIndex(0)
+        self.tasks.insert(0,task);self.refresh_tasks();self.select_task_by_id(task['id']);self.persist()
         self.status.setText('Conversation branched · project files are shared')
 
     def command_palette(self):
@@ -332,6 +400,9 @@ class Studio(QMainWindow):
         query=QLineEdit();query.setPlaceholderText('Find an action…');layout.addWidget(query);items=QListWidget();layout.addWidget(items)
         actions=[('Open project',self.choose_project),('Open Desktop',lambda:self.quick_command('open desktop')),('Inspect project',lambda:self.quick_command('inspect project')),('Run tests',lambda:self.quick_command('run tests')),('Launch game',lambda:self.quick_command('launch game')),('Capture screenshot',lambda:self.quick_command('take a screenshot')),('Map project',lambda:self.quick_command('map project')),('Rename task',self.rename_task),('Pin or unpin task',self.toggle_pin_task),('Branch conversation',self.fork_task),('Export task report',self.export_task),('Settings',self.settings),('SSH connections',self.connections_dialog),('API providers',self.providers_dialog),('Model choices and storage',self.models_dialog),('Open Cline',self.cline),('FAQ / How to',self.faq_dialog)]
         actions += [('Project memory · Ctrl+Shift+M',self.memory_dialog),('About & updates',self.updates_dialog),('Open app data folder',lambda:QDesktopServices.openUrl(QUrl.fromLocalFile(str(STATE)))),('Open project folder',lambda:QDesktopServices.openUrl(QUrl.fromLocalFile(self.task['project'])))]
+        actions += [('Archive or restore conversation',self.toggle_archive_task),('Search chats · Ctrl+Shift+F',self.focus_task_search),('Find in conversation · Ctrl+F',self.find_in_chat),('Copy last reply',self.copy_last_reply)]
+        actions += [('Starter: '+name,lambda n=name:self.use_starter(n)) for name in STARTERS]
+        actions += [('Open example game · Score Arena',lambda:self.quick_command('open score arena'))]
         for label,callback in actions:items.addItem(label)
         def filter_items(text):
             for i in range(items.count()):items.item(i).setHidden(text.casefold() not in items.item(i).text().casefold())
@@ -347,18 +418,23 @@ class Studio(QMainWindow):
         self.task_list.blockSignals(True); self.task_list.clear()
         ordered = sorted(enumerate(self.tasks), key=lambda pair: (not pair[1].get('pinned', False), pair[0]))
         for _, task in ordered:
-            item = QListWidgetItem(('📌  ' if task.get('pinned') else '') + task.get('title', 'Untitled task'))
+            view=self.task_view.currentIndex()
+            if view==0 and task.get('archived'):continue
+            if view==1 and not task.get('archived'):continue
+            item = QListWidgetItem(('▣  ' if task.get('archived') else '📌  ' if task.get('pinned') else '') + task.get('title', 'Untitled task'))
             item.setData(Qt.UserRole, task.get('id'))
             item.setToolTip(task.get('project', ''))
             self.task_list.addItem(item)
         self.task_list.blockSignals(False)
         if selected_id:
             self.select_task_by_id(selected_id)
+        self.filter_tasks(self.task_search.text())
 
     def new_task(self):
         if self.busy: return
-        task={'id':uuid.uuid4().hex,'title':'New task','project':self.task['project'] if self.task else self.config['project'],'messages':[],'changes':[],'pinned':False}
-        self.tasks.insert(0,task); self.refresh_tasks(); self.task_list.setCurrentRow(0); self.select_task(0); self.persist()
+        self.task_search.clear();self.task_view.setCurrentIndex(0)
+        task={'id':uuid.uuid4().hex,'title':'New task','project':self.task['project'] if self.task else self.config['project'],'messages':[],'changes':[],'pinned':False,'archived':False}
+        self.tasks.insert(0,task); self.refresh_tasks(); self.select_task_by_id(task['id']); self.persist()
 
     def select_task(self,row):
         if self.busy or row<0 or row>=self.task_list.count(): return
@@ -371,8 +447,7 @@ class Studio(QMainWindow):
         self.prompt.setPlainText(self.task.get('draft',''))
         self.task.setdefault('artifacts',[]);self.task.setdefault('activity',[]);self.refresh_artifacts()
         for line in self.task['activity'][-60:]:self.output.appendPlainText(line)
-        self.title.setText(self.task['title']); self.project_label.setText(Path(self.task['project']).name)
-        self.pin_task_button.setText('📌  Unpin current task' if self.task.get('pinned') else '📌  Pin current task')
+        self.title.setText(self.task['title']+(' · Archived' if self.task.get('archived') else '')); self.project_label.setText(Path(self.task['project']).name)
         self.project_label.setToolTip(self.task['project']); self.render(); self.refresh_changes()
         self.files.clear(); self.filter_label.setText('Double-click a file to edit · Refresh to list')
 
@@ -438,7 +513,11 @@ class Studio(QMainWindow):
         controls={'use amd':2,'switch to amd':2,'use local':1,'switch to local':1,'use auto':0,'automatic routing':0,'use api':4,'use api provider':4}
         reply=None
         if normalized in ('open desktop','open my desktop') or normalized=='open score arena' or normalized.startswith('open project '):
-            path=Path.home()/'Desktop' if normalized in ('open desktop','open my desktop') else HOME/'samples/score-arena' if normalized=='open score arena' else Path(text.strip()[13:].strip().strip('"'))
+            if normalized=='open score arena':
+                from sample_projects import ensure_score_arena
+                try:path=ensure_score_arena(SOURCE,STATE/'projects')
+                except (OSError,ValueError) as exc:self.error(exc);return True
+            else:path=Path.home()/'Desktop' if normalized in ('open desktop','open my desktop') else Path(text.strip()[13:].strip().strip('"'))
             if not path.is_dir():self.error('That project folder does not exist.');return True
             self.new_task();self.task['project']=str(path.resolve());self.project_label.setText(path.name);self.refresh_files();reply='Opened project: '+str(path.resolve())
         if normalized in controls:self.route.setCurrentIndex(controls[normalized]);reply='Model route set to '+self.route.currentText()+'.'
@@ -530,7 +609,7 @@ class Studio(QMainWindow):
 
     def set_busy(self,busy):
         self.busy=busy
-        for w in (self.new_button,self.project_button,self.task_list,self.route,self.mode):w.setEnabled(not busy)
+        for w in (self.new_button,self.project_button,self.task_list,self.task_view,self.route,self.mode):w.setEnabled(not busy)
         self.prompt.setEnabled(True);self.send_button.setEnabled(True);self.send_button.setText('✦  Steer' if busy else '↑  Send')
         self.stop.setEnabled(busy)
         if self.tray:self.tray.setToolTip('TalkToAi Code — '+('working in background' if busy else 'ready'))
@@ -834,6 +913,14 @@ Ask: `Use a reviewer to inspect the combat code and a test planner to identify m
 
 Press **Ctrl+K** for searchable actions: project tools, models, API providers, exports, task rename and conversation branching. **F1** opens this guide. Search tasks in the sidebar. A conversation branch shares the same project files; it does not create a Git worktree.
 
+## Keep your workspace tidy
+
+Search chats by title, project, draft or conversation text with **Ctrl+Shift+F**. Switch between **Active chats**, **Archived chats** and **All chats**. Right-click a chat or open **Chat ···** to rename, pin, branch, archive, restore or copy the last reply. Archiving never deletes a conversation. **Ctrl+F** searches the open conversation.
+
+**Task starters** provides editable prompts for coding, websites, games, debugging, release reviews and SSH inspection. Selecting one does not run a tool or model. Fill in its placeholders, check the project and mode, then Send. Existing drafts are never replaced by a starter.
+
+**More** holds project memory, API providers, ZeroThink linking, model choices, help and the app-data shortcut. Task history is saved atomically with a previous-save `studio.json.bak` recovery copy. Damaged history files are preserved and a valid backup is recovered on startup with a visible notice. This protects chat history, not project files, model weights or credentials; keep your normal backups too.
+
 ## If something is slow
 
 Use Auto or AMD, stop a task, or steer it into a smaller request. The AMD route has been faster in measured coding acceptance. Large local models are slow on this CPU; model choices shows disk sizes and tested alternatives.
@@ -916,7 +1003,7 @@ The compact model is intentionally kept as the weak-CPU fallback. TalkToAi Code 
             if not names:raise ValueError('No local models available.')
             name,ok=QInputDialog.getItem(self,'Installed local model','Choose a downloaded model:',names,editable=False)
             if ok:
-                self.config['local_model']=name;(HOME/'config.json').write_text(json.dumps(self.config,indent=2),encoding='utf-8');self.route.setCurrentIndex(1);self.health()
+                self.config['local_model']=name;self.write_config();self.route.setCurrentIndex(1);self.health()
         except Exception as exc:self.error(exc)
 
     def export_task(self):
