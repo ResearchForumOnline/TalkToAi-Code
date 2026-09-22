@@ -138,6 +138,10 @@ class Studio(QMainWindow):
         QShortcut(QKeySequence('Ctrl+O'), self, self.choose_project)
         QShortcut(QKeySequence('Ctrl+K'), self, self.command_palette)
         QShortcut(QKeySequence('F1'), self, self.faq_dialog)
+        QShortcut(QKeySequence('Ctrl+,'), self, self.settings)
+        QShortcut(QKeySequence('Ctrl+Shift+M'), self, self.memory_dialog)
+        self.draft_timer=QTimer(self);self.draft_timer.setSingleShot(True)
+        self.draft_timer.timeout.connect(self.autosave_draft)
         self.prompt.textChanged.connect(self.save_draft)
         QTimer.singleShot(500, self.health)
         self.paint_timer=QTimer(self);self.paint_timer.timeout.connect(self.paint_stream);self.paint_timer.start(120)
@@ -201,6 +205,7 @@ class Studio(QMainWindow):
         self.task_list = QListWidget(); self.task_list.currentRowChanged.connect(self.select_task); side.addWidget(self.task_list,1)
         self.button('⚙  Settings', self.settings, side)
         self.button('About & updates', self.updates_dialog, side)
+        self.button('Project memory', self.memory_dialog, side)
         self.button('⌁  Connections', self.connections_dialog, side)
         self.button('Link ZeroThink account', self.link_zerothink, side)
         self.button('❔  FAQ / How to', self.faq_dialog, side)
@@ -263,6 +268,31 @@ class Studio(QMainWindow):
 
     def save_draft(self):
         if self.task:self.task['draft']=self.prompt.toPlainText()
+        if hasattr(self,'draft_timer'):self.draft_timer.start(750)
+
+    def autosave_draft(self):
+        try:self.persist()
+        except OSError as exc:self.status.setText('Draft could not be saved: '+str(exc))
+
+    def memory_dialog(self):
+        from project_memory import read_memory, save_memory, TEMPLATE
+        project=self.task['project']
+        try:previous=read_memory(project)
+        except (OSError,ValueError) as exc:self.error(exc);return
+        dialog=QDialog(self);dialog.setWindowTitle('Project memory');dialog.resize(720,550)
+        layout=QVBoxLayout(dialog)
+        label=QLabel('Reusable notes for this project: decisions, test commands and next steps. Included in future requests to the selected model, including remote/API models. Do not store passwords or keys here.');label.setWordWrap(True);layout.addWidget(label)
+        editor=QPlainTextEdit();editor.setPlainText(previous or TEMPLATE);layout.addWidget(editor)
+        status=QLabel();layout.addWidget(status)
+        def count():status.setText(f'{len(editor.toPlainText()):,} / 12,000 characters · changes apply to future turns')
+        editor.textChanged.connect(count);count()
+        def save():
+            try:save_memory(project,editor.toPlainText(),previous)
+            except (OSError,ValueError) as exc:self.error(exc);return
+            self.status.setText('Project memory saved for future tasks');dialog.accept()
+        row=QHBoxLayout();layout.addLayout(row)
+        self.button('Save notes',save,row,True);self.button('Cancel',dialog.reject,row)
+        dialog.exec()
 
     def filter_tasks(self,text):
         for i in range(self.task_list.count()):self.task_list.item(i).setHidden(text.casefold() not in self.task_list.item(i).text().casefold())
@@ -301,6 +331,7 @@ class Studio(QMainWindow):
         dialog=QDialog(self);dialog.setWindowTitle('Actions');dialog.resize(600,480);layout=QVBoxLayout(dialog)
         query=QLineEdit();query.setPlaceholderText('Find an action…');layout.addWidget(query);items=QListWidget();layout.addWidget(items)
         actions=[('Open project',self.choose_project),('Open Desktop',lambda:self.quick_command('open desktop')),('Inspect project',lambda:self.quick_command('inspect project')),('Run tests',lambda:self.quick_command('run tests')),('Launch game',lambda:self.quick_command('launch game')),('Capture screenshot',lambda:self.quick_command('take a screenshot')),('Map project',lambda:self.quick_command('map project')),('Rename task',self.rename_task),('Pin or unpin task',self.toggle_pin_task),('Branch conversation',self.fork_task),('Export task report',self.export_task),('Settings',self.settings),('SSH connections',self.connections_dialog),('API providers',self.providers_dialog),('Model choices and storage',self.models_dialog),('Open Cline',self.cline),('FAQ / How to',self.faq_dialog)]
+        actions += [('Project memory · Ctrl+Shift+M',self.memory_dialog),('About & updates',self.updates_dialog),('Open app data folder',lambda:QDesktopServices.openUrl(QUrl.fromLocalFile(str(STATE)))),('Open project folder',lambda:QDesktopServices.openUrl(QUrl.fromLocalFile(self.task['project'])))]
         for label,callback in actions:items.addItem(label)
         def filter_items(text):
             for i in range(items.count()):items.item(i).setHidden(text.casefold() not in items.item(i).text().casefold())
