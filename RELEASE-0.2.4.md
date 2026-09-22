@@ -20,7 +20,9 @@ Download `TalkToAi-Code-0.2.4-Windows-Setup.exe` below, or open **About & update
 
 ## Validation and limits
 
-The full 78-test suite passed, covering agent/tool protocols, project checks, memory, SSH discovery, provider integration, update verification, computer-tool mocks, real Edge interaction/screenshot fixtures, session corruption/recovery, bundled-example copying and desktop UI regressions. The actual Qt layout was rendered and reviewed at 1280×800 and 1600×960 using a disposable demo profile. The distribution is installed and its packaged runtime/browser/example smoke check is run before publication.
+The full 78-test suite passed, covering agent/tool protocols, project checks, memory, SSH discovery, provider integration, update verification, computer-tool mocks, real Edge interaction/screenshot fixtures, session corruption/recovery, bundled-example copying and desktop UI regressions. The actual Qt layout was rendered and reviewed at 1280×800 and 1600×960 using a disposable demo profile.
+
+The final installer completed with exit code 0 on the build machine. Desktop and Start Menu shortcuts resolve to the installed executable; Windows registers version 0.2.4 and its uninstaller. The installed runtime passed its smoke check (exit 0): bundled example present, browser interaction successful, screenshot saved, and image attachment encoding working. This checks packaging and browser behavior, not model quality or full gameplay. Installer size: 66,078,972 bytes. SHA-256: `16e3c5ddd007d1afc18b47bf9ea567d67a0b9bf79fc28c5873006d74b7977899`.
 
 Windows preview; installer unsigned. Tests are not a security certification or proof of complete game playtesting. Chat recovery retains the previous successful save, not every historical version, and is not a substitute for project or off-device backups. Archived chats remain on your machine. Screenshots of the new layout use a clearly labelled UI demonstration, not a benchmark or live model result.
 
