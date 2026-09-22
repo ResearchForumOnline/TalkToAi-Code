@@ -8,8 +8,9 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import messagebox, ttk
 from win32com.client import Dispatch
+import pythoncom
 
-VERSION = '0.1.6'
+VERSION = '0.1.7'
 ASSET = 'TalkToAi-Code-0.1.3-Windows-Portable.zip'
 URL = 'https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v0.1.3-preview/' + ASSET
 
@@ -41,24 +42,32 @@ Read-Host 'Press Enter to close'
 def shortcut(path, target):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    shell = Dispatch('WScript.Shell')
-    link = shell.CreateShortcut(str(path))
-    link.TargetPath = str(target)
-    link.WorkingDirectory = str(Path(target).parent)
-    link.Description = 'TalkToAi Code native coding and game workspace'
-    link.Save()
+    pythoncom.CoInitialize()
+    try:
+        shell = Dispatch('WScript.Shell')
+        link = shell.CreateShortcut(str(path))
+        link.TargetPath = str(target)
+        link.WorkingDirectory = str(Path(target).parent)
+        link.Description = 'TalkToAi Code native coding and game workspace'
+        link.Save()
+    finally:
+        pythoncom.CoUninitialize()
 
 def powershell_shortcut(path, target, arguments='', working_directory=None, description='TalkToAi Code'):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     working_directory = working_directory or Path(target).parent
-    shell = Dispatch('WScript.Shell')
-    link = shell.CreateShortcut(str(path))
-    link.TargetPath = str(target)
-    link.Arguments = arguments
-    link.WorkingDirectory = str(working_directory)
-    link.Description = description
-    link.Save()
+    pythoncom.CoInitialize()
+    try:
+        shell = Dispatch('WScript.Shell')
+        link = shell.CreateShortcut(str(path))
+        link.TargetPath = str(target)
+        link.Arguments = arguments
+        link.WorkingDirectory = str(working_directory)
+        link.Description = description
+        link.Save()
+    finally:
+        pythoncom.CoUninitialize()
 
 def install():
     root = Path(os.environ.get('LOCALAPPDATA', Path.home())) / 'TalkToAiCode'
@@ -94,10 +103,20 @@ def install():
     subprocess.Popen([str(exe)], cwd=str(exe.parent))
     window.after(700, window.destroy)
 
+def install_with_error_report():
+    try:
+        install()
+    except Exception as exc:
+        log = Path(os.environ.get('LOCALAPPDATA', tempfile.gettempdir())) / 'TalkToAiCode-installer.log'
+        log.write_text(f'TalkToAi Code installer failed: {type(exc).__name__}: {exc}\n', encoding='utf-8')
+        status.set('Installation failed — see the installer log')
+        button.config(state='normal')
+        messagebox.showerror('TalkToAi Code installer', f'Installation failed:\n\n{exc}\n\nLog: {log}')
+
 window = tk.Tk(); window.title(f'TalkToAi Code {VERSION} Installer'); window.geometry('470x170'); window.resizable(False, False)
 tk.Label(window, text=f'TalkToAi Code {VERSION}', font=('Segoe UI', 18, 'bold')).pack(pady=(22, 4))
 status = tk.StringVar(value='Ready to install the native Windows app.')
 tk.Label(window, textvariable=status, wraplength=420).pack(pady=8)
-button = ttk.Button(window, text='Install', command=lambda: (button.config(state='disabled'), install()))
+button = ttk.Button(window, text='Install', command=lambda: (button.config(state='disabled'), install_with_error_report()))
 button.pack(pady=8)
 window.mainloop()
