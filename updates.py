@@ -3,11 +3,25 @@ import hashlib
 import json
 import re
 import urllib.request
+import ctypes
+import sys
 from pathlib import Path
 
 VERSION = '0.3.0'
 REPO = 'https://github.com/ResearchForumOnline/TalkToAi-Code'
 API = 'https://api.github.com/repos/ResearchForumOnline/TalkToAi-Code/releases/latest'
+
+def is_store_package():
+    """True only when Windows actually launched this process with package identity."""
+    if sys.platform != 'win32':
+        return False
+    try:
+        length = ctypes.c_uint(0)
+        result = ctypes.windll.kernel32.GetCurrentPackageFullName(
+            ctypes.byref(length), None)
+        return result == 0 or result == 122  # success or ERROR_INSUFFICIENT_BUFFER
+    except (AttributeError, OSError):
+        return False
 
 def version_tuple(value):
     match = re.fullmatch(r'v?(\d+)\.(\d+)\.(\d+)(?:-preview)?', value)

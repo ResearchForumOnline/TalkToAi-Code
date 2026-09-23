@@ -4,9 +4,17 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
-from updates import select_release, download_release, version_tuple, REPO
+from updates import select_release, download_release, version_tuple, is_store_package, REPO
 
 class UpdatesTests(unittest.TestCase):
+    def test_store_package_detection(self):
+        with patch('updates.sys.platform','linux'):
+            self.assertFalse(is_store_package())
+        with patch('updates.sys.platform','win32'), patch('updates.ctypes.windll', create=True) as dll:
+            dll.kernel32.GetCurrentPackageFullName.return_value=15700
+            self.assertFalse(is_store_package())
+            dll.kernel32.GetCurrentPackageFullName.return_value=122
+            self.assertTrue(is_store_package())
     def release(self):
         tag='v0.3.0-preview'; name='TalkToAi-Code-0.3.0-Windows-Setup.exe'
         return select_release(dict(tag_name=tag,assets=[dict(name=name,browser_download_url=f'{REPO}/releases/download/{tag}/{name}',digest='sha256:'+hashlib.sha256(b'test').hexdigest())]))

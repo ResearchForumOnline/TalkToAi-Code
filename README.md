@@ -2,6 +2,8 @@
 
 > **Latest release: 0.3.0 preview** — [Download the Windows installer](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v0.3.0-preview/TalkToAi-Code-0.3.0-Windows-Setup.exe) · [View release notes and checksums](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/tag/v0.3.0-preview)
 
+**Microsoft Store:** The separate MSIX edition was submitted for certification on 23 September 2026, with public publishing held for a signed-install check. It is **not available in the Store yet**. See [submission status](docs/MICROSOFT-STORE-STATUS.md). The GitHub installer above remains the public preview.
+
 ![TalkToAi Code connects a coding workspace to a game world](assets/talktoai-code-hero.png)
 
 ## Product tour

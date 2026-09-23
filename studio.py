@@ -27,10 +27,12 @@ from session_store import load_tasks, save_tasks, matches_task
 from task_starters import STARTERS
 from process_jobs import ProcessJobs
 from workspace_outputs import register_output
+from updates import is_store_package
 
 SOURCE = Path(__file__).resolve().parent
 HOME = Path(os.environ.get('TALKTOAI_CODE_HOME', str(Path(sys.executable).parent if getattr(sys, 'frozen', False) else SOURCE)))
-STATE = Path(os.environ.get('LOCALAPPDATA', str(HOME))) / 'TalkToAiCode'
+STORE_PACKAGE = is_store_package()
+STATE = Path(os.environ.get('LOCALAPPDATA', str(HOME))) / ('TalkToAiCodeStore' if STORE_PACKAGE else 'TalkToAiCode')
 STATE.mkdir(parents=True, exist_ok=True)
 SESSION = STATE / 'studio.json'
 CONNECTIONS = STATE / 'connections.json'
@@ -103,7 +105,7 @@ class Studio(QMainWindow):
         self.tray=None
         self.job_manager=None
         self.config = {
-            'project': str(HOME.parent),
+            'project': str(Path.home() / 'Documents' if STORE_PACKAGE and (Path.home() / 'Documents').is_dir() else (Path.home() if STORE_PACKAGE else HOME.parent)),
             'local_model': 'qwen3.5:4b',
             'local_large_model': 'smtek/Qwen3.8-27B',
             'server_model': 'openzero-qwen3-coder-30b-a3b-q3',
@@ -942,6 +944,8 @@ class Studio(QMainWindow):
         return Path(os.environ.get('APPDATA', str(STATE))) / 'Microsoft/Windows/Start Menu/Programs/Startup/TalkToAi Code.lnk'
 
     def set_start_with_windows(self, enabled):
+        if STORE_PACKAGE:
+            raise RuntimeError('Windows manages startup for Microsoft Store apps; use Windows Settings > Apps > Startup.')
         link=self.startup_link_path()
         if enabled:
             link.parent.mkdir(parents=True, exist_ok=True)
@@ -1069,6 +1073,9 @@ Use Auto or AMD, stop a task, or steer it into a smaller request. The AMD route 
         startup=QCheckBox('Start TalkToAi Code with Windows (minimized to the notification area)')
         startup.setChecked(bool(self.config.get('start_with_windows',False)))
         startup.setToolTip('This creates a per-user Startup shortcut. It does not run as administrator and can be disabled here or from the Startup folder.')
+        if STORE_PACKAGE:
+            startup.setChecked(False);startup.setEnabled(False)
+            startup.setToolTip('Windows manages startup for Microsoft Store apps.')
         form.addWidget(startup)
         form.addWidget(QLabel('Say “use my AMD server” in Act mode; no Connections step is needed for the configured profile.'))
         status=QLabel('Current active SSH: '+(self.config.get('active_ssh_alias') or 'none'));status.setObjectName('muted');form.addWidget(status);form.addStretch()
@@ -1076,7 +1083,8 @@ Use Auto or AMD, stop a task, or steer it into a smaller request. The AMD route 
         if dialog.exec()==QDialog.Accepted:
             self.config['approval_policy']=policy.currentData();self.config['auto_context']=auto.isChecked();self.config['show_tool_activity']=activity.isChecked()
             self.config['access_mode']=access.currentData();self.config['pc_pilot']=pilot.isChecked();self.config['remote_pilot']=remote_pilot.isChecked();self.config['remote_enabled']=remote_pilot.isChecked() or self.config.get('remote_enabled',False)
-            try:self.set_start_with_windows(startup.isChecked())
+            try:
+                if not STORE_PACKAGE:self.set_start_with_windows(startup.isChecked())
             except Exception as exc:self.error('Could not update Windows startup: '+str(exc))
             if remote_pilot.isChecked() and policy.currentData()!='plan':self.config['approval_policy']='auto_remote'
             if self.config['approval_policy']=='plan':self.mode.setCurrentText('Plan')
@@ -1181,13 +1189,13 @@ if __name__=='__main__':
     multiprocessing.freeze_support()
     if '--self-test' in sys.argv:
         from release_checks import smoke
-        sys.exit(0 if smoke(HOME/'packaged-release-check.json') else 1)
+        sys.exit(0 if smoke((STATE if STORE_PACKAGE else HOME)/'packaged-release-check.json') else 1)
     app=QApplication(sys.argv); app.setApplicationName('TalkToAi Code'); app.setStyleSheet(STYLE)
     instance=None
     if '--preview' not in sys.argv:
         # Keep this release independently launchable while an older tray build
         # is still running. This avoids force-closing a potentially active task.
-        instance_name='TalkToAiCode.Studio.v6.'+os.environ.get('USERNAME','user')
+        instance_name=('TalkToAiCode.Studio.Store.v1.' if STORE_PACKAGE else 'TalkToAiCode.Studio.v6.')+os.environ.get('USERNAME','user')
         client=QLocalSocket();client.connectToServer(instance_name)
         if client.waitForConnected(300):
             client.write(b'show');client.flush();client.waitForBytesWritten(300);sys.exit(0)
@@ -1203,7 +1211,7 @@ if __name__=='__main__':
         instance.newConnection.connect(activate)
     if '--preview' in sys.argv:
         def preview():
-            window.grab().save(str(HOME/'studio-preview.png'));window.allow_quit=True
+            window.grab().save(str((STATE if STORE_PACKAGE else HOME)/'studio-preview.png'));window.allow_quit=True
             if window.tray:window.tray.hide()
             app.quit()
         QTimer.singleShot(1800,preview)

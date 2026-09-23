@@ -4,5 +4,6 @@ config.json
 *.dpapi
 build*/
 dist*/
+store-staging*/
 .talktoai-code/
 packaged-release-check.json
