@@ -1,7 +1,7 @@
-# TalkToAi Code 0.3.0 preview candidate — Jobs and deliverables
+# TalkToAi Code 0.3.0 preview — Jobs and deliverables
 
-Local preview candidate; not yet published to GitHub Releases or the public
-website. Microsoft Store submission is not part of this build.
+Windows preview for GitHub Releases and the public website. This unsigned EXE
+is not a Microsoft Store submission package.
 
 ## New capabilities
 
@@ -67,7 +67,7 @@ previews were inspected at 1440x900 and 1100x700, with the provider dialog
 rendered in a smaller desktop layout. The packaged tree contained zero
 `config.json`, `providers.json`, `studio.json` or `*.dpapi` files.
 
-Windows x64 Inno Setup candidate:
+Windows x64 Inno Setup preview:
 
 - File: `TalkToAi-Code-0.3.0-Windows-Setup.exe`
 - Bytes: 66,138,598

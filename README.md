@@ -1,12 +1,12 @@
 # TalkToAi Code — Your projects. Your AI. Your workspace.
 
-> **Latest release: 0.2.5** — [Download the Windows installer](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v0.2.5-preview/TalkToAi-Code-0.2.5-Windows-Setup.exe) · [View release notes and checksums](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/tag/v0.2.5-preview)
+> **Latest release: 0.3.0 preview** — [Download the Windows installer](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v0.3.0-preview/TalkToAi-Code-0.3.0-Windows-Setup.exe) · [View release notes and checksums](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/tag/v0.3.0-preview)
 
 ![TalkToAi Code connects a coding workspace to a game world](assets/talktoai-code-hero.png)
 
 ## Product tour
 
-![TalkToAi Code 0.2.5 with saved agent steps and check evidence](assets/screens/studio-automation-025.png)
+![TalkToAi Code 0.3.0 with managed jobs and output evidence](assets/screens/studio-jobs-030.png)
 
 The latest workspace above is rendered from the actual app with a disposable demonstration conversation; it is not a model-performance result. Earlier Windows screenshots below show real user conversations.
 
@@ -32,7 +32,7 @@ An independent native desktop AI assistant from TalkToAI for coding, games and g
 
 ## Updates and saved settings
 
-### Local 0.3.0 preview candidate: jobs, deliverables and own-key OpenAI
+### New in 0.3.0 preview: jobs, deliverables and own-key OpenAI
 
 The current source adds a **Jobs** panel for turn-owned native processes,
 incremental output polling and cancellation, plus **batch project reads** with
@@ -62,8 +62,7 @@ provider retention. Implementation references:
 [function calling](https://developers.openai.com/api/docs/guides/function-calling),
 [model listing](https://developers.openai.com/api/reference/resources/models/methods/list).
 
-This candidate is not yet the public release linked above and has not been
-submitted to Microsoft Store. See [candidate notes](RELEASE-0.3.0.md) and the
+This unsigned preview has not been submitted to Microsoft Store. See [release notes](RELEASE-0.3.0.md) and the
 [DevSpace ideas/licence review](docs/DEVSPACE-IDEAS-REVIEW.md). No DevSpace
 product code was copied into this implementation.
 
