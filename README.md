@@ -62,7 +62,7 @@ provider retention. Implementation references:
 [function calling](https://developers.openai.com/api/docs/guides/function-calling),
 [model listing](https://developers.openai.com/api/reference/resources/models/methods/list).
 
-This unsigned preview has not been submitted to Microsoft Store. See [release notes](RELEASE-0.3.0.md) and the
+This unsigned preview has not been submitted to Microsoft Store. See the [current Store submission status](docs/MICROSOFT-STORE-STATUS.md), [release notes](RELEASE-0.3.0.md) and the
 [DevSpace ideas/licence review](docs/DEVSPACE-IDEAS-REVIEW.md). No DevSpace
 product code was copied into this implementation.
 
@@ -111,7 +111,7 @@ In Act mode, try: **“Connect to my website server using my existing SSH config
 
 ### Platform installers
 
-- **Windows:** use the [0.2.5 Windows installer](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v0.2.5-preview/TalkToAi-Code-0.2.5-Windows-Setup.exe). This is a standard per-user Windows installer: it installs the native application, creates normal Start Menu/Desktop shortcuts and a Windows uninstaller, and preserves local task data during upgrades.
+- **Windows:** use the [0.3.0 Windows installer](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v0.3.0-preview/TalkToAi-Code-0.3.0-Windows-Setup.exe). This is an unsigned preview, not a Microsoft Store package. The standard per-user installer creates Start Menu/Desktop shortcuts and an uninstaller, and preserves local task data during upgrades.
 - **Portable Windows:** use the [0.1.3 portable ZIP](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v0.1.3-preview/TalkToAi-Code-0.1.3-Windows-Portable.zip) when you do not want an installer.
 - **Linux:** install Python 3, extract the source ZIP, and run `bash install-linux.sh`. This creates a virtual environment, a `talktoai-code` launcher, and a desktop entry.
 - **macOS:** install Python 3, extract the source ZIP, and run `bash install-macos.sh`. This creates a local virtual environment and a `talktoai-code` launcher.
