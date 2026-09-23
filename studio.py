@@ -25,6 +25,8 @@ from providers import ProviderProfile, load_profiles as load_provider_profiles, 
 from desktop_inventory import inspect_desktop
 from session_store import load_tasks, save_tasks, matches_task
 from task_starters import STARTERS
+from process_jobs import ProcessJobs
+from workspace_outputs import register_output
 
 SOURCE = Path(__file__).resolve().parent
 HOME = Path(os.environ.get('TALKTOAI_CODE_HOME', str(Path(sys.executable).parent if getattr(sys, 'frozen', False) else SOURCE)))
@@ -46,6 +48,9 @@ QPushButton:disabled { color:#666; }
 QPushButton#accent { background:#ededed; color:#151515; font-weight:600; }
 QComboBox { background:#242424; border:1px solid #383838; border-radius:6px; padding:6px 10px; }
 QLineEdit { background:#202020; border:1px solid #383838; border-radius:6px; padding:7px; selection-background-color:#435266; }
+QCheckBox { spacing:8px; }
+QCheckBox::indicator { width:15px; height:15px; border:1px solid #777; border-radius:3px; background:#252525; }
+QCheckBox::indicator:checked { background:#8ff0c4; border:2px solid #b8ffe0; }
 QMenu { background:#202020; border:1px solid #414141; padding:5px; }
 QMenu::item { padding:8px 16px; border-radius:4px; }
 QMenu::item:selected { background:#353535; }
@@ -96,6 +101,7 @@ class Studio(QMainWindow):
         self.pending_prompt=''
         self.allow_quit=False
         self.tray=None
+        self.job_manager=None
         self.config = {
             'project': str(HOME.parent),
             'local_model': 'qwen3.5:4b',
@@ -123,8 +129,12 @@ class Studio(QMainWindow):
             pass
         self.provider_profiles = load_provider_profiles(PROVIDERS)
         self.tasks, recovery_notice = load_tasks(SESSION)
+        for task in self.tasks:
+            for job in task.get('jobs',[]):
+                if job.get('state')=='running':job['state']='interrupted';job['note']='Previous app session; no current process attached.'
         self.task = None
         self.build()
+        if self.config.get('preferred_route')=='provider' and self.active_provider():self.route.setCurrentIndex(4)
         if self.config.get('approval_policy')=='plan':self.mode.setCurrentText('Plan')
         self.refresh_tasks()
         if self.task_list.count():
@@ -271,6 +281,10 @@ class Studio(QMainWindow):
         artifacts=QWidget();al=QVBoxLayout(artifacts)
         al.addWidget(QLabel('Screenshots and generated evidence'))
         self.artifacts=QListWidget();self.artifacts.itemDoubleClicked.connect(self.open_artifact);al.addWidget(self.artifacts)
+        self.artifacts.currentItemChanged.connect(self.describe_artifact)
+        self.artifact_details=QLabel('Register reports and build outputs here, or ask the agent to add its deliverables.');self.artifact_details.setWordWrap(True);self.artifact_details.setTextFormat(Qt.PlainText);al.addWidget(self.artifact_details)
+        self.button('Add project output…',self.add_output,al)
+        self.button('Reveal selected file',lambda:self.reveal_artifact(self.artifacts.currentItem()),al)
         self.right.addTab(artifacts,'Evidence')
         progress=QWidget();progress_layout=QVBoxLayout(progress)
         self.context_summary=QLabel('Project overview appears when an agent task starts.');self.context_summary.setWordWrap(True);progress_layout.addWidget(self.context_summary)
@@ -279,6 +293,13 @@ class Studio(QMainWindow):
         self.plan_list=QListWidget();self.plan_list.setWordWrap(True);self.plan_list.setTextElideMode(Qt.ElideNone);self.plan_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff);progress_layout.addWidget(self.plan_list,1)
         self.button('Continue unfinished work',self.continue_task,progress_layout)
         self.right.addTab(progress,'Steps')
+        jobs_page=QWidget();jl=QVBoxLayout(jobs_page)
+        hint=QLabel('Live commands for this task. Ask the agent to run a long build or test and monitor it. Jobs stop when the turn ends; they are not persistent hosting.');hint.setWordWrap(True);hint.setObjectName('muted');jl.addWidget(hint)
+        self.jobs_list=QListWidget();self.jobs_list.setMaximumHeight(180);self.jobs_list.currentItemChanged.connect(self.show_job);jl.addWidget(self.jobs_list)
+        self.job_summary=QLabel('No managed commands yet.');self.job_summary.setWordWrap(True);self.job_summary.setTextFormat(Qt.PlainText);jl.addWidget(self.job_summary)
+        self.job_output=QPlainTextEdit();self.job_output.setReadOnly(True);self.job_output.setFont(QFont('Consolas',10));jl.addWidget(self.job_output,1)
+        self.cancel_job_button=self.button('Stop selected job',self.cancel_selected_job,jl);self.cancel_job_button.setEnabled(False)
+        self.jobs_tab=self.right.addTab(jobs_page,'Jobs')
 
     def persist(self):
         save_tasks(SESSION,self.tasks)
@@ -432,7 +453,7 @@ class Studio(QMainWindow):
         actions += [('Archive or restore conversation',self.toggle_archive_task),('Search chats · Ctrl+Shift+F',self.focus_task_search),('Find in conversation · Ctrl+F',self.find_in_chat),('Copy last reply',self.copy_last_reply)]
         actions += [('Starter: '+name,lambda n=name:self.use_starter(n)) for name in STARTERS]
         actions += [('Open example game · Score Arena',lambda:self.quick_command('open score arena'))]
-        actions += [('Continue unfinished work',self.continue_task)]
+        actions += [('Continue unfinished work',self.continue_task),('Managed process jobs',lambda:self.right.setCurrentIndex(self.jobs_tab)),('Add project output to Evidence',self.add_output)]
         for label,callback in actions:items.addItem(label)
         def filter_items(text):
             for i in range(items.count()):items.item(i).setHidden(text.casefold() not in items.item(i).text().casefold())
@@ -478,7 +499,7 @@ class Studio(QMainWindow):
         self.task.setdefault('artifacts',[]);self.task.setdefault('activity',[]);self.refresh_artifacts()
         for line in self.task['activity'][-60:]:self.output.appendPlainText(line)
         self.title.setText(self.task['title']+(' · Archived' if self.task.get('archived') else '')); self.project_label.setText(Path(self.task['project']).name)
-        self.project_label.setToolTip(self.task['project']); self.render(); self.refresh_changes();self.refresh_plan()
+        self.project_label.setToolTip(self.task['project']); self.render(); self.refresh_changes();self.refresh_plan();self.refresh_jobs()
         self.files.clear(); self.filter_label.setText('Double-click a file to edit · Refresh to list')
 
     def render(self):
@@ -503,9 +524,71 @@ class Studio(QMainWindow):
     def refresh_artifacts(self):
         self.artifacts.clear()
         for artifact in self.task.get('artifacts',[]):
-            item=QListWidgetItem(Path(artifact['artifact']).name);item.setData(Qt.UserRole,artifact['artifact']);self.artifacts.addItem(item)
+            item=QListWidgetItem(artifact.get('title') or Path(artifact['artifact']).name);item.setData(Qt.UserRole,artifact['artifact']);item.setData(Qt.UserRole+1,artifact);item.setToolTip(artifact['artifact']);self.artifacts.addItem(item)
+
+    def describe_artifact(self,item=None,previous=None):
+        if not item:
+            self.artifact_details.setText('Select an output to see its location and registration details.');return
+        record=item.data(Qt.UserRole+1) or {};path=Path(item.data(Qt.UserRole))
+        details=str(path)
+        if 'bytes' in record:details+=f"\n{record['bytes']:,} bytes at registration"
+        if record.get('sha256'):details+='\nSHA-256: '+record['sha256']
+        details+='\n'+('File exists; contents may have changed since registration.' if path.is_file() else 'File is missing or has moved.')
+        self.artifact_details.setText(details)
+
+    def reveal_artifact(self,item):
+        if not item:return
+        parent=Path(item.data(Qt.UserRole)).parent
+        if parent.is_dir():QDesktopServices.openUrl(QUrl.fromLocalFile(str(parent)))
+
+    def add_output(self):
+        if self.busy:return
+        path,_=QFileDialog.getOpenFileName(self,'Add existing project output',self.task['project'])
+        if not path:return
+        try:
+            tools=ProjectTools(self.task['project'],True)
+            record=json.loads(register_output(tools,path))
+            self.handle_event('artifact',record)
+        except Exception as exc:self.error(exc)
+
+    def refresh_jobs(self):
+        selected=self.jobs_list.currentItem()
+        key=selected.data(Qt.UserRole) if selected else None
+        self.jobs_list.blockSignals(True);self.jobs_list.clear()
+        for job in self.task.get('jobs',[]):
+            command=job.get('command',[])
+            label=Path(command[0]).name if command else 'Command'
+            item=QListWidgetItem(job.get('state','unknown')+' · '+label+' · '+job['id'][:6]);item.setData(Qt.UserRole,job['id']);self.jobs_list.addItem(item)
+            if job['id']==key:self.jobs_list.setCurrentItem(item)
+        if self.jobs_list.currentRow()<0 and self.jobs_list.count():self.jobs_list.setCurrentRow(self.jobs_list.count()-1)
+        self.jobs_list.blockSignals(False);self.show_job(self.jobs_list.currentItem())
+
+    def show_job(self,item=None,previous=None):
+        if not item:
+            self.job_summary.setText('No managed commands yet.');self.job_output.clear();self.cancel_job_button.setEnabled(False);return
+        job=next((j for j in self.task.get('jobs',[]) if j['id']==item.data(Qt.UserRole)),None)
+        if not job:return
+        command=' '.join(job.get('command',[]))
+        self.job_summary.setText(f"{job['state']} · exit {job.get('exit_code')} · {job.get('seconds',0)}s\n{command[:800]}\n{job.get('cwd','')}")
+        scroll=self.job_output.verticalScrollBar();follow=scroll.value()>=scroll.maximum()-20;position=scroll.value()
+        self.job_output.setPlainText(('Earlier output omitted; agent can poll retained output.\n' if job.get('truncated') else '')+job.get('output',''))
+        scroll.setValue(scroll.maximum() if follow else position)
+        self.cancel_job_button.setEnabled(bool(self.job_manager and job['state']=='running' and job['id'] in self.job_manager.jobs))
+
+    def cancel_selected_job(self):
+        item=self.jobs_list.currentItem();manager=self.job_manager
+        if not item or not manager:return
+        key=item.data(Qt.UserRole)
+        self.cancel_job_button.setEnabled(False)
+        def cancel():
+            try:manager.cancel(key)
+            except Exception as exc:self.bus.event.emit('result','Job cancellation failed: '+str(exc))
+        threading.Thread(target=cancel,daemon=True).start()
 
     def open_artifact(self,item):
+        record=item.data(Qt.UserRole+1) or {}
+        if record.get('type')=='file':
+            self.reveal_artifact(item);return
         path=Path(item.data(Qt.UserRole))
         if path.is_file():QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
 
@@ -603,7 +686,7 @@ class Studio(QMainWindow):
         self.partial=''; self.render(); self.persist(); self.cancel=threading.Event(); self.set_busy(True)
         preference=('auto','local','server','local_large','provider')[self.route.currentIndex()]
         self.started_at=time.monotonic();self.route_description='Selecting runtime';self.status.setText('Checking installed models…')
-        project=self.task['project']; history=list(self.task['messages']); act=self.mode.currentText()=='Act'
+        project=self.task['project']; history=list(self.task['messages']); act=self.mode.currentText()=='Act';task_id=self.task['id']
         active_remote=self.active_remote()
         requested_ssh=act and bool(re.search(r'\b(ssh|log ?in|connect)\b',text,re.I)) and bool(re.search(r'\b(server|host|ssh)\b|\.[a-z]{2,}',text,re.I))
         set_active_remote(active_remote if self.config.get('remote_enabled') and self.config.get('remote_pilot',True) else None)
@@ -622,7 +705,7 @@ class Studio(QMainWindow):
                     profile=self.active_provider()
                     if not profile:raise ValueError('No API provider is configured. Open API providers and add an OpenAI-compatible endpoint.')
                     set_active_provider(profile)
-                    selected={'route':'provider','url':profile.base_url,'model':profile.model,'reason':'selected user provider; free-tier status is controlled by the provider'}
+                    selected={'route':'provider','url':profile.base_url,'model':profile.model,'reason':'explicit API selection; provider billing and limits apply'}
                 else:
                     set_active_provider(None)
                     if preference in ('local','local_large'):
@@ -631,7 +714,9 @@ class Studio(QMainWindow):
                     selected=choose_route(self.config,preference,benchmarks)
                 if self.cancel.is_set():return
                 self.bus.event.emit('route',selected)
-                run_agent(selected['url'],selected['model'],history,project,act,self.cancel,self.bus.event.emit)
+                def job_event(kind,data):self.bus.event.emit(kind,dict(data,task_id=task_id))
+                self.job_manager=ProcessJobs(project,self.cancel,job_event)
+                run_agent(selected['url'],selected['model'],history,project,act,self.cancel,self.bus.event.emit,jobs=self.job_manager)
             except Exception as exc:self.bus.event.emit('error',str(exc))
             finally:
                 set_active_remote(None)
@@ -652,6 +737,17 @@ class Studio(QMainWindow):
 
     def handle_event(self,kind,data):
         if kind=='delta':self.partial+=data;self.stream_dirty=True
+        elif kind=='job':
+            target=next((task for task in self.tasks if task['id']==data.get('task_id',self.task['id'])),None)
+            if target is None:return
+            jobs=target.setdefault('jobs',[])
+            old=next((j for j in jobs if j['id']==data['id']),None)
+            state_changed=old is None or old.get('state')!=data.get('state')
+            if old is not None:old.update(data)
+            else:jobs.append(dict(data))
+            target['jobs']=jobs[-30:]
+            if target is self.task:self.refresh_jobs()
+            if state_changed:self.persist()
         elif kind=='project_context':
             self.task['project_context']=data;self.refresh_plan();self.persist()
         elif kind=='plan':
@@ -667,12 +763,24 @@ class Studio(QMainWindow):
             if self.config.get('show_tool_activity',True):self.output.appendPlainText(str(data)+'\n')
             self.task.setdefault('activity',[]).append(str(data)[-6000:]);self.persist()
         elif kind=='artifact':
-            if isinstance(data,dict) and data.get('artifact'):self.task.setdefault('artifacts',[]).append(data);self.refresh_artifacts();self.persist()
+            if isinstance(data,dict) and data.get('artifact'):
+                artifacts=self.task.setdefault('artifacts',[])
+                existing=next((a for a in artifacts if a['artifact']==data['artifact']),None)
+                if existing is not None:existing.update(data)
+                else:artifacts.append(data)
+                self.refresh_artifacts();self.persist()
         elif kind=='route':
             label='AMD' if data['route']=='server' else 'API' if data['route']=='provider' else 'PC'
             self.route_description=label+' · '+data['model'];self.status.setText(self.route_description+' · '+data['reason'])
         elif kind=='metrics':
-            self.task['last_metrics']=data;self.performance_label.setText(f"{data['tokens_per_second']} tokens/s · {data['seconds']}s · step {data['step']}")
+            self.task['last_metrics']=data
+            usage=data.get('api_usage')
+            if usage:
+                totals=self.task.setdefault('api_usage',{'prompt_tokens':0,'completion_tokens':0,'total_tokens':0})
+                for key in totals:
+                    if isinstance(usage.get(key),int):totals[key]+=usage[key]
+                self.performance_label.setText(f"API: {usage.get('total_tokens','unknown')} tokens this response · {totals['total_tokens']} reported in chat · not a billing total")
+            else:self.performance_label.setText(f"{data['tokens_per_second']} tokens/s · {data['seconds']}s · step {data['step']}")
         elif kind=='change':self.task['changes'].append(data);self.persist();self.refresh_changes()
         elif kind=='status':self.status.setText(data)
         elif kind=='health':self.health_label.setText(data)
@@ -683,7 +791,9 @@ class Studio(QMainWindow):
             if self.partial:self.task['messages'].append({'role':'assistant','content':self.partial+'\n\n[Interrupted]'});self.partial=''
             self.set_busy(False);self.task['draft']=self.prompt.toPlainText();self.persist();self.render()
             metrics=self.task.get('last_metrics',{})
-            self.performance_label.setText(f"{self.route_description} · {int(time.monotonic()-self.started_at)}s total · last step {metrics.get('tokens_per_second','—')} tokens/s")
+            if metrics.get('api_usage'):
+                self.performance_label.setText(f"{self.route_description} · {self.task.get('api_usage',{}).get('total_tokens',0)} reported API tokens in chat · not a billing total")
+            else:self.performance_label.setText(f"{self.route_description} · {int(time.monotonic()-self.started_at)}s total · last step {metrics.get('tokens_per_second','—')} tokens/s")
             if self.pending_prompt:
                 queued=self.pending_prompt;self.pending_prompt=''
                 self._send_queued(queued)
@@ -747,62 +857,8 @@ class Studio(QMainWindow):
 
     def providers_dialog(self):
         if self.busy:return
-        dialog=QDialog(self);dialog.setWindowTitle('Optional API providers');dialog.resize(800,540)
-        layout=QVBoxLayout(dialog)
-        intro=QLabel('Local Ollama remains the default and costs nothing. Add an OpenAI-compatible endpoint only if you have deliberately chosen its free/no-cost terms. TalkToAi Code stores the environment-variable name, never the API key.')
-        intro.setWordWrap(True);intro.setObjectName('muted');layout.addWidget(intro)
-        row=QHBoxLayout();listing=QListWidget();form=QVBoxLayout();row.addWidget(listing,1);row.addLayout(form,2);layout.addLayout(row,1)
-        label_edit=QLineEdit();label_edit.setPlaceholderText('Provider name, e.g. Free API trial')
-        url_edit=QLineEdit();url_edit.setPlaceholderText('https://provider.example/v1')
-        model_edit=QLineEdit();model_edit.setPlaceholderText('Provider model name')
-        env_edit=QLineEdit();env_edit.setPlaceholderText('Optional environment variable, e.g. DEEPSEEK_API_KEY')
-        for title,edit in [('Name',label_edit),('Base URL',url_edit),('Model',model_edit),('API key environment variable (optional)',env_edit)]:
-            form.addWidget(QLabel(title));form.addWidget(edit)
-        form.addStretch();status=QLabel('No provider selected');status.setWordWrap(True);status.setObjectName('muted');form.addWidget(status)
-        def reload_list():
-            listing.clear()
-            for p in self.provider_profiles:
-                item=QListWidgetItem(p.label+'  ·  '+p.model);item.setData(Qt.UserRole,p.label);listing.addItem(item)
-        def load_selected():
-            item=listing.currentItem()
-            if not item:return
-            p=next((x for x in self.provider_profiles if x.label==item.data(Qt.UserRole)),None)
-            if p:label_edit.setText(p.label);url_edit.setText(p.base_url);model_edit.setText(p.model);env_edit.setText(p.api_key_env)
-        def save_current():
-            try:
-                profile=ProviderProfile(label_edit.text(),url_edit.text(),model_edit.text(),env_edit.text())
-                old=listing.currentItem().data(Qt.UserRole) if listing.currentItem() else None
-                previous=next((p for p in self.provider_profiles if p.label==old),None)
-                if previous and previous.kind=='zerothink':
-                    profile=ProviderProfile(label_edit.text(),url_edit.text(),model_edit.text(),kind='zerothink',engine=previous.engine)
-                self.provider_profiles=[p for p in self.provider_profiles if p.label not in {old,profile.label}]
-                self.provider_profiles.append(profile);save_provider_profiles(PROVIDERS,self.provider_profiles)
-                self.config['active_provider']=profile.label;self.write_config();reload_list();listing.setCurrentRow(len(self.provider_profiles)-1)
-                status.setText('Saved. Select API · optional provider in the composer to use it.')
-            except Exception as exc:status.setText(str(exc))
-        def remove_current():
-            item=listing.currentItem()
-            if not item:return
-            label=item.data(Qt.UserRole);self.provider_profiles=[p for p in self.provider_profiles if p.label!=label];save_provider_profiles(PROVIDERS,self.provider_profiles)
-            if self.config.get('active_provider')==label:self.config['active_provider']='';self.write_config()
-            reload_list();status.setText('Provider removed. No API key was touched.')
-        def test_current():
-            try:
-                selected=next((p for p in self.provider_profiles if listing.currentItem() and p.label==listing.currentItem().data(Qt.UserRole)),None)
-                if selected and selected.kind=='zerothink':
-                    from zerothink_link import request,load_token
-                    data=request('/api_cli.php',{'action':'me'},load_token())
-                    status.setText('Account connected. Vault providers configured: '+', '.join(k for k,v in data.get('user',{}).get('provider_keys',{}).items() if v));return
-                profile=ProviderProfile(label_edit.text(),url_edit.text(),model_edit.text(),env_edit.text())
-                url=profile.base_url.rstrip('/')+'/models';headers={}
-                if profile.api_key_env and os.environ.get(profile.api_key_env):headers['Authorization']='Bearer '+os.environ[profile.api_key_env]
-                request=urllib.request.Request(url,headers=headers);status.setText('Testing endpoint…');dialog.repaint()
-                with urllib.request.urlopen(request,timeout=8) as response:status.setText('Endpoint responded HTTP '+str(response.status)+'.')
-            except Exception as exc:status.setText('Endpoint test failed: '+str(exc))
-        listing.currentRowChanged.connect(lambda _:load_selected());reload_list()
-        if listing.count():listing.setCurrentRow(0)
-        actions=QHBoxLayout();self.button('Add / save',save_current,actions,True);self.button('Test endpoint',test_current,actions);self.button('Remove',remove_current,actions);self.button('Close',dialog.accept,actions);layout.addLayout(actions)
-        dialog.exec()
+        from provider_dialog import ProviderDialog
+        ProviderDialog(self,PROVIDERS).exec()
 
     def link_zerothink(self):
         if self.busy:return
@@ -928,7 +984,11 @@ Remote Pilot is ready for the configured **AMD OpenZero server**. Select **Act**
 
 ## Models and API providers
 
-**Auto** uses the measured coding route. **Local** uses the PC Ollama model. **AMD** uses the SSH-tunnelled server Ollama model. **API** is optional: add an OpenAI-compatible endpoint from **API providers** and store only the environment-variable name for its key. TalkToAi Code does not know whether an external provider is free, so check its terms yourself.
+**Auto** uses the measured local/self-hosted coding route and never falls back to an API. **Local** uses the PC Ollama model. **AMD** uses your SSH-tunnelled server Ollama model. **API** is optional: open **More → API providers**, choose **OpenAI API**, paste your own key or use `OPENAI_API_KEY`, then fetch models and select one supporting Chat Completions and function tools. Save the profile, then click **Use selected API**. You can explicitly make API your startup default; fresh installations stay local-first.
+
+OpenAI API billing is separate from this app. No subscription, API credit or free tier is included. A model-list response verifies metadata access, not inference/tool capability. The app uses `max_completion_tokens` for direct OpenAI requests and leaves sampling defaults alone. Each response has a configurable token ceiling, but a task can make multiple requests: this is not a currency cap. Reported token usage may be incomplete after cancellation and is not an invoice.
+
+Keys can remain in memory for this session, come from an environment variable, or be remembered using Windows user encryption in a separate file. Keys are never put in conversation/profile JSON. **Forget saved key** removes the app-held key without changing external environment variables. Project context and tool results are sent to the provider you explicitly select; review what you share. Other compatible endpoints and ZeroThink remain optional.
 
 ## Games and evidence
 
@@ -947,6 +1007,14 @@ This is an original open-source-based integration, not Codex's proprietary skill
 ## Subagents for coding and games
 
 Ask: `Use a reviewer to inspect the combat code and a test planner to identify missing tests, then fix the confirmed issues.` The main agent can delegate focused local-project questions to reviewer, investigator or test_planner workers. Each gets a separate conversation context and can inspect project files. Findings return to the main conversation's tool activity; the main agent handles changes and tests. Workers run sequentially on the selected model, with at most two workers per turn and five model steps each. Stop cancels the active worker too. Workers cannot edit, run commands, operate the desktop, access SSH, or create more workers. They use additional model inference; Local/AMD uses your own runtime, while an optional API route follows that provider's pricing.
+
+## Long commands and useful outputs
+
+Ask the agent to run a long build or test as a **managed job**. **Jobs** shows status, command output and exit code. The agent can poll incremental output without launching the command again, or cancel an owned job. **Stop selected job** cancels only that job; the main **Stop** cancels the task. Commands have your signed-in account's permissions, not a sandbox. There is no interactive stdin prompt; use noninteractive commands. At most three jobs run concurrently, with a 30-minute maximum deadline and bounded output. All owned jobs are stopped at the end of the turn or on exit; this is not permanent server hosting.
+
+Ask it to **register the build outputs in Evidence**. Reports, archives and installers get a label, local path, byte size and SHA-256 at registration. Double-clicking a registered file reveals its folder rather than executing it. Registration does not upload, test or certify the file. The hash is a historical observation; rerun registration after changing the file. Use **Add project output** to select one yourself.
+
+The agent can also read up to eight project text files in one tool call. Large results are paged with offsets and hashes, reducing repeated model requests without hiding truncation. These are independent file observations, not an atomic project snapshot.
 
 ## Find commands quickly
 

@@ -11,7 +11,8 @@ class UpdatesTests(unittest.TestCase):
         tag='v0.3.0-preview'; name='TalkToAi-Code-0.3.0-Windows-Setup.exe'
         return select_release(dict(tag_name=tag,assets=[dict(name=name,browser_download_url=f'{REPO}/releases/download/{tag}/{name}',digest='sha256:'+hashlib.sha256(b'test').hexdigest())]))
     def test_versions_and_assets(self):
-        self.assertTrue(self.release()['newer'])
+        with patch('updates.VERSION','0.2.5'):self.assertTrue(self.release()['newer'])
+        with patch('updates.VERSION','0.3.0'):self.assertFalse(self.release()['newer'])
         self.assertGreater(version_tuple('0.10.0'),version_tuple('0.9.0'))
         with self.assertRaises(ValueError):select_release(dict(tag_name='v0.3.0-preview',assets=[]))
     def test_verified_download(self):

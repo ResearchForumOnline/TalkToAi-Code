@@ -32,6 +32,41 @@ An independent native desktop AI assistant from TalkToAI for coding, games and g
 
 ## Updates and saved settings
 
+### Local 0.3.0 preview candidate: jobs, deliverables and own-key OpenAI
+
+The current source adds a **Jobs** panel for turn-owned native processes,
+incremental output polling and cancellation, plus **batch project reads** with
+SHA-256/continuation offsets and **registered deliverables** in Evidence.
+Build/test output is distinct from claims of test coverage. Jobs stop at turn
+end; this is not a persistent hosting daemon.
+
+**More → API providers → OpenAI API** configures direct OpenAI access using
+**each user's own key and account**. No developer/shared API key is provided.
+Local/open-weight inference remains the default, and Auto never falls back to a
+paid provider. Users who prefer API-only use can explicitly select their saved
+profile and make it their startup default. Other compatible endpoints remain
+supported, including a local-server preset.
+
+Paste a key for this session, reference an environment variable, or opt into
+Windows user-encrypted storage. Fetch models performs metadata discovery, not
+generation or a tool-capability test. Choose a model supporting Chat Completions
+and function tools. Set a per-response output-token ceiling; repeated calls can
+still incur charges. Reported token usage is not a billing total. Profile JSON
+contains settings only, not keys. The app's Forget saved key action does not
+modify external environment variables.
+
+The OpenAI adapter uses `max_completion_tokens`, leaves sampling defaults alone,
+requests usage metadata, and sets `store: false`. This does not promise zero
+provider retention. Implementation references:
+[Chat Completions](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create),
+[function calling](https://developers.openai.com/api/docs/guides/function-calling),
+[model listing](https://developers.openai.com/api/reference/resources/models/methods/list).
+
+This candidate is not yet the public release linked above and has not been
+submitted to Microsoft Store. See [candidate notes](RELEASE-0.3.0.md) and the
+[DevSpace ideas/licence review](docs/DEVSPACE-IDEAS-REVIEW.md). No DevSpace
+product code was copied into this implementation.
+
 ### More automatic tool use in 0.2.5
 
 Describe the outcome, not the name of a tool. The agent receives a bounded project overview and can call `enable_tools` to load additional code-navigation, browser, game, desktop or SSH tools as needed. This removes keyword-only availability for authorized capabilities. Loading a tool set does not execute it, grant a permission, configure a server, or bypass Plan/Act settings.

@@ -99,5 +99,58 @@ class WorkspaceUITests(unittest.TestCase):
             w.continue_task();execute.assert_not_called()
         self.assertEqual(w.prompt.toPlainText(),'Keep this draft')
 
+    def test_job_events_update_one_row_and_persist_terminal_status(self):
+        w=self.window
+        record={'id':'example','state':'running','command':['python','-m','unittest'],'output':'Starting','seconds':1,'exit_code':None}
+        w.handle_event('job',record);w.handle_event('job',dict(record,output='Progress'))
+        self.assertEqual(w.jobs_list.count(),1);self.assertEqual(w.job_output.toPlainText(),'Progress')
+        w.handle_event('job',dict(record,state='failed',exit_code=2,output='Build failed'))
+        self.assertIn('failed',w.job_summary.text());self.assertFalse(w.cancel_job_button.isEnabled())
+        self.assertEqual(load_tasks(studio.SESSION)[0][0]['jobs'][0]['exit_code'],2)
+
+    def test_registered_output_deduplicates_and_reveals_without_execution(self):
+        w=self.window;path=self.root/'build.exe';path.write_bytes(b'not executable')
+        record={'artifact':str(path),'type':'file','title':'Build','bytes':14,'sha256':'a'*64}
+        w.handle_event('artifact',record);w.handle_event('artifact',dict(record,title='Updated build'))
+        self.assertEqual(w.artifacts.count(),1)
+        item=w.artifacts.item(0);w.artifacts.setCurrentItem(item)
+        self.assertIn('SHA-256',w.artifact_details.text())
+        with patch.object(studio.QDesktopServices,'openUrl') as opened:
+            w.open_artifact(item)
+            self.assertEqual(Path(opened.call_args.args[0].toLocalFile()).resolve(),self.root.resolve())
+
+    def test_job_records_remain_scoped_to_their_chat(self):
+        w=self.window;old=w.task['id']
+        w.handle_event('job',{'id':'old-job','state':'completed','command':['python'],'exit_code':0})
+        w.new_task();self.assertEqual(w.jobs_list.count(),0)
+        w.select_task_by_id(old);self.assertEqual(w.jobs_list.count(),1)
+
+    def test_late_job_event_does_not_attach_to_new_conversation(self):
+        w=self.window;old=w.task['id'];w.new_task()
+        w.handle_event('job',{'task_id':old,'id':'late-job','state':'completed','command':['python'],'exit_code':0})
+        self.assertEqual(w.jobs_list.count(),0)
+        w.select_task_by_id(old);self.assertEqual(w.jobs_list.count(),1)
+
+    def test_openai_profile_is_explicit_and_does_not_change_default_route(self):
+        from provider_dialog import ProviderDialog
+        w=self.window;dialog=ProviderDialog(w,self.root/'provider-fixture.json')
+        try:
+            dialog.preset.setCurrentIndex(1)
+            self.assertEqual(dialog.url.text(),'https://api.openai.com/v1')
+            self.assertEqual(dialog.env.text(),'OPENAI_API_KEY')
+            dialog.model.setEditText('user-chosen-model')
+            dialog.save_profile()
+            self.assertEqual(w.route.currentIndex(),0);self.assertEqual(w.config['preferred_route'],'auto')
+            self.assertTrue(w.active_provider().is_openai)
+            dialog.use_profile();self.assertEqual(w.route.currentIndex(),4)
+        finally:dialog.close();dialog.deleteLater()
+
+    def test_api_token_usage_is_reported_without_claiming_billing(self):
+        w=self.window
+        w.handle_event('metrics',{'api_usage':{'prompt_tokens':10,'completion_tokens':5,'total_tokens':15}})
+        w.handle_event('metrics',{'api_usage':{'prompt_tokens':4,'completion_tokens':6,'total_tokens':10}})
+        self.assertEqual(w.task['api_usage']['total_tokens'],25)
+        self.assertIn('not a billing total',w.performance_label.text())
+
 
 if __name__=='__main__':unittest.main()

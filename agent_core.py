@@ -18,6 +18,8 @@ import io
 import re
 from urllib.parse import urlsplit
 from agent_workflow import ToolCatalog, PLAN_TOOL, normalize_plan, previous_plan, validate_calls, check_evidence
+from process_jobs import ProcessJobs
+from workspace_outputs import read_batch, register_output
 
 SKIP = {'.git', '.godot', 'node_modules', '__pycache__', '.venv', 'venv', '.talktoai-code', 'Library', 'Temp', 'obj', 'bin', 'vendor', 'artifacts', 'build', 'dist'}
 ACTIVE_REMOTE = None
@@ -93,9 +95,16 @@ TOOLS = [
     schema('run_command', 'Run a Windows PowerShell command. Working directory is the project. Commands have the current Windows user permissions, not a sandbox.', {'command': 'PowerShell command'}),
 ]
 TOOLS += [
+    schema('read_project_files', 'Read 1-8 UTF-8 project files together with bounded output and SHA-256. Use next_offset and expected_sha256 for subsequent pages; errors are per file.', {'requests':'JSON array: [{"path":"src/main.py","offset":0}]. Optional expected_sha256 verifies a continued page.'}),
     schema('edit_file', 'Replace one exact unique text occurrence in an existing file; checkpoint original.', {'path':'Relative path','old_text':'Exact unique text to replace','new_text':'Replacement text'}),
     schema('project_info', 'Detect project engine, test commands, installed engines and immediate child projects.', {}),
 ]
+JOB_TOOLS = [
+    schema('start_process', 'Start a long build/test or temporary dev server without blocking. Native executable and literal arguments, no implicit shell. Act only; signed-in user permissions, not a sandbox. Poll the returned id. Jobs are terminated when this turn ends.', {'executable':'Executable name or full path','arguments':'JSON array of literal strings','cwd':'Project-relative working directory, or empty for project root','timeout_seconds':'1-1800 seconds; usually 300'}),
+    schema('poll_process', 'Read status, exit code and incremental output from a job started during this turn. Running is not success. Use next_cursor to avoid repeating logs.', {'job_id':'Returned job id','cursor':'0 initially; then next_cursor','wait_seconds':'0-5 seconds'}),
+    schema('cancel_process', 'Cancel only the selected job owned by this turn. Inspect returned state; cancellation is not success.', {'job_id':'Returned job id'}),
+]
+OUTPUT_TOOLS = [schema('register_output', 'Add an existing project output/report/build file to the Evidence panel with size and SHA-256. This does not upload or execute it and does not verify quality.', {'path':'Project-relative file path','title':'Short human-readable output label'})]
 GAME_TOOLS = [
     schema('run_checks', 'Detect and run existing project checks: Godot import, pytest/unittest, npm/pnpm/yarn scripts, Rust or .NET tests. Stops on failure; does not install dependencies. Returns actual output.', {}),
     schema('launch_game', 'Launch the selected Godot project in a native game window.', {}),
@@ -175,17 +184,16 @@ def _provider_stream(profile, payload, cancel):
     path=parsed.path.rstrip('/') or '/v1'
     if not path.endswith('/chat/completions'):path += '/chat/completions'
     headers={'Content-Type':'application/json'}
-    if profile.api_key_env:
-        key=os.environ.get(profile.api_key_env,'')
-        if key:headers['Authorization']='Bearer '+key
+    from providers import api_key, configure_request, http_error
+    key=api_key(profile)
+    if key:headers['Authorization']='Bearer '+key
     request=dict(payload)
     request['messages']=provider_messages(payload.get('messages',[]))
     request['model']=profile.model
     options=request.pop('options',{})
-    request['max_tokens']=options.get('num_predict',1536)
-    request['temperature']=options.get('temperature',.1)
+    configure_request(profile,request,options)
     request.pop('think',None);request.pop('keep_alive',None)
-    tool_acc={};finished=False;finish_reason='stop';done=threading.Event()
+    tool_acc={};finished=False;finish_reason='stop';done=threading.Event();usage=None
     try:
         conn.connect()
         sock=conn.sock
@@ -198,7 +206,7 @@ def _provider_stream(profile, payload, cancel):
         threading.Thread(target=watch,daemon=True).start()
         conn.request('POST',path,body=json.dumps(request).encode(),headers=headers)
         response=conn.getresponse()
-        if response.status!=200:raise RuntimeError(f'Provider HTTP {response.status}: '+response.read(2000).decode(errors='replace'))
+        if response.status!=200:raise RuntimeError(http_error(response.status))
         while not cancel.is_set():
             line=response.readline()
             if not line:break
@@ -209,6 +217,7 @@ def _provider_stream(profile, payload, cancel):
             try:data=json.loads(text)
             except ValueError:raise RuntimeError('Invalid JSON from API stream.')
             if data.get('error'):raise RuntimeError('Provider returned a stream error.')
+            if isinstance(data.get('usage'),dict):usage=data['usage']
             choice=(data.get('choices') or [{}])[0]
             if choice.get('finish_reason'):finished=True;finish_reason=choice['finish_reason']
             delta=choice.get('delta') or choice.get('message') or {}
@@ -225,7 +234,7 @@ def _provider_stream(profile, payload, cancel):
         if not finished:raise RuntimeError('API stream disconnected before completion; tool calls were not executed.')
         final={}
         if tool_acc:final['tool_calls']=[tool_acc[k] for k in sorted(tool_acc)]
-        yield {'message':final,'done':True,'done_reason':finish_reason,'eval_count':0,'eval_duration':1}
+        yield {'message':final,'done':True,'done_reason':finish_reason,'eval_count':0,'eval_duration':1,'api_usage':usage}
     except (OSError,http.client.HTTPException) as exc:
         if cancel.is_set():raise InterruptedError('Task stopped.') from exc
         raise
@@ -315,6 +324,7 @@ class ProjectTools:
         self.desktop = None
         self.computer = None
         self.browser = None
+        self.jobs = None
         if DESKTOP_ACCESS:
             from desktop_tools import DesktopTools
             self.desktop = DesktopTools(act, self.cancel)
@@ -325,7 +335,7 @@ class ProjectTools:
             raise ValueError('File must be inside the selected project.')
         if any(part in {'.git', '.talktoai-code'} for part in target.relative_to(self.root).parts):
             raise ValueError('Internal project metadata is excluded from editing.')
-        if target.name.lower() in {'.env','id_rsa','id_ed25519','credentials.json','tokens.json'} or target.name.lower().startswith('.env.') or target.suffix.lower() in {'.pem','.key','.pfx'}:
+        if target.name.lower() in {'.env','id_rsa','id_ed25519','credentials.json','tokens.json'} or target.name.lower().startswith('.env.') or target.suffix.lower() in {'.pem','.key','.pfx','.dpapi'}:
             raise PermissionError('Credential/config-secret files are excluded from agent file tools.')
         return target
 
@@ -374,6 +384,8 @@ class ProjectTools:
             return self.browser.execute(args.get('action','inspect'),args.get('target',''),args.get('value',''))
         if name == 'list_files':
             return '\n'.join(self.files())
+        if name == 'read_project_files':
+            return read_batch(self, args['requests'])
         if name == 'computer':
             if not self.act or not self.desktop:raise PermissionError('Computer control requires Act mode and Desktop / user access.')
             if not self.computer:
@@ -449,6 +461,14 @@ class ProjectTools:
             return session.run(args.get('command',''), args.get('cwd',''), self.cancel)
         if not self.act:
             raise PermissionError('Plan mode only permits listing and reading files. Select Act to edit or execute.')
+        if name in ('start_process', 'poll_process', 'cancel_process'):
+            if self.jobs is None:self.jobs = ProcessJobs(self.root, self.cancel)
+            if name == 'start_process':result = self.jobs.start(args['executable'], args.get('arguments','[]'), args.get('cwd',''), args.get('timeout_seconds','300'))
+            elif name == 'poll_process':result = self.jobs.status(args['job_id'], args.get('cursor','0'), args.get('wait_seconds','0'))
+            else:result = self.jobs.cancel(args['job_id'])
+            return json.dumps(result, ensure_ascii=False)
+        if name == 'register_output':
+            return register_output(self, args['path'], args.get('title',''))
         if name == 'edit_file':
             p=self.path(args['path']);text=p.read_bytes().decode('utf-8')
             old=args['old_text']
@@ -547,13 +567,16 @@ def restore_checkpoint(folder):
     else:
         p.unlink()
 
-def run_agent(url, model, history, project, act, cancel, emit, rounds=16, performance=None):
+def run_agent(url, model, history, project, act, cancel, emit, rounds=16, performance=None, jobs=None):
     tools = ProjectTools(project, act, cancel)
+    tools.jobs = jobs or ProcessJobs(project, cancel, emit)
     try:
         return _run_agent(url,model,history,project,act,cancel,emit,rounds,performance,tools)
     finally:
-        if tools.browser:tools.browser.close()
-        if tools.computer:tools.computer.close()
+        try:tools.jobs.close()
+        finally:
+            if tools.browser:tools.browser.close()
+            if tools.computer:tools.computer.close()
 
 def run_subagent(url, model, project, task, role, cancel, emit, performance=None):
     """Isolated, sequential reviewer context; no writes, shell or recursive delegation."""
@@ -636,13 +659,13 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
             active_tools += [schema('computer','Windows computer use through accessibility. First windows then inspect a returned handle. Click, fill, select or focus a control id from inspect; inspect again after every input. Wait up to 10 seconds for an app transition. Screenshots are evidence only, not vision input. Never infer success from input delivery. Do not access passwords or credentials.',{'action':'windows, inspect, click, fill, select, focus, key, click_point, wait or screenshot','target':'Window handle for inspect; control id for click/fill/select/focus; otherwise empty','value':'Literal text for fill/select; key such as enter, tab, ctrl+s; seconds for wait; window-relative x,y for click_point based on observed bounds'})]
     if (ACTIVE_REMOTE_ALLOWED and REMOTE_PILOT) or any(w in latest for w in ('desktop','server login','login','ssh','remote','connection')):
         active_tools += DISCOVERY_TOOLS
-    if not act:active_tools=[t for t in active_tools if t['function']['name'] in ('list_files','read_file','file_fingerprint','project_info','search_code','project_map','git_changes','review_changes','triage_failures','desktop_server_inventory','desktop_list','desktop_read_file','remote_status','remote_project_info')]
+    if not act:active_tools=[t for t in active_tools if t['function']['name'] in ('list_files','read_file','read_project_files','file_fingerprint','project_info','search_code','project_map','git_changes','review_changes','triage_failures','desktop_server_inventory','desktop_list','desktop_read_file','remote_status','remote_project_info')]
     catalog=None
     if not worker_mode:
         packs={'context':CONTEXT_TOOLS,'discovery':DISCOVERY_TOOLS}
         blocked={}
-        if act:packs.update(browser=BROWSER_TOOLS,game=GAME_TOOLS)
-        else:blocked.update(browser='Browser interaction requires Act mode.',game='Game execution and checks require Act mode.')
+        if act:packs.update(browser=BROWSER_TOOLS,game=GAME_TOOLS,jobs=JOB_TOOLS,outputs=OUTPUT_TOOLS)
+        else:blocked.update(browser='Browser interaction requires Act mode.',game='Game execution and checks require Act mode.',jobs='Process execution requires Act mode.',outputs='Registering outputs requires Act mode.')
         if DESKTOP_ACCESS:
             packs['desktop']=[t for t in active_tools if t['function']['name'].startswith('desktop_') or t['function']['name']=='computer']
         else:blocked['desktop']='Desktop access is disabled in Settings; tool discovery cannot change that permission.'
@@ -652,8 +675,9 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
         catalog=ToolCatalog(packs,blocked)
         active_tools += [schema('enable_tools','Load an extra tool set when the task requires it, even if the original prompt did not mention those tools. No user click is needed. Available sets: '+', '.join(packs)+'. An empty group lists availability and limits. This never changes permissions or performs an operation.',{'group':'Exact set name, or empty string to inspect the catalog'}),PLAN_TOOL]
         messages[0]['content']+=' When a capability is needed but absent from the current tools, call enable_tools for the relevant available set and continue. Do not tell the user to perform a tool action you can carry out. For multi-step tasks use update_plan, keep one step in progress, and update completed or genuinely blocked steps based on evidence. The checklist is visible to the user. Never mark tests passed simply because a command ran.'
+        messages[0]['content']+=' Prefer read_project_files to inspect several files in one call; continue truncated pages using their offsets and hashes. For long builds/tests or temporary local servers, enable jobs, start_process and poll_process; keep monitoring until exit, then inspect logs. Jobs are stopped at turn end and are not persistent hosting. For deliverables, enable outputs and register_output so users can find the actual files in Evidence. A registered file or process exit alone is not proof of correctness.'
     if worker_mode:
-        active_tools=[t for t in TOOLS+CONTEXT_TOOLS if t['function']['name'] in ('list_files','read_file','file_fingerprint','project_info','search_code','project_map','review_changes','triage_failures')]
+        active_tools=[t for t in TOOLS+CONTEXT_TOOLS if t['function']['name'] in ('list_files','read_file','read_project_files','file_fingerprint','project_info','search_code','project_map','review_changes','triage_failures')]
     else:
         active_tools.append(schema('delegate_review','Delegate a focused local-project review/investigation to a separate read-only context on the current model. No shell, desktop, remote access, edits or nested workers. Maximum two sequential workers per turn; each has five model steps. Use for complex work, not trivial questions.',{'role':'reviewer, investigator or test_planner','task':'Self-contained question, relevant paths and any necessary context; no secrets'}))
     performance=performance or {}
@@ -663,6 +687,7 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
     verification_requested_at=-1
     plan_review_requested=False
     continuations=0
+    job_review_requested=False
     failed_calls={}
     verification=None
     for step in range(rounds):
@@ -697,7 +722,7 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
         for message in messages:message.pop('images',None)
         if not stats:raise RuntimeError('Model stream ended before completion; no tool calls were executed.')
         emit('metrics',{'seconds':round(time.monotonic()-started,2),'first_token_seconds':round(first,2) if first else None,
-             'tokens_per_second':round(stats.get('eval_count',0)/max(stats.get('eval_duration',1)/1e9,.001),2),'tokens':stats.get('eval_count',0),'step':step+1})
+             'tokens_per_second':round(stats.get('eval_count',0)/max(stats.get('eval_duration',1)/1e9,.001),2),'tokens':stats.get('eval_count',0),'step':step+1,'api_usage':stats.get('api_usage')})
         truncated=stats.get('done_reason')=='length'
         if truncated and calls:
             # Incomplete action batches cannot be executed safely or reliably.
@@ -716,6 +741,11 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
         messages.append(assistant)
         emit('message', assistant)
         if not calls:
+            if tools.jobs and tools.jobs.running() and not job_review_requested and step+1<rounds:
+                job_review_requested=True
+                messages.append({'role':'user','_automation_nudge':True,'content':'Owned processes are still running: '+', '.join(tools.jobs.running())+'. Poll their output/exit status and complete the requested checks, or cancel them and report what remains. Do not claim they passed. They will be stopped when this turn ends.'})
+                emit('status','Checking running jobs before finishing')
+                continue
             if truncated:
                 if continuations<2 and step+1<rounds:
                     continuations+=1
@@ -790,7 +820,7 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
             tool_message = {'role': 'tool', 'tool_name': name, 'content': result[:24000]}
             if call.get('id'):tool_message['tool_call_id']=call['id']
             artifact=None
-            if name in ('capture_screenshot','browser','computer'):
+            if name in ('capture_screenshot','browser','computer','register_output'):
                 try:artifact=json.loads(result)
                 except (ValueError,TypeError):pass
             if vision_enabled and isinstance(artifact,dict) and artifact.get('type')=='image' and artifact.get('artifact'):

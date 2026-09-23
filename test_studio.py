@@ -16,7 +16,7 @@ class StudioTests(unittest.TestCase):
             window=studio.Studio();window.task['project']=folder
             window.prompt.setPlainText('use AMD');window.send();self.assertEqual(window.route.currentIndex(),2)
             window.prompt.setPlainText('switch to plan mode');window.send();self.assertEqual(window.mode.currentText(),'Plan')
-            def agent(url,model,history,project,act,cancel,emit):
+            def agent(url,model,history,project,act,cancel,emit,**kwargs):
                 self.assertFalse(act)
                 emit('delta','Checked project.')
                 emit('message',{'role':'assistant','content':'Checked project.'})

@@ -17,7 +17,7 @@ from pathlib import Path
 
 SKIP = {"AppData", ".ssh", ".codex", ".talktoai-code", ".git", "node_modules", "__pycache__", ".venv", "venv", "Library", "Temp", "obj", "bin", "vendor", "dist", "build"}
 SECRET_NAMES = {".env", "credentials.json", "tokens.json", "id_rsa", "id_ed25519", "known_hosts"}
-SECRET_SUFFIXES = {".pem", ".key", ".pfx", ".kdbx"}
+SECRET_SUFFIXES = {".pem", ".key", ".pfx", ".kdbx", ".dpapi"}
 
 
 class DesktopTools:

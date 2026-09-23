@@ -20,7 +20,7 @@ def decode_tasks(raw):
         if task['id'] in ids:
             raise ValueError('Duplicate chat identity')
         ids.add(task['id'])
-        for field in ('messages', 'changes', 'artifacts', 'activity'):
+        for field in ('messages', 'changes', 'artifacts', 'activity', 'jobs'):
             if not isinstance(task.get(field, []), list):
                 raise ValueError('Invalid chat ' + field)
         for message in task.get('messages', []):
@@ -34,6 +34,11 @@ def decode_tasks(raw):
         for artifact in task.get('artifacts', []):
             if not isinstance(artifact, dict) or not isinstance(artifact.get('artifact'), str):
                 raise ValueError('Invalid chat artifact')
+        for job in task.get('jobs', []):
+            if not isinstance(job, dict) or not isinstance(job.get('id'), str) or not isinstance(job.get('state'), str):
+                raise ValueError('Invalid chat job')
+            if not isinstance(job.get('command', []), list) or not all(isinstance(a,str) for a in job.get('command', [])):
+                raise ValueError('Invalid chat job command')
         if not all(isinstance(line, str) for line in task.get('activity', [])):
             raise ValueError('Invalid chat activity')
         if not isinstance(task.get('draft', ''), str):

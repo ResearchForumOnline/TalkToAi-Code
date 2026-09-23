@@ -2,6 +2,7 @@ import copy
 import json
 import tempfile
 import threading
+import sys
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -68,6 +69,23 @@ class WorkflowHelperTests(unittest.TestCase):
 
 
 class AgentAutomationTests(unittest.TestCase):
+    def test_jobs_and_outputs_can_be_discovered_and_executed_without_keywords(self):
+        events=[];count=[0]
+        def stream(url,payload,cancel):
+            count[0]+=1
+            if count[0]==1:return iter([response(calls=[call('enable_tools',group='jobs'),call('enable_tools',group='outputs')])])
+            if count[0]==2:return iter([response(calls=[call('start_process',executable=sys.executable,arguments=json.dumps(['-c','print("fixture complete")']),cwd='',timeout_seconds='10')])])
+            if count[0]==3:
+                result=json.loads(payload['messages'][-1]['content'])
+                return iter([response(calls=[call('poll_process',job_id=result['id'],cursor='0',wait_seconds='5'),call('register_output',path='report.txt',title='Report')])])
+            return iter([response('Inspected process output and registered report; no claim of test coverage.')])
+        with tempfile.TemporaryDirectory() as root,patch.object(core,'stream_chat',side_effect=stream),patch.object(core,'model_supports_vision',return_value=False):
+            Path(root,'report.txt').write_text('fixture evidence',encoding='utf-8')
+            core.run_agent('fixture','fixture',[{'role':'user','content':'Do the requested project work'}],root,True,threading.Event(),lambda k,v:events.append((k,v)))
+        self.assertTrue(any(k=='job' and v['state']=='completed' for k,v in events))
+        self.assertTrue(any(k=='artifact' and v.get('title')=='Report' for k,v in events))
+        self.assertFalse(any(k=='verification' and v['status']=='passed' for k,v in events))
+
     def run_sequence(self,root,sequence,act=True,text='Improve this project',tools=None,rounds=16,history=None):
         payloads=[];events=[]
         def stream(url,payload,cancel):
