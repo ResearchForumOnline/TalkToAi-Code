@@ -1,0 +1,47 @@
+TALKTOAI CODE - KEEP WORKING
+
+Source: C:/Users/Administrator/Desktop/Codex OpenAI/local-codex/publish-0.1.2
+App: %LOCALAPPDATA%/Programs/TalkToAi Code/TalkToAiCode.exe
+Conversations: %LOCALAPPDATA%/TalkToAiCode
+Releases: https://github.com/ResearchForumOnline/TalkToAi-Code/releases
+
+DAILY WORK
+Open your project, select Code and choose Auto. Ask for one clear outcome.
+Plan reads and investigates. Act edits files and runs commands as your Windows user.
+For small local models: inspect first, request one change, then ask for a relevant check.
+Pin useful chats and keep durable decisions in Project memory.
+
+MODEL OPTIONS
+Auto uses AMD/local Ollama; it never falls back to a paid API.
+If AMD is unavailable, Auto tries to start installed local Ollama.
+Auto requires an already installed model; it does not download one.
+For Groq: Models & APIs > Groq API > your key > Fetch models > Save profile > Use selected API.
+Groq account limits and charges apply. No OpenAI subscription is needed for these routes.
+
+RECOVERY
+Failed requests return to the composer. Review Changes and Tools before retrying:
+some actions may already have completed.
+For AMD problems, click Reconnect AMD model and check Connections.
+For local model problems, open Model choices and storage.
+For API problems, check your selected model, key and account limits.
+
+BACKUPS
+More > Back up conversations exports a private ZIP with restore instructions.
+It contains messages and tool evidence; keep it private.
+Project files and provider-key files are not included. Back up project folders separately.
+
+IMPROVE THE APP
+Open the source folder above in Code. Request one focused improvement.
+Review changes and run relevant checks before packaging with Build-Studio.ps1.
+TalkToAi-Code.iss builds the installer with Inno Setup.
+Skynet Mode creates a separate candidate and report for review. It does not
+replace the running application automatically.
+About & updates checks published releases.
+
+MAIL
+Gmail and Zmail require OAuth client setup and sign-in. Current connectors
+read/search mail; they do not send messages. No shared credentials are supplied.
+
+USEFUL REQUEST
+Inspect this project, propose the smallest useful improvement, then implement
+the agreed change. Run the relevant check and explain what remains unfinished.

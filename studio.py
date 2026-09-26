@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout, 
     QTextBrowser, QPlainTextEdit, QFileDialog, QMessageBox, QFrame, QInputDialog,
     QSystemTrayIcon, QMenu, QDialog, QLineEdit, QCheckBox, QDialogButtonBox)
 from agent_core import ProjectTools, run_agent, restore_checkpoint, set_active_remote, set_agent_preferences, set_active_provider
-from routing import choose_route, ensure_local_model
+from routing import choose_route, ensure_local_model, ensure_local_runtime
 from ssh_tools import SSHProfile, SSHSession, load_profiles, save_profiles
 from providers import ProviderProfile, load_profiles as load_provider_profiles, save_profiles as save_provider_profiles
 from desktop_inventory import inspect_desktop
@@ -243,7 +243,7 @@ class Studio(QMainWindow):
         self.zmail_button = self.button('Connect Zmail', lambda:self.connect_mail('Zmail'), side)
         self.mail_status_label = QLabel('Mail: checking connections…');self.mail_status_label.setWordWrap(True);self.mail_status_label.setObjectName('muted');side.addWidget(self.mail_status_label)
         more=QPushButton('More  ·  tools && help');more_menu=QMenu(more)
-        for title,callback in [('Actions · Ctrl+K',self.command_palette),('Project memory · Ctrl+Shift+M',self.memory_dialog),('API providers',self.providers_dialog),('Link ZeroThink account',self.link_zerothink),('Model choices and storage',self.models_dialog),('FAQ / How to · F1',self.faq_dialog),('Open app data folder',lambda:QDesktopServices.openUrl(QUrl.fromLocalFile(str(STATE))))]:
+        for title,callback in [('Actions · Ctrl+K',self.command_palette),('Project memory · Ctrl+Shift+M',self.memory_dialog),('Back up conversations',self.backup_conversations),('API providers',self.providers_dialog),('Link ZeroThink account',self.link_zerothink),('Model choices and storage',self.models_dialog),('FAQ / How to · F1',self.faq_dialog),('Open app data folder',lambda:QDesktopServices.openUrl(QUrl.fromLocalFile(str(STATE))))]:
             more_menu.addAction(title,callback)
         more.setMenu(more_menu);side.addWidget(more)
         self.connection_label = QLabel('⌁  No SSH connection'); self.connection_label.setObjectName('muted'); side.addWidget(self.connection_label)
@@ -778,6 +778,9 @@ class Studio(QMainWindow):
                             raise ConnectionError(detail)
                         if not ready:
                             self.bus.event.emit('status',detail+' Checking local fallback…')
+                    if preference=='auto' and not ready:
+                        self.bus.event.emit('status','Starting local Ollama fallback…')
+                        ensure_local_runtime()
                     selected=choose_route(self.config,preference,benchmarks)
                 if self.cancel.is_set():return
                 self.bus.event.emit('route',selected)
@@ -905,7 +908,10 @@ class Studio(QMainWindow):
             self.status.setText(data)
             self.refresh_mail_status()
         elif kind=='error':
-            self.status.setText('Request failed');self.output.appendPlainText(str(data));self.right.setCurrentIndex(2)
+            if not self.prompt.toPlainText().strip():
+                previous=next((m.get('content','') for m in reversed(self.task['messages']) if m.get('role')=='user'), '')
+                self.prompt.setPlainText(previous)
+            self.status.setText('Request failed · prompt restored; adjust model/settings and send again');self.output.appendPlainText(str(data));self.right.setCurrentIndex(2)
             self.task['messages'].append({'role':'assistant','content':'Task error: '+str(data)});self.persist();self.render()
         elif kind=='finished':
             if self.partial:self.task['messages'].append({'role':'assistant','content':self.partial+'\n\n[Interrupted]'});self.partial=''
@@ -1125,10 +1131,38 @@ class Studio(QMainWindow):
             link.unlink(missing_ok=True)
         self.config['start_with_windows']=bool(enabled);self.write_config()
 
+    def backup_conversations(self):
+        if self.busy:
+            self.error('Finish or stop the current task before backing up conversations.');return
+        destination,_=QFileDialog.getSaveFileName(self,'Back up conversations',str(Path.home()/'Documents'/('TalkToAi-conversations-'+time.strftime('%Y%m%d-%H%M%S')+'.zip')),'ZIP archive (*.zip)')
+        if not destination:return
+        import zipfile
+        try:
+            self.persist()
+            target=Path(destination)
+            if target.suffix.lower()!='.zip':target=target.with_suffix('.zip')
+            temporary=target.with_name(target.name+'.tmp')
+            with zipfile.ZipFile(temporary,'w',zipfile.ZIP_DEFLATED) as archive:
+                archive.writestr('studio.json',SESSION.read_bytes())
+                archive.writestr('RESTORE.txt','Private conversation backup. Includes messages, tool evidence and paths. No provider key files are included. Referenced project files are not backed up. To restore: quit TalkToAi Code, keep a copy of your current app-data studio.json, then replace it with this studio.json in %LOCALAPPDATA%/TalkToAiCode and reopen. Restoration replaces the conversation list. Store installations use TalkToAiCodeStore. Keep this archive private.')
+            temporary.replace(target)
+            self.status.setText('Conversations backed up: '+str(target)+' · keep this archive private')
+        except Exception as exc:self.error('Backup failed: '+str(exc))
+
     def faq_dialog(self):
         dialog=QDialog(self);dialog.setWindowTitle('TalkToAi Code · FAQ / How to');dialog.resize(820,650)
         layout=QVBoxLayout(dialog)
         text=QTextBrowser();text.setOpenExternalLinks(True);text.setMarkdown('''# TalkToAi Code quick guide
+
+## Keep working without an OpenAI subscription
+
+- **Auto** uses your AMD/local models. It never switches to a paid API automatically.
+- If the AMD connection fails, Auto now tries to start your installed local Ollama service and use your configured local model. It does not download a model in Auto mode.
+- **Models & APIs → Groq API** connects your own Groq key. Provider limits apply; no OpenAI account is needed for that route.
+- After an error your latest request returns to the composer. Change the model or repair the connection, then send again. Check existing changes first because a failed task may have completed some actions.
+- **More → Back up conversations** saves a private ZIP. Back up your project folders separately.
+- For small local models, ask for one change at a time: inspect, plan, edit, then check. Start a fresh chat when changing projects.
+- **Conversation → Export** saves a readable report. **Project memory** keeps decisions available for later tasks.
 
 ## Start a coding task
 
