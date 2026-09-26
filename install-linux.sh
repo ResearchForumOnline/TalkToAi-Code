@@ -13,7 +13,12 @@ if [[ "${TALKTOAI_SKIP_BROWSER_DOWNLOAD:-0}" != 1 ]]; then
   fi
 fi
 if command -v ldconfig >/dev/null 2>&1 && ! ldconfig -p 2>/dev/null | grep -q 'libEGL.so.1'; then
-  echo 'Qt needs libEGL.so.1. On Ubuntu/Debian install libegl1 and libgl1 before launching the app.' >&2
+  echo 'TalkToAi Code was installed, but this Linux system is missing Qt graphics libraries.' >&2
+  if command -v apt-get >/dev/null 2>&1; then
+    echo 'On Ubuntu/Debian, run: sudo apt-get install libegl1 libgl1 libxcb-cursor0 libxkbcommon-x11-0 libxcb-xinerama0' >&2
+  else
+    echo 'Install your distribution packages for libEGL, OpenGL, XCB cursor, XKB common and Xinerama, then launch again.' >&2
+  fi
 fi
 mkdir -p "${XDG_DATA_HOME:-$HOME/.local/share}/applications" "$HOME/.local/bin"
 cat > "$HOME/.local/bin/talktoai-code" <<EOF
