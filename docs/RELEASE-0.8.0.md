@@ -10,7 +10,7 @@
 - Stopping remains visible until the worker finishes. Explicit Stop/Escape returns queued steering to the draft and prevents accidental restart, including cross-thread event races.
 - Closing the active panel requests Stop. Idle Escape behavior in dialogs is unchanged.
 
-![Computer-control panel](../assets/screens/control-overlay-080.png)
+![Computer-control panel](https://raw.githubusercontent.com/ResearchForumOnline/TalkToAi-Code/v0.8.0/assets/screens/control-overlay-080.png)
 
 The image is a rendered UI fixture, not evidence of a live computer task. Cancellation stops further work; it cannot undo an action already delivered. In-flight browser actions may take time to yield. Windows native control remains Windows-only; browser tools are portable.
 
