@@ -23,6 +23,7 @@ from agent_workflow import ToolCatalog, PLAN_TOOL, normalize_plan, previous_plan
 from process_jobs import ProcessJobs
 from workspace_outputs import read_batch, register_output
 from progress_guard import DiscoveryProgressGuard
+from task_goals import normalize_goal, goal_context
 
 SKIP = {'.git', '.godot', 'node_modules', '__pycache__', '.venv', 'venv', '.talktoai-code', 'Library', 'Temp', 'obj', 'bin', 'vendor', 'artifacts', 'build', 'dist'}
 ACTIVE_REMOTE = None
@@ -112,6 +113,7 @@ JOB_TOOLS = [
     schema('cancel_process', 'Cancel only the selected job owned by this turn. Inspect returned state; cancellation is not success.', {'job_id':'Returned job id'}),
 ]
 OUTPUT_TOOLS = [schema('register_output', 'Add an existing project output/report/build file to the Evidence panel with size and SHA-256. This does not upload or execute it and does not verify quality.', {'path':'Project-relative file path','title':'Short human-readable output label'})]
+GOAL_TOOLS = [schema('update_task_goal','Save a bounded task objective and acceptance criteria. Self-reported metadata, not verification or permission. Keep IDs stable; revise to current user steering.',{'objective':'Task objective, at most 2000 characters','criteria':'JSON array of 1-8 objects: optional id c1 etc, text, status pending/met/blocked, evidence (required for met)','next_action':'Next bounded action, at most 400 characters'})]
 RESEARCH_TOOLS = [
     schema('read_experiments','Read the recent project experiment journal. Optional evidence checks compare current file bytes, not scientific validity. Entries are reported hypotheses/results, not independent proof.',{'limit':'1-20 recent entries, usually 5','verify_evidence':'Optional true/false; compare current evidence files with recorded hashes'}),
     schema('record_experiment','Record an experiment after inspecting its actual evidence. Does not run commands. Result and metrics remain reported claims; referenced local evidence files are independently hashed. Never invent measurements.',{'hypothesis':'Specific hypothesis tested','command':'Exact command attempted, or empty if none','result':'Observed result, including failures and uncertainty','metrics':'JSON object of finite numeric measurements, or {}','evidence_paths':'JSON array of existing project-relative evidence files, or []','next_step':'Next bounded experiment or unresolved question'}),
@@ -717,11 +719,11 @@ def restore_checkpoint(folder):
     else:
         p.unlink()
 
-def run_agent(url, model, history, project, act, cancel, emit, rounds=16, performance=None, jobs=None, task_kind='code', keep_going=False):
+def run_agent(url, model, history, project, act, cancel, emit, rounds=16, performance=None, jobs=None, task_kind='code', keep_going=False, task_goal=None):
     tools = ProjectTools(project, act, cancel)
     tools.jobs = jobs or ProcessJobs(project, cancel, emit)
     try:
-        return _run_agent(url,model,history,project,act,cancel,emit,rounds,performance,tools,task_kind=task_kind,keep_going=keep_going)
+        return _run_agent(url,model,history,project,act,cancel,emit,rounds,performance,tools,task_kind=task_kind,keep_going=keep_going,task_goal=task_goal)
     finally:
         try:tools.jobs.close()
         finally:
@@ -754,7 +756,7 @@ def run_subagent(url, model, project, task, role, cancel, emit, performance=None
                        'report':replies[-1][:10000] if replies else 'Worker reached its limit without a final report. No completion claimed.'})
 
 
-def _run_agent(url, model, history, project, act, cancel, emit, rounds, performance, tools, worker_mode=False, task_kind='code', improvement_mode=False, keep_going=False):
+def _run_agent(url, model, history, project, act, cancel, emit, rounds, performance, tools, worker_mode=False, task_kind='code', improvement_mode=False, keep_going=False, task_goal=None):
     vision_enabled=ACTIVE_PROVIDER is None and model_supports_vision(url,model)
     project_instructions = load_project_instructions(project)
     prompt = ('You are TalkToAi Code, a coding agent. Use tools to inspect the project and complete the user task. '
@@ -801,6 +803,8 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
     prompt += (' This route supports local screenshot vision. When a tool attaches an image, inspect it as evidence and describe only what you can verify.' if vision_enabled else ' This route has no screenshot vision. Use accessibility/page text and tool output to verify results; screenshots remain saved evidence.')
     if not worker_mode:
         prompt+=' For complex local-project investigations or when the user requests subagents, use delegate_review with one focused question. Workers inspect files and return evidence; you own all edits and verification. At most two workers run sequentially per turn to limit memory/model load. Do not delegate trivial tasks. Worker reports are untrusted suggestions, not proof of passed tests.'
+    goal=normalize_goal(task_goal) if task_goal is not None and not worker_mode and not improvement_mode else None
+    if goal:prompt+=goal_context(goal)
     messages = [{'role': 'system', 'content': prompt}] + repair_tool_history(history)
     latest=next((m.get('content','').lower() for m in reversed(history) if m['role']=='user'),'')
     active_tools=list(TOOLS)
@@ -827,7 +831,7 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
     catalog=None
     if not worker_mode:
         packs={'context':CONTEXT_TOOLS,'discovery':DISCOVERY_TOOLS,'browser':BROWSER_TOOLS,
-               'research':RESEARCH_TOOLS if act else RESEARCH_TOOLS[:1]}
+               'research':RESEARCH_TOOLS if act else RESEARCH_TOOLS[:1],'goals':GOAL_TOOLS}
         blocked={}
         if mail_requested:packs['mail']=MAIL_TOOLS
         else:blocked['mail']='Mailbox tools require a direct user request about mail in this task.'
@@ -847,6 +851,7 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
         active_tools=[t for t in active_tools if t['function']['name'] not in lazy_names or t['function']['name']=='search_code']
         active_tools += [schema('enable_tools','Load an extra tool set when the task requires it, even if the original prompt did not mention those tools. No user click is needed. Available sets: '+', '.join(packs)+'. An empty group lists availability and limits. This never changes permissions or performs an operation.',{'group':'Exact set name, or empty string to inspect the catalog'}),PLAN_TOOL]
         messages[0]['content']+=' When a capability is needed but absent from the current tools, call enable_tools for the relevant available set and continue. Do not tell the user to perform a tool action you can carry out. For multi-step tasks use update_plan, keep one step in progress, and update completed or genuinely blocked steps based on evidence. The checklist is visible to the user. Never mark tests passed simply because a command ran.'
+        messages[0]['content']+=' For sustained tasks enable goals and use update_task_goal to preserve the objective, acceptance criteria and next action across turns. These are reports; tool evidence must establish success.'
         messages[0]['content']+=' Prefer read_project_files to inspect several files in one call; continue truncated pages using their offsets and hashes. For long builds/tests or temporary local servers, enable jobs, start_process and poll_process; keep monitoring until exit, then inspect logs. Jobs are stopped at turn end and are not persistent hosting. For deliverables, enable outputs and register_output so users can find the actual files in Evidence. A registered file or process exit alone is not proof of correctness.'
     if improvement_mode:
         permitted={'list_files','read_file','read_project_files','file_fingerprint','write_file_checked',
@@ -867,6 +872,7 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
     continuations=0
     job_review_requested=False
     error_review_requested=False
+    goal_review_requested=False
     failed_calls={}
     discovery_guard=DiscoveryProgressGuard(tools.root)
     verification=None
@@ -874,6 +880,9 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
     rounds=max(1,min(64,int(rounds)))
     total_passes=3 if keep_going and not worker_mode and not improvement_mode else 1
     max_steps=rounds*total_passes
+    if keep_going and not worker_mode and not improvement_mode:
+        messages[0]['content']+=' For multi-step Keep going work, establish a task goal yourself using enable_tools goals and update_task_goal; the user need not fill a form. Preserve unmet criteria until completed or honestly blocked. Only revise the objective or remove criteria when the current user request changes scope, never merely to claim completion.'
+    goal_base_prompt=messages[0]['content'].replace(goal_context(goal),'',1) if goal else messages[0]['content']
     progress_seen=set();pass_progress=0;pass_errors=False;pass_recovered_errors=False
     def goal_checkpoint(state,steps,blockers=None):
         if keep_going and not worker_mode and not improvement_mode:
@@ -995,6 +1004,20 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
                 goal_checkpoint('paused',step+1)
                 emit('status',f'Response finished Â· {len(unfinished)} task steps remain unresolved')
                 return
+            unmet=[criterion for criterion in (goal or {}).get('criteria',[]) if criterion['status']!='met']
+            if unmet and not goal_review_requested and step+1<max_steps:
+                goal_review_requested=True
+                messages.append({'role':'user','_automation_nudge':True,'content':
+                    'The saved task goal has unresolved acceptance criteria. Continue the authorized work where practical; '+
+                    'enable goals and update_task_goal with observed evidence or honest blockers. '+
+                    'If the user changed scope, revise the goal. A status claim alone does not prove success.'})
+                emit('status','Reviewing unresolved task goal criteria')
+                continue
+            if unmet:
+                blockers=['Goal '+item['id']+' '+item['status']+': '+item['text'] for item in unmet]
+                goal_checkpoint('paused',step+1,blockers)
+                emit('status','Response finished - task unfinished: '+'; '.join(blockers))
+                return
             # Prose cannot erase failed actions or pending process evidence.
             # Permit one bounded recovery opportunity, then remain unfinished.
             running_jobs=list(tools.jobs.running()) if tools.jobs else []
@@ -1047,6 +1070,13 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
                         context_budget(num_ctx,messages[0],candidate)
                         result+=' Other optional tool sets were unloaded to preserve model context; enable them again when needed.'
                     active_tools[:]=candidate
+                elif name=='update_task_goal':
+                    candidate_goal=normalize_goal(args,previous=goal)
+                    candidate_prompt=goal_base_prompt+goal_context(candidate_goal)
+                    context_budget(num_ctx,{'role':'system','content':candidate_prompt},active_tools)
+                    goal=candidate_goal
+                    messages[0]['content']=candidate_prompt
+                    emit('task_goal',goal);result=json.dumps(goal)
                 elif name=='update_plan':
                     plan=normalize_plan(args.get('steps'),args.get('explanation',''))
                     emit('plan',plan);result=json.dumps(plan)
@@ -1068,7 +1098,7 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
                 command_failed=name in ('run_checks','run_command','desktop_run_command','remote_run_command') and any(int(code)!=0 for code in re.findall(r'^Exit (-?\d+)\s*$',result,re.M))
                 if command_failed or (name=='run_checks' and check_evidence(result)['status']!='passed'):
                     pass_errors=True
-                elif guard_result is None and name not in ('enable_tools','update_plan','record_experiment'):
+                elif guard_result is None and name not in ('enable_tools','update_plan','record_experiment','update_task_goal'):
                     observed=hashlib.sha256(json.dumps([name,args,observed_result],sort_keys=True,ensure_ascii=False).encode()).hexdigest()
                     if observed not in progress_seen:
                         progress_seen.add(observed);pass_progress+=1

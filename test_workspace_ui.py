@@ -147,12 +147,68 @@ class WorkspaceUITests(unittest.TestCase):
     def test_keep_going_flag_and_budget_reach_agent(self):
         w=self.window;w.task['project']=str(self.root);w.route.setCurrentIndex(1)
         w.keep_going.setChecked(True);w.step_budget.setCurrentIndex(2)
+        w.handle_event('task_goal',{'objective':'Improve this project','criteria':[{'text':'Run project checks'}],'next_action':'Inspect files'})
         w.prompt.setPlainText('Improve this project')
         selected={'route':'local','url':'http://127.0.0.1:11434','model':'fixture','reason':'test'}
         with patch('studio.threading.Thread') as worker,patch('studio.ensure_local_model'),patch('studio.choose_route',return_value=selected),patch('studio.run_agent') as run:
             w.send();worker.call_args.kwargs['target']()
             self.assertTrue(run.call_args.kwargs['keep_going'])
             self.assertEqual(run.call_args.kwargs['rounds'],64)
+            self.assertEqual(run.call_args.kwargs['task_goal']['objective'],'Improve this project')
+            self.assertIsNot(run.call_args.kwargs['task_goal'],w.task['task_goal'])
+
+    def test_task_goal_event_is_scoped_saved_and_exported_as_self_reported(self):
+        w=self.window;w.task['project']=str(self.root);first=w.task['id']
+        goal={'objective':'Playable pause menu','criteria':[{'text':'Menu opens','status':'met','evidence':'playtest.log: PASS'}],'next_action':'Test keyboard navigation'}
+        w.handle_event('task_goal',goal)
+        self.assertIn('self-reported',w.goal_summary.text());self.assertIn('playtest.log',w.goal_list.item(0).text())
+        self.assertEqual(load_tasks(studio.SESSION)[0][0]['task_goal']['objective'],goal['objective'])
+        w.export_task();report=self.root/'.talktoai-code'/'reports'/(first+'.md')
+        self.assertIn('Saved task goal (self-reported)',report.read_text())
+        w.new_task();self.assertIsNone(w.current_task_goal());self.assertEqual(w.goal_list.count(),0)
+        w.select_task_by_id(first);self.assertEqual(w.current_task_goal()['objective'],goal['objective'])
+
+    def test_goal_editor_preserves_unchanged_criteria_and_resets_changed_objective(self):
+        w=self.window
+        w.handle_event('task_goal',{'objective':'Playable pause menu','criteria':[{'text':'Menu opens','status':'met','evidence':'playtest.log'}]})
+        def unchanged(dialog):
+            dialog.findChild(QLineEdit,'goal_next_action').setText('Check navigation')
+            next(button for button in dialog.findChildren(QPushButton) if button.text()=='Save goal').click()
+        with patch.object(studio.QDialog,'exec',unchanged):w.task_goal_dialog()
+        self.assertEqual(w.current_task_goal()['criteria'][0]['status'],'met')
+        def changed(dialog):
+            dialog.findChild(QPlainTextEdit,'goal_objective').setPlainText('Playable inventory')
+            next(button for button in dialog.findChildren(QPushButton) if button.text()=='Save goal').click()
+        with patch.object(studio.QDialog,'exec',changed):w.task_goal_dialog()
+        self.assertEqual(w.current_task_goal()['criteria'][0]['status'],'pending')
+        self.assertEqual(w.current_task_goal()['criteria'][0]['evidence'],'')
+
+    def test_goal_editor_cancel_and_invalid_event_preserve_goal(self):
+        w=self.window;w.handle_event('task_goal',{'objective':'Pause menu','criteria':[{'text':'Menu opens'}]})
+        previous=dict(w.current_task_goal())
+        def cancel(dialog):
+            dialog.findChild(QPlainTextEdit,'goal_objective').setPlainText('Discarded edit');dialog.reject()
+        with patch.object(studio.QDialog,'exec',cancel):w.task_goal_dialog()
+        w.handle_event('task_goal',{'objective':'Bad','criteria':[]})
+        self.assertEqual(w.current_task_goal(),previous)
+
+    def test_continue_prefers_explicit_saved_goal_but_new_steering_wins_and_clears_goal(self):
+        w=self.window;w.task['project']=str(self.root)
+        old=self.root/'old';old.mkdir();new=self.root/'new';new.mkdir();steered=self.root/'steered';steered.mkdir()
+        w.task['messages']=[{'role':'user','content':f'Improve "{old}"'}]
+        w.handle_event('task_goal',{'objective':f'Improve "{new}"','criteria':[{'text':'Checks pass'}]})
+        self.assertTrue(w.prepare_task_target('continue'))
+        self.assertEqual(Path(w.task['project']),new.resolve());self.assertIsNone(w.current_task_goal())
+        w.handle_event('task_goal',{'objective':f'Improve "{new}"','criteria':[{'text':'Checks pass'}]})
+        self.assertTrue(w.prepare_task_target(f'Improve "{steered}"'))
+        self.assertEqual(Path(w.task['project']),steered.resolve());self.assertIsNone(w.current_task_goal())
+
+    def test_continue_prompt_includes_saved_goal_without_old_history(self):
+        w=self.window;w.task['messages']=[]
+        w.handle_event('task_goal',{'objective':'Add keyboard pause menu','criteria':[{'text':'Escape toggles menu'}],'next_action':'Inspect input handler'})
+        with patch.object(w,'quick_command') as send:w.continue_task()
+        self.assertIn('Saved task goal: Add keyboard pause menu',send.call_args.args[0])
+        self.assertIn('Next action: Inspect input handler',send.call_args.args[0])
 
     def test_goal_checkpoint_persists_progress_in_steps(self):
         w=self.window;data={'pass':2,'total_passes':3,'steps':32,'changes':4,'state':'continuing'}

@@ -329,6 +329,9 @@ class Studio(QMainWindow):
         self.right.addTab(artifacts,'Evidence')
         progress=QWidget();progress_layout=QVBoxLayout(progress)
         self.context_summary=QLabel('Project overview appears when an agent task starts.');self.context_summary.setWordWrap(True);progress_layout.addWidget(self.context_summary)
+        self.goal_summary=QLabel('No saved task goal. Add an objective and completion criteria.');self.goal_summary.setWordWrap(True);self.goal_summary.setTextFormat(Qt.PlainText);progress_layout.addWidget(self.goal_summary)
+        self.goal_list=QListWidget();self.goal_list.setWordWrap(True);self.goal_list.setMaximumHeight(180);progress_layout.addWidget(self.goal_list)
+        self.goal_button=self.button('Task goal…',self.task_goal_dialog,progress_layout)
         self.verification_summary=QLabel('Checks: not run for this task');self.verification_summary.setWordWrap(True);progress_layout.addWidget(self.verification_summary)
         self.plan_summary=QLabel('For multi-step work, the agent can maintain a checklist here. Steps are agent-reported; review tool evidence before trusting a completion claim.');self.plan_summary.setWordWrap(True);self.plan_summary.setObjectName('muted');progress_layout.addWidget(self.plan_summary)
         self.plan_list=QListWidget();self.plan_list.setWordWrap(True);self.plan_list.setTextElideMode(Qt.ElideNone);self.plan_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff);progress_layout.addWidget(self.plan_list,1)
@@ -450,11 +453,54 @@ class Studio(QMainWindow):
         if self.busy:return
         if self.prompt.toPlainText().strip():
             self.status.setText('Your draft is still here; send or clear it before continuing.');return
-        self.quick_command(STARTERS['Continue unfinished work'])
+        request=STARTERS['Continue unfinished work']
+        goal=self.current_task_goal()
+        if goal:request+='\n\nSaved task goal: '+goal['objective']+'\nNext action: '+goal.get('next_action','')
+        self.quick_command(request)
+
+    def current_task_goal(self):
+        from task_goals import normalize_goal
+        if not self.task or not self.task.get('task_goal'):return None
+        if self.task.get('task_goal_project') and Path(self.task['task_goal_project']).resolve()!=Path(self.task['project']).resolve():return None
+        try:return normalize_goal(self.task['task_goal'])
+        except (ValueError,TypeError):return None
+
+    def task_goal_dialog(self):
+        if self.busy:return
+        from task_goals import normalize_goal
+        previous=self.current_task_goal() or {}
+        dialog=QDialog(self);dialog.setWindowTitle('Task goal');dialog.resize(680,560)
+        layout=QVBoxLayout(dialog)
+        hint=QLabel('Keep one objective and up to eight completion criteria for this conversation. Criterion status and evidence are reported observations, not independent verification. Changing the objective resets the criteria; editing a criterion resets that criterion.');hint.setWordWrap(True);layout.addWidget(hint)
+        objective=QPlainTextEdit(previous.get('objective',''));objective.setObjectName('goal_objective');objective.setMaximumHeight(100)
+        criteria=QPlainTextEdit('\n'.join(item['text'] for item in previous.get('criteria',[])));criteria.setObjectName('goal_criteria')
+        next_action=QLineEdit(previous.get('next_action',''));next_action.setObjectName('goal_next_action');next_action.setMaxLength(400)
+        for title,widget in [('Objective · up to 2,000 characters',objective),('Completion criteria · one per line, up to 180 characters each',criteria),('Next action',next_action)]:layout.addWidget(QLabel(title));layout.addWidget(widget)
+        def save():
+            text=objective.toPlainText().strip();same_objective=text==previous.get('objective')
+            old={item['text']:item for item in previous.get('criteria',[])}
+            items=[dict(old[line]) if same_objective and line in old else {'text':line,'status':'pending','evidence':''} for line in (line.strip() for line in criteria.toPlainText().splitlines()) if line]
+            try:goal=normalize_goal({'objective':text,'criteria':items,'next_action':next_action.text()},previous=previous or None)
+            except ValueError as exc:self.error(exc);return
+            self.task['task_goal']=goal;self.task['task_goal_project']=self.task['project'];self.persist();self.refresh_plan();dialog.accept()
+        def clear():
+            self.task.pop('task_goal',None);self.task.pop('task_goal_project',None);self.persist();self.refresh_plan();dialog.accept()
+        row=QHBoxLayout();layout.addLayout(row)
+        self.button('Save goal',save,row,True);self.button('Clear goal',clear,row);self.button('Cancel',dialog.reject,row)
+        dialog.exec()
 
     def refresh_plan(self):
         from agent_workflow import normalize_plan
         self.plan_list.clear()
+        goal=self.current_task_goal();self.goal_list.clear()
+        if goal:
+            self.goal_summary.setText('Goal: '+goal['objective'][:350]+('\nNext: '+goal['next_action'][:200] if goal.get('next_action') else '')+'\nCriteria and evidence are self-reported; inspect the actual checks.')
+            self.goal_summary.setToolTip(goal['objective'])
+            for criterion in goal['criteria']:
+                text=criterion['status'].capitalize()+' (reported) · '+criterion['text']
+                if criterion.get('evidence'):text+='\nEvidence: '+criterion['evidence']
+                item=QListWidgetItem(text);item.setToolTip(text);self.goal_list.addItem(item)
+        else:self.goal_summary.setText('No saved task goal. Add an objective and completion criteria.');self.goal_summary.setToolTip('')
         plan=self.task.get('plan') or {}
         try:plan=normalize_plan(plan.get('steps'),plan.get('explanation',''))
         except (ValueError,TypeError,AttributeError):plan={}
@@ -799,6 +845,7 @@ class Studio(QMainWindow):
         task_kind=self.task.get('kind','code');rounds=self.step_budget.currentData() if task_kind=='code' else 16
         performance=self.model_performance()
         keep_going=bool(self.keep_going.isChecked()) and task_kind=='code'
+        task_goal=copy.deepcopy(self.current_task_goal())
         active_remote=self.active_remote()
         requested_ssh=act and bool(re.search(r'\b(ssh|log ?in|connect)\b',text,re.I)) and bool(re.search(r'\b(server|host|ssh)\b|\.[a-z]{2,}',text,re.I))
         set_active_remote(active_remote if self.config.get('remote_enabled') and self.config.get('remote_pilot',True) else None)
@@ -839,7 +886,7 @@ class Studio(QMainWindow):
                 self.bus.event.emit('route',selected)
                 def job_event(kind,data):self.bus.event.emit(kind,dict(data,task_id=task_id))
                 self.job_manager=ProcessJobs(project,self.cancel,job_event)
-                run_agent(selected['url'],selected['model'],history,project,act,self.cancel,self.bus.event.emit,rounds=rounds,performance=performance,jobs=self.job_manager,task_kind=task_kind,keep_going=keep_going)
+                run_agent(selected['url'],selected['model'],history,project,act,self.cancel,self.bus.event.emit,rounds=rounds,performance=performance,jobs=self.job_manager,task_kind=task_kind,keep_going=keep_going,task_goal=task_goal)
             except Exception as exc:self.bus.event.emit('error',str(exc))
             finally:
                 set_active_remote(None)
@@ -854,11 +901,16 @@ class Studio(QMainWindow):
 
     def prepare_task_target(self,text):
         resume=re.fullmatch(r'(?:please\s+)?(?:continue|keep going|resume|carry on|continue unfinished work)[.!\s]*',text,re.I)
-        if resume or text==STARTERS['Continue unfinished work']:
-            for message in reversed(self.task.get('messages',[])):
-                previous=message.get('content','') or ''
-                if message.get('role')=='user' and (re.search(r'\b(?:game|project|app)\s*:',previous,re.I) or explicit_project_directory(previous)):
-                    text=previous;break
+        if resume or text.startswith(STARTERS['Continue unfinished work']):
+            goal=self.current_task_goal()
+            target_text=goal['objective'] if goal else text
+            goal_has_target=bool(goal and (re.search(r'\b(?:game|project|app)\s*:',target_text,re.I) or explicit_project_directory(target_text)))
+            if not goal_has_target:
+                for message in reversed(self.task.get('messages',[])):
+                    previous=message.get('content','') or ''
+                    if message.get('role')=='user' and (re.search(r'\b(?:game|project|app)\s*:',previous,re.I) or explicit_project_directory(previous)):
+                        target_text=previous;break
+            text=target_text
         if requested_runtime(text,self.server_name())=='server':
             self.route.setCurrentIndex(2)
             if re.search(r'\balways\b',text,re.I):
@@ -874,11 +926,12 @@ class Studio(QMainWindow):
                 self.error('Save your open file before switching to the project named in this request.');return False
             self.task['project']=target['root'];self.task['project_target']=target
             self.task.pop('project_context',None)
+            had_goal=bool(self.task.pop('task_goal',None));self.task.pop('task_goal_project',None);self.task.pop('goal_checkpoint',None)
             self.current_file=None;self.editor.clear()
             self.project_label.setText(Path(target['root']).name)
             self.project_label.setToolTip(target['root'])
-            self.refresh_files();self.persist()
-            self.task['messages'].append({'role':'assistant','content':'Working project: '+target['root']+'\n'+target['reason']})
+            self.refresh_files();self.refresh_plan();self.persist()
+            self.task['messages'].append({'role':'assistant','content':'Working project: '+target['root']+'\n'+target['reason']+('\nCleared the previous project task goal; set criteria for this project.' if had_goal else '')})
         return True
 
     def start_skynet(self):
@@ -925,7 +978,7 @@ class Studio(QMainWindow):
 
     def set_busy(self,busy):
         self.busy=busy
-        for w in (self.new_button,self.project_button,self.task_list,self.task_view,self.route,self.mode,self.step_budget,self.keep_going,self.chat_space,self.code_space,self.skynet_button):w.setEnabled(not busy)
+        for w in (self.new_button,self.project_button,self.task_list,self.task_view,self.route,self.mode,self.step_budget,self.keep_going,self.goal_button,self.chat_space,self.code_space,self.skynet_button):w.setEnabled(not busy)
         self.prompt.setEnabled(True);self.send_button.setEnabled(True);self.send_button.setText('✦  Steer' if busy else '↑  Send')
         self.stop.setEnabled(busy)
         if self.tray:self.tray.setToolTip('TalkToAi Code — '+('working in background' if busy else 'ready'))
@@ -951,6 +1004,11 @@ class Studio(QMainWindow):
         elif kind=='goal_checkpoint':
             self.task['goal_checkpoint']=data;self.refresh_plan();self.persist()
             self.status.setText(f"Work pass {data.get('pass',1)}/{data.get('total_passes',1)} · {data.get('steps',0)} steps · {data.get('state','')}")
+        elif kind=='task_goal':
+            from task_goals import normalize_goal
+            try:goal=normalize_goal(data,previous=self.current_task_goal())
+            except (ValueError,TypeError) as exc:self.status.setText('Task goal update rejected: '+str(exc));return
+            self.task['task_goal']=goal;self.task['task_goal_project']=self.task['project'];self.refresh_plan();self.persist()
         elif kind=='plan':
             self.task['plan']=data;self.refresh_plan();self.persist()
         elif kind=='verification':
@@ -1546,6 +1604,13 @@ The compact model is intentionally kept as the weak-CPU fallback. TalkToAi Code 
         folder=Path(self.task['project'])/'.talktoai-code/reports';folder.mkdir(parents=True,exist_ok=True)
         path=folder/(self.task['id']+'.md')
         lines=['# '+self.task['title'],'','Project: '+self.task['project'],'']
+        goal=self.current_task_goal()
+        if goal:
+            lines+=['## Saved task goal (self-reported)','',goal['objective'],'','Criterion status and evidence are reported observations, not independent verification.','']
+            for criterion in goal['criteria']:
+                lines.append('- '+criterion['status']+': '+criterion['text']+(' — evidence: '+criterion['evidence'] if criterion.get('evidence') else ''))
+            if goal.get('next_action'):lines+=['','Next action: '+goal['next_action']]
+            lines.append('')
         for message in self.task['messages']:
             if message['role'] in ('user','assistant') and message.get('content'):
                 lines+=['## '+message['role'].title(),'',message['content'],'']

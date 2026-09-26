@@ -36,6 +36,8 @@ def render(path, width=1440, height=900, steps=False, jobs=False, providers=Fals
         window.connection_label.setText('Your own SSH connections')
         window.use_starter('Build a game feature')
         if steps:
+            window.task['task_goal']={'objective':'Add a usable pause menu to the existing game.','criteria':[{'id':'c1','text':'Escape opens and closes the pause menu','status':'pending','evidence':''},{'id':'c2','text':'Project checks pass and gameplay is inspected','status':'pending','evidence':''}],'next_action':'Implement the menu, then inspect the result.'}
+            window.task['task_goal_project']=str(root)
             window.task['plan']={'steps':[{'step':'Inspect the project and conventions','status':'completed'},{'step':'Implement the requested game feature','status':'in_progress'},{'step':'Run checks and collect evidence','status':'pending'}],'explanation':'UI demonstration only: a task checklist maintained by the agent.'}
             window.task['verification']={'status':'not run','summary':'This demonstration has not executed a check.'}
             window.task['project_context']={'engine':'Godot (demo)','checks':{'commands':[]}}
