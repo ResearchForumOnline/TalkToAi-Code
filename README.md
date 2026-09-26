@@ -4,9 +4,11 @@
 
 ### 0.6.0: project targeting and longer coding tasks
 
-Named projects such as `game: NIGHTFALL` are resolved inside the selected or explicitly named workspace before inference. Ambiguous matches stop for project selection. `use AMD always` selects AMD inference without moving your local project to a server.
+Public installations use **Server** for remote inference; choose a personal **Server name** in Settings. Fresh installs use `qwen3-coder:30b` as the server model ID; existing settings are preserved. Set model IDs for your installed Ollama runtimes, and use **Models → Compare installed coding models** for two bounded code/tool fixtures. The comparison is advisory and does not download models or silently change defaults.
 
-The agent now condenses older exchanges into an evidence checkpoint instead of aborting when ordinary conversation history fills its context budget. The current objective and complete recent tool batches stay together, and saved history remains intact. Context sizes are estimates; important omitted details may require rereading the source.
+Named projects such as `game: NIGHTFALL` are resolved inside the selected or explicitly named workspace before inference. Ambiguous matches stop for project selection. `use Server always` selects Server inference without moving your local project to a server.
+
+A deterministic discovery guard detects repeated unchanged searches, provides recovery guidance and pauses explicitly unfinished work if the loop persists. The agent now condenses older exchanges into an evidence checkpoint instead of aborting when ordinary conversation history fills its context budget. The current objective and complete recent tool batches stay together, and saved history remains intact. Context sizes are estimates; important omitted details may require rereading the source.
 
 Skynet candidates now preserve supported Godot and Unity source and small assets, including nested source ZIP projects. Use project `AGENTS.md` for coding conventions and acceptance criteria. See [Customize and improve](docs/CUSTOMIZE-AND-IMPROVE.md) for project guidance and editing TalkToAi Code's own source.
 
@@ -51,7 +53,7 @@ Separate **Chat** and **Code** spaces retain their conversations across restarts
 
 Optional **Gmail** and **Zmail** controls support read-only search and selected message/thread reads after each user configures a separate OAuth client and signs in. Tokens stay in Windows Credential Manager, macOS Keychain or a Linux desktop keyring. The app does not include shared credentials or a mail send tool. See [mail connector setup](MAIL-CONNECTORS.md).
 
-The AMD runtime can reconnect its loopback SSH tunnel, and coding-agent tool replies are paired to their call IDs. Browser tools are available for ordinary web research requests. A failed check no longer satisfies the agent's post-edit verification gate. See [0.4.0 release notes](RELEASE-0.4.0.md) for validation and limits.
+The Server runtime can reconnect its loopback SSH tunnel, and coding-agent tool replies are paired to their call IDs. Browser tools are available for ordinary web research requests. A failed check no longer satisfies the agent's post-edit verification gate. See [0.4.0 release notes](RELEASE-0.4.0.md) for validation and limits.
 
 ### New in 0.3.0 preview: jobs, deliverables and own-key OpenAI
 
@@ -143,7 +145,7 @@ Windows has a packaged x64 installer. Linux and macOS use source installers with
 
 Open **More → Link ZeroThink account**, choose your vault provider and exact model ID, and complete the normal web sign-in and device approval. The desktop remembers its own session using Windows DPAPI. Provider keys remain in the server vault. Do not copy your Google password or vault keys into chat. `link zerothink` also opens the dialog. The existing account/device API is used; no server auth change is required.
 
-The vault adapter is experimental: it requests a structured JSON reply from the selected model and validates the whole tool batch before execution. Invalid replies fail without executing that batch. Model tool reliability varies. Local/AMD routes use native Ollama tool calls. The adapter's mock protocol, Windows token encryption and URL checks were tested; a real signed-in vault inference has not yet been verified. Account entitlements and provider quotas still apply. APIs are not guaranteed free; no paid provider is selected automatically.
+The vault adapter is experimental: it requests a structured JSON reply from the selected model and validates the whole tool batch before execution. Invalid replies fail without executing that batch. Model tool reliability varies. Local/Server routes use native Ollama tool calls. The adapter's mock protocol, Windows token encryption and URL checks were tested; a real signed-in vault inference has not yet been verified. Account entitlements and provider quotas still apply. APIs are not guaranteed free; no paid provider is selected automatically.
 
 Use your account's device controls to revoke access. Closing the linking dialog cancels polling; an already issued session may need revocation in the account.
 
@@ -176,7 +178,7 @@ Groq now has its own API preset. Open **Models & APIs**, choose **Groq API**, en
 
 ### Keep working with 0.6.0
 
-Auto can start installed local Ollama when AMD is unavailable. Failed requests return to the composer. More > Back up conversations exports a private ZIP. See [the guide](KEEP-WORKING.txt). Back up projects separately.
+Auto can start installed local Ollama when Server is unavailable. Failed requests return to the composer. More > Back up conversations exports a private ZIP. See [the guide](KEEP-WORKING.txt). Back up projects separately.
 
 ### Research and Windows control
 

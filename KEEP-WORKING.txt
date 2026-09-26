@@ -12,8 +12,8 @@ For small local models: inspect first, request one change, then ask for a releva
 Pin useful chats and keep durable decisions in Project memory.
 
 MODEL OPTIONS
-Auto uses AMD/local Ollama; it never falls back to a paid API.
-If AMD is unavailable, Auto tries to start installed local Ollama.
+Auto uses Server/local Ollama; it never falls back to a paid API.
+If Server is unavailable, Auto tries to start installed local Ollama.
 Auto requires an already installed model; it does not download one.
 For Groq: Models & APIs > Groq API > your key > Fetch models > Save profile > Use selected API.
 Groq account limits and charges apply. No OpenAI subscription is needed for these routes.
@@ -21,7 +21,7 @@ Groq account limits and charges apply. No OpenAI subscription is needed for thes
 RECOVERY
 Failed requests return to the composer. Review Changes and Tools before retrying:
 some actions may already have completed.
-For AMD problems, click Reconnect AMD model and check Connections.
+For Server problems, click Reconnect Server model and check Connections.
 For local model problems, open Model choices and storage.
 For API problems, check your selected model, key and account limits.
 

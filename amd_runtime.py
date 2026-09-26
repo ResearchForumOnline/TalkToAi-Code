@@ -1,4 +1,7 @@
-"""Keep the optional AMD Ollama tunnel usable without inspecting SSH secrets."""
+"""Keep the optional server Ollama tunnel usable without inspecting SSH secrets.
+
+Legacy module/function names remain compatible with existing installations.
+"""
 
 import json
 import shutil
@@ -38,17 +41,18 @@ def ensure_amd_tunnel(config, timeout=12):
 
 
 def _ensure_amd_tunnel(config, timeout):
+    label = ' '.join(str(config.get('server_label') or 'Server').split())[:60] or 'Server'
     model = str(config.get('server_model', '')).strip()
     names = model_inventory()
     if names is not None:
         if model in names or model + ':latest' in names:
-            return True, 'AMD model available'
-        return False, 'AMD is reachable, but the selected model is missing. Check Model choices.'
+            return True, f'{label} model available'
+        return False, f'{label} is reachable, but the selected model is missing. Check Model choices.'
     if port_in_use():
         return False, 'Port 11435 is occupied but does not serve Ollama. Close that listener and retry.'
     alias = str(config.get('active_ssh_alias', '')).strip()
     if not alias or alias.startswith('-'):
-        return False, 'Set an SSH host alias in Connections, then retry AMD.'
+        return False, f'Set an SSH host alias in Connections, then retry {label}.'
     ssh = shutil.which('ssh')
     if not ssh:
         return False, 'OpenSSH is unavailable on this PC. Install or enable it, then retry.'
@@ -62,15 +66,15 @@ def _ensure_amd_tunnel(config, timeout):
             stderr=subprocess.DEVNULL, creationflags=flags,
         )
     except OSError as exc:
-        return False, f'Could not start the AMD SSH tunnel: {exc}'
+        return False, f'Could not start the {label} SSH tunnel: {exc}'
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if process.poll() is not None:
-            return False, 'SSH exited before the AMD tunnel connected. Check your SSH alias and server.'
+            return False, f'SSH exited before the {label} tunnel connected. Check your SSH alias and server.'
         names = model_inventory(timeout=1)
         if names is not None:
             if model in names or model + ':latest' in names:
-                return True, 'AMD tunnel connected and model available'
-            return False, 'AMD tunnel connected, but the selected model is missing. Check Model choices.'
+                return True, f'{label} tunnel connected and model available'
+            return False, f'{label} tunnel connected, but the selected model is missing. Check Model choices.'
         time.sleep(0.4)
-    return False, 'AMD tunnel did not become ready. Check SSH connectivity and server Ollama.'
+    return False, f'{label} tunnel did not become ready. Check SSH connectivity and server Ollama.'

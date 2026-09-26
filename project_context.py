@@ -11,9 +11,10 @@ DISCOVERY_SKIP = {'node_modules', 'vendor', 'build', 'dist', 'bin', 'obj', 'libr
                   'backups', 'backup', 'artifacts', 'output', 'outputs', 'upstream', '__pycache__', 'venv'}
 
 
-def requested_runtime(text):
+def requested_runtime(text, server_label='Server'):
     """Recognize an affirmative routing instruction embedded in a longer task."""
-    return 'server' if re.search(r'(?:^|[\n.!;,])\s*(?:please\s+)?(?:always\s+)?(?:use|switch to)\s+(?:my\s+)?amd\b', text, re.I) else None
+    names='|'.join(re.escape(name) for name in ('server','amd',server_label.strip()) if name)
+    return 'server' if re.search(r'(?:^|[\n.!;,])\s*(?:please\s+)?(?:always\s+)?(?:use|switch to)\s+(?:my\s+)?(?:'+names+r')\b', text, re.I) else None
 
 
 def explicit_project_directory(text):

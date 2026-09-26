@@ -45,4 +45,4 @@ jobs:
           test -s "$HOME/Library/Application Support/TalkToAiCode/studio-preview.png"
           test -x "$HOME/Applications/TalkToAi Code.app/Contents/MacOS/TalkToAiCode"
       - name: Portable agent regression checks
-        run: python -m unittest test_context_window test_project_target test_skynet_mode -v
+        run: python -m unittest test_context_window test_project_target test_skynet_mode test_progress_guard test_engine_discovery test_benchmark_models -v

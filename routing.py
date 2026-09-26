@@ -66,7 +66,7 @@ def choose_route(config, preference='auto', benchmarks=None):
     for route in routes:
         model=config[route+'_model']
         if model in available[route] or model+':latest' in available[route]:valid.append(route)
-    if not valid:raise ConnectionError('Selected models are unavailable. Start Ollama / the AMD tunnel or check Runtime settings.')
+    if not valid:raise ConnectionError('Selected models are unavailable. Start Ollama or reconnect your server, then check the model IDs in Settings.')
     scores={r['route']:r['elapsed_seconds'] for r in (benchmarks or {}).get('results',[]) if r.get('success') and r.get('quality_pass',False) and r.get('agent_pass',False) and r.get('model')==config.get(r['route']+'_model')}
     if preference=='auto':valid.sort(key=lambda r:scores.get(r,10000 if r=='server' else 10001))
     route=valid[0]

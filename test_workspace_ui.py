@@ -49,24 +49,89 @@ class WorkspaceUITests(unittest.TestCase):
             self.assertEqual(choice.currentData(),8192)
             choice.setCurrentIndex(choice.findData(16384))
             dialog.findChild(QLineEdit,'godot_executable').setText(str(godot.resolve()))
+            dialog.findChild(QLineEdit,'server_label').setText('My GPU server')
+            dialog.findChild(QLineEdit,'server_model').setText('team/server-coder:custom')
+            dialog.findChild(QLineEdit,'local_model').setText('local-coder:small')
+            dialog.findChild(QLineEdit,'local_large_model').setText('local-coder:large')
             return QDialog.Accepted
         with patch.object(studio.QDialog,'exec',save),patch.object(w,'set_start_with_windows'),patch('search_provider.configured',return_value=False):
             w.settings()
         self.assertEqual(w.model_performance(),{'num_ctx':16384})
         self.assertEqual(json.loads((self.root/'config.json').read_text())['num_ctx'],16384)
         self.assertEqual(json.loads((self.root/'config.json').read_text())['godot_executable'],str(godot.resolve()))
+        self.assertEqual(json.loads((self.root/'config.json').read_text())['server_label'],'My GPU server')
+        self.assertTrue(w.route.itemText(2).startswith('My GPU server · '))
+        self.assertEqual(w.route.itemText(2),'My GPU server · team/server-coder:custom')
+        self.assertEqual(w.route.itemText(1),'Local · local-coder:small')
         def cancel(dialog):
             choice=dialog.findChild(QComboBox,'model_context_window')
             self.assertEqual(choice.currentData(),16384)
             choice.setCurrentIndex(choice.findData(32768))
             self.assertEqual(dialog.findChild(QLineEdit,'godot_executable').text(),str(godot.resolve()))
+            self.assertEqual(dialog.findChild(QLineEdit,'server_label').text(),'My GPU server')
+            dialog.findChild(QLineEdit,'server_label').setText('Cancelled label')
             return QDialog.Rejected
         with patch.object(studio.QDialog,'exec',cancel),patch('search_provider.configured',return_value=False):w.settings()
         self.assertEqual(w.model_performance(),{'num_ctx':16384})
+        self.assertEqual(w.server_name(),'My GPU server')
+
+    def test_generic_server_labels_and_custom_model_names(self):
+        w=self.window
+        self.assertEqual(w.server_name(),'Server')
+        self.assertTrue(w.route.itemText(2).startswith('Server · '))
+        self.assertNotIn('AMD',w.route.itemText(0))
+        w.config.update(server_label='AMD',server_model='custom-coder:latest',local_model='small:custom',local_large_model='large:custom')
+        w.refresh_route_labels()
+        self.assertEqual(w.route.itemText(2),'AMD · custom-coder:latest')
+        self.assertEqual(w.route.itemText(1),'Local · small:custom')
+        self.assertEqual(w.route.itemText(3),'Local large · large:custom')
+        self.assertEqual(w.reconnect_button.text(),'Reconnect AMD model')
+        w.handle_event('route',{'route':'server','model':'custom-coder:latest','reason':'explicit'})
+        self.assertTrue(w.route_description.startswith('AMD · '))
+
+    def test_use_server_always_selects_only_server_inference(self):
+        w=self.window;w.task['project']=str(self.root)
+        with patch.object(w,'write_config') as save:
+            self.assertTrue(w.prepare_task_target('use server always, improve this project'))
+            save.assert_called_once()
+        self.assertEqual(w.route.currentIndex(),2)
+        self.assertEqual(w.config['preferred_route'],'server')
+
+    def test_model_comparison_report_preserves_route_and_reports_missing_fixtures(self):
+        w=self.window;w.route.setCurrentIndex(2)
+        data={'cancelled':False,'note':'Two short fixtures; route unchanged.','results':[
+            {'route':'server','model':'coder:test','elapsed_seconds':3,'fixtures':[
+                {'kind':'code','passed':True,'elapsed_seconds':1},
+                {'kind':'tools','passed':False,'elapsed_seconds':2}]},
+            {'route':'local_large','model':'local:test','fixtures':[],'error':'Not installed'}]}
+        w.handle_event('model_comparison',data)
+        self.assertEqual(w.route.currentIndex(),2)
+        self.assertEqual(w.task['model_comparison'],data)
+        text=w.task['messages'][-1]['content']
+        self.assertIn('Pass · 1s',text);self.assertIn('Fail · 2s',text)
+        self.assertIn('Not completed',text);self.assertIn('Not installed',text)
+
+    def test_model_comparison_is_background_cancelable_and_does_not_choose_route(self):
+        w=self.window;w.route.setCurrentIndex(1)
+        with patch('studio.threading.Thread') as worker:
+            w.compare_installed_models()
+            worker.assert_called_once();worker.return_value.start.assert_called_once()
+        self.assertTrue(w.busy);self.assertTrue(w.stop.isEnabled());self.assertFalse(w.cancel.is_set())
+        w.stop_task();self.assertTrue(w.cancel.is_set());self.assertEqual(w.route.currentIndex(),1)
+        w.set_busy(False)
 
     def test_invalid_context_setting_falls_back_to_8k(self):
         self.window.config['num_ctx']='999999'
         self.assertEqual(self.window.model_performance(),{'num_ctx':8192})
+
+    def test_invalid_model_id_does_not_save_settings(self):
+        w=self.window;original=dict(w.config)
+        def save(dialog):
+            dialog.findChild(QLineEdit,'server_model').setText('')
+            return QDialog.Accepted
+        with patch.object(studio.QDialog,'exec',save),patch('search_provider.configured',return_value=False),patch.object(w,'error') as error:
+            w.settings();error.assert_called_once()
+        self.assertEqual(w.config,original)
 
     def test_project_switch_preserves_unsaved_editor_by_stopping(self):
         w=self.window;w.task['project']=str(self.root)

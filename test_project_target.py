@@ -55,6 +55,9 @@ class ProjectTargetTests(unittest.TestCase):
         self.assertEqual(resolve_project_target(self.root,'Add a pause menu')['root'],str(self.root))
 
     def test_embedded_runtime_instruction_is_affirmative_only(self):
+        self.assertEqual(requested_runtime('use server always, make my game better'),'server')
+        self.assertEqual(requested_runtime('Please switch to my render box. Improve this app','render box'),'server')
+        self.assertIsNone(requested_runtime('Do not use server; use local'))
         self.assertEqual(requested_runtime('use AMD always, make my game better'),'server')
         self.assertEqual(requested_runtime('Please use AMD. Improve this app'),'server')
         self.assertIsNone(requested_runtime('Do not use AMD; use local'))

@@ -22,6 +22,7 @@ from urllib.parse import urlsplit
 from agent_workflow import ToolCatalog, PLAN_TOOL, normalize_plan, previous_plan, validate_calls, check_evidence
 from process_jobs import ProcessJobs
 from workspace_outputs import read_batch, register_output
+from progress_guard import DiscoveryProgressGuard
 
 SKIP = {'.git', '.godot', 'node_modules', '__pycache__', '.venv', 'venv', '.talktoai-code', 'Library', 'Temp', 'obj', 'bin', 'vendor', 'artifacts', 'build', 'dist'}
 ACTIVE_REMOTE = None
@@ -852,6 +853,7 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
     continuations=0
     job_review_requested=False
     failed_calls={}
+    discovery_guard=DiscoveryProgressGuard(tools.root)
     verification=None
     last_compacted_count=0
     for step in range(rounds):
@@ -960,7 +962,10 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
                     raise PermissionError('This tool is not enabled for this turn.')
                 if failed_calls.get(signature,0)>=2:
                     raise ValueError('This exact action already failed twice. Inspect the cause, change the approach, or report a blocker instead of repeating it.')
-                if name=='enable_tools':
+                guard_result=discovery_guard.before(name,args)
+                if guard_result is not None:
+                    result=guard_result
+                elif name=='enable_tools':
                     group=args.get('group','')
                     candidate=list(active_tools)
                     result=catalog.enable(group,candidate)
@@ -980,6 +985,13 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
                     result=run_subagent(url,model,project,args.get('task',''),args.get('role','reviewer'),cancel,emit,performance)
                 else:
                     result = tools.execute(name, args)
+                if guard_result is None:
+                    guidance=discovery_guard.observe(name,args,result)
+                    if guidance:
+                        result=guidance+'\n\nObserved tool result:\n'+result
+                        emit('status','Repeated unchanged discovery detected; focusing on the selected project.')
+                if len(tools.changes)>count or name in ('write_file','write_file_checked','edit_file','desktop_write_file','run_command','desktop_run_command','remote_run_command','start_process','run_blender_script'):
+                    discovery_guard.reset()
                 # A successful inspection command is not a test/build result.
                 command_failed=name in ('run_checks','run_command','desktop_run_command','remote_run_command') and any(int(code)!=0 for code in re.findall(r'^Exit (-?\d+)\s*$',result,re.M))
                 retries=failed_calls.get(signature,0)+1
@@ -1011,4 +1023,7 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
             emit('message', tool_message)
             emit('result', result)
             if artifact:emit('artifact',artifact)
+        if discovery_guard.paused:
+            emit('status','Paused: the model repeated unchanged discovery after recovery guidance. Progress is saved; the task remains unfinished.')
+            return
     emit('status', f'Paused after {rounds} steps. Send a follow-up to continue.')

@@ -116,7 +116,8 @@ class Studio(QMainWindow):
             'project': str(Path.home() if os.name != 'nt' else (Path.home() / 'Documents' if STORE_PACKAGE and (Path.home() / 'Documents').is_dir() else Path.home() if STORE_PACKAGE else HOME.parent)),
             'local_model': 'qwen3.5:4b',
             'local_large_model': 'smtek/Qwen3.8-27B',
-            'server_model': 'openzero-qwen3-coder-30b-a3b-q3',
+            'server_model': 'qwen3-coder:30b',
+            'server_label': 'Server',
             'approval_policy': 'ask_remote',
             'auto_context': True,
             'num_ctx': 8192,
@@ -254,7 +255,7 @@ class Studio(QMainWindow):
         more.setMenu(more_menu);side.addWidget(more)
         self.connection_label = QLabel('⌁  No SSH connection'); self.connection_label.setObjectName('muted'); side.addWidget(self.connection_label)
         self.health_label = QLabel('○  Checking models'); self.health_label.setObjectName('muted'); side.addWidget(self.health_label)
-        self.button('Reconnect AMD model', self.reconnect_amd, side)
+        self.reconnect_button=self.button('Reconnect server model', self.reconnect_amd, side)
         outer.addWidget(sidebar)
         split = QSplitter(); outer.addWidget(split,1)
         center = QWidget(); chat = QVBoxLayout(center); chat.setContentsMargins(30,18,30,20); chat.setSpacing(12)
@@ -279,7 +280,7 @@ class Studio(QMainWindow):
         box = QFrame(); box.setObjectName('composer'); composer = QVBoxLayout(box)
         self.prompt = Composer(); self.prompt.setPlaceholderText('Ask anything, or describe what to build…'); self.prompt.setFixedHeight(104); self.prompt.submitted.connect(self.send); composer.addWidget(self.prompt)
         options = QHBoxLayout()
-        self.route = QComboBox(); self.route.addItems(['Auto · AMD 30B / fallback', 'Local · compact CPU', 'AMD · Qwen Coder 30B-A3B', 'Local · Qwen3.8 27B', 'API · optional provider']); options.addWidget(self.route)
+        self.route = QComboBox(); self.route.addItems(['Auto', 'Local', 'Server', 'Local large', 'API · optional provider']);self.refresh_route_labels();options.addWidget(self.route)
         self.mode = QComboBox(); self.mode.addItems(['Act', 'Plan']); self.mode.setToolTip('Act permits file edits and host commands. Plan only reads project files. Commands are not OS-sandboxed.'); options.addWidget(self.mode)
         self.step_budget=QComboBox()
         for steps in (16,32,64):self.step_budget.addItem(f'{steps} steps',steps)
@@ -704,7 +705,7 @@ class Studio(QMainWindow):
         if normalized in ('open connections','ssh connections','manage connections'):
             self.prompt.clear();self.connections_dialog();return True
         if normalized in ('connect to server','connect to amd','use my amd server','check amd server','check remote status'):
-            self.prompt.setPlainText('Use my AMD server. Verify the configured SSH connection and inspect the current remote project state before doing anything else.');return False
+            self.prompt.setPlainText('Use my configured SSH server. Verify the configured SSH connection and inspect the current remote project state before doing anything else.');return False
         if normalized in ('open settings','show settings','permissions'):
             self.prompt.clear();self.settings();return True
         if normalized in ('open api providers','api providers','use api provider','use api'):
@@ -728,7 +729,7 @@ class Studio(QMainWindow):
                 except Exception as exc:self.bus.event.emit('error',str(exc))
                 finally:self.bus.event.emit('finished',None)
             threading.Thread(target=execute,daemon=True).start();return True
-        controls={'use amd':2,'switch to amd':2,'use local':1,'switch to local':1,'use auto':0,'automatic routing':0,'use api':4,'use api provider':4}
+        controls={'use server':2,'switch to server':2,'use amd':2,'switch to amd':2,'use '+self.server_name().lower():2,'switch to '+self.server_name().lower():2,'use local':1,'switch to local':1,'use auto':0,'automatic routing':0,'use api':4,'use api provider':4}
         reply=None
         if normalized in ('open desktop','open my desktop') or normalized=='open score arena' or normalized.startswith('open project '):
             if normalized=='open score arena':
@@ -842,7 +843,7 @@ class Studio(QMainWindow):
         threading.Thread(target=work,daemon=True).start()
 
     def prepare_task_target(self,text):
-        if requested_runtime(text)=='server':
+        if requested_runtime(text,self.server_name())=='server':
             self.route.setCurrentIndex(2)
             if re.search(r'\balways\b',text,re.I):
                 self.config['preferred_route']='server';self.write_config()
@@ -958,8 +959,27 @@ class Studio(QMainWindow):
             self.task.setdefault('artifacts',[]).append({'artifact':data['report_path'],'type':'report'})
             self.task.setdefault('artifacts',[]).append({'artifact':data['diff_path'],'type':'diff'})
             self.refresh_artifacts();self.persist();self.render();self.right.setCurrentIndex(4)
+        elif kind=='model_comparison':
+            self.task['model_comparison']=data
+            lines=['Installed coding model comparison'+(' · stopped' if data.get('cancelled') else ''),'',
+                   '| Route / model | Code fixture | Tool fixture | Total seconds |',
+                   '| --- | --- | --- | --- |']
+            for result in data.get('results',[]):
+                label=self.server_name() if result['route']=='server' else 'Local large'
+                fixtures={item['kind']:item for item in result.get('fixtures',[])}
+                cells=[]
+                for kind in ('code','tools'):
+                    fixture=fixtures.get(kind)
+                    cells.append(('Pass' if fixture['passed'] else 'Fail')+f" · {fixture['elapsed_seconds']}s" if fixture else 'Not completed')
+                model=str(result.get('model','')).replace('|','/').replace('\n',' ')
+                lines.append(f"| {label} / {model} | {cells[0]} | {cells[1]} | {result.get('elapsed_seconds','—')} |")
+            for result in data.get('results',[]):
+                if result.get('error'):lines.extend(['',str(result['model'])+': '+str(result['error'])])
+            lines.extend(['',data.get('note','')])
+            self.task['messages'].append({'role':'assistant','content':'\n'.join(lines)})
+            self.persist();self.render()
         elif kind=='route':
-            label='AMD' if data['route']=='server' else 'API' if data['route']=='provider' else 'PC'
+            label=self.server_name() if data['route']=='server' else 'API' if data['route']=='provider' else 'Local'
             self.route_description=label+' · '+data['model'];self.status.setText(self.route_description+' · '+data['reason'])
         elif kind=='metrics':
             self.task['last_metrics']=data
@@ -1016,21 +1036,21 @@ class Studio(QMainWindow):
     def health(self):
         def check():
             labels=[]
-            for name,port in [('PC',11434),('AMD',11435)]:
+            for name,port in [('Local',11434),(self.server_name(),11435)]:
                 try:
                     with urllib.request.urlopen(f'http://127.0.0.1:{port}/api/tags',timeout=3) as r:json.load(r)
                     labels.append(name+' online')
                 except Exception:
-                    if name=='AMD' and self.config.get('active_ssh_alias'):
+                    if port==11435 and self.config.get('active_ssh_alias'):
                         ready,_=ensure_amd_tunnel(self.config)
-                        labels.append('AMD online' if ready else 'AMD offline · Reconnect AMD')
+                        labels.append(name+' online' if ready else name+' offline · Reconnect server')
                     else:
                         labels.append(name+' offline')
             self.bus.event.emit('health',' · '.join(labels))
         threading.Thread(target=check,daemon=True).start()
 
     def reconnect_amd(self):
-        self.status.setText('Checking AMD model and SSH tunnel…')
+        self.status.setText('Checking '+self.server_name()+' model and SSH tunnel…')
         def work():
             ready,detail=ensure_amd_tunnel(self.config)
             self.bus.event.emit('status',detail)
@@ -1121,8 +1141,8 @@ class Studio(QMainWindow):
         intro=QLabel('Use an OpenSSH host alias from your normal SSH config or agent. Private keys and passwords stay outside TalkToAi Code.')
         intro.setWordWrap(True);intro.setObjectName('muted');layout.addWidget(intro)
         row=QHBoxLayout(); listing=QListWidget(); form=QVBoxLayout(); row.addWidget(listing,1); row.addLayout(form,2);layout.addLayout(row,1)
-        label_edit=QLineEdit();label_edit.setPlaceholderText('Friendly name, e.g. AMD server')
-        alias_edit=QLineEdit();alias_edit.setPlaceholderText('OpenSSH alias, e.g. amd-box')
+        label_edit=QLineEdit();label_edit.setPlaceholderText('Friendly name, e.g. My coding server')
+        alias_edit=QLineEdit();alias_edit.setPlaceholderText('OpenSSH alias, e.g. coding-server')
         path_edit=QLineEdit();path_edit.setPlaceholderText('Optional remote project folder, e.g. ~/games/my-game')
         for title,edit in [('Name',label_edit),('SSH alias',alias_edit),('Remote folder',path_edit)]:
             form.addWidget(QLabel(title));form.addWidget(edit)
@@ -1227,10 +1247,10 @@ class Studio(QMainWindow):
 
 ## Keep working without an OpenAI subscription
 
-- **Auto** uses your AMD/local models. It never switches to a paid API automatically.
+- **Auto** uses your configured server/local models. It never switches to a paid API automatically.
 - **Settings → Research browser** chooses Edge, Chrome, Firefox or Chromium, with fallback if the preferred browser cannot start. **Preferred web search** can use free browser search engines or your own Serper key. Serper searches may consume account credits. Open original pages before citing them.
 - **More → Link ZeroThink account & vault** pairs your account and opens its provider vault. Provider access and quota depend on your ZeroThink account.
-- If the AMD connection fails, Auto now tries to start your installed local Ollama service and use your configured local model. It does not download a model in Auto mode.
+- If the server connection fails, Auto tries to start your installed local Ollama service and use your configured local model. It does not download a model in Auto mode.
 - **Models & APIs → Groq API** connects your own Groq key. Provider limits apply; no OpenAI account is needed for that route.
 - After an error your latest request returns to the composer. Change the model or repair the connection, then send again. Check existing changes first because a failed task may have completed some actions.
 - **More → Back up conversations** saves a private ZIP. Back up your project folders separately.
@@ -1240,7 +1260,7 @@ class Studio(QMainWindow):
 ## Start a coding task
 
 1. Click **Open project** or type `open score arena`.
-2. Choose **Auto** for the tested AMD/local route.
+2. Choose **Auto** to use your available server/local models.
 3. Choose **Act** when you want edits, commands, tests or game launches. Choose **Plan** for read-only investigation.
 4. Describe the outcome, not a list of guessed commands. For example: `Inspect this Godot project, add a pause menu, run the import check, and capture evidence.`
 
@@ -1254,13 +1274,13 @@ The left sidebar shows current-user tools when full-user workspace access is ena
 
 Try `check my desktop for server logins` for a non-secret inventory, or `open desktop` when you want to work in the Desktop folder as a project.
 
-## Use SSH / AMD
+## Use SSH / your server
 
-Remote Pilot is ready for the configured **AMD OpenZero server**. Select **Act** and say: `Use my AMD server: inspect ~/my-project, fix the failing test, run it, and report evidence.` It verifies the saved SSH alias first, inspects the remote project read-only, then works on the requested task. You do not need to open Connections for the configured profile. **Open connections** remains available if you want to add or change a metadata-only alias; it never reads password/key contents.
+Configure an SSH profile in **Connections** to use Remote Pilot. Select **Act** and say: `Connect to my server: inspect ~/my-project, fix the failing test, run it, and report evidence.` It verifies the saved SSH alias first, inspects the remote project read-only, then works on the requested task. **Open connections** lets you add or change a metadata-only alias; it never reads password/key contents. Rename your inference server in **Settings → Server name**; the public default is **Server**.
 
 ## Models and API providers
 
-**Auto** uses the measured local/self-hosted coding route and never falls back to an API. **Local** uses the PC Ollama model. **AMD** uses your SSH-tunnelled server Ollama model. **API** is optional: open **More → API providers**, choose **OpenAI API**, paste your own key or use `OPENAI_API_KEY`, then fetch models and select one supporting Chat Completions and function tools. Save the profile, then click **Use selected API**. You can explicitly make API your startup default; fresh installations stay local-first.
+**Auto** chooses among your available local/server models and never falls back to an API. **Local** uses your local Ollama model. **Server** uses your configured server Ollama model, with SSH tunnelling when configured. The dropdown shows your configured model names. Say `use server always` to remember that route; this chooses where inference runs, while files stay in the selected project. **API** is optional: open **More → API providers**, choose **OpenAI API**, paste your own key or use `OPENAI_API_KEY`, then fetch models and select one supporting Chat Completions and function tools. Save the profile, then click **Use selected API**. You can explicitly make API your startup default; fresh installations stay local-first.
 
 OpenAI API billing is separate from this app. No subscription, API credit or free tier is included. A model-list response verifies metadata access, not inference/tool capability. The app uses `max_completion_tokens` for direct OpenAI requests and leaves sampling defaults alone. Each response has a configurable token ceiling, but a task can make multiple requests: this is not a currency cap. Reported token usage may be incomplete after cancellation and is not an invoice.
 
@@ -1272,7 +1292,7 @@ Use `run tests`, `launch game`, `take a screenshot`, `map project`, `show git ch
 
 ## Browser testing and research
 
-In Act mode ask: `Use the browser to open http://localhost:3000, test the Start button, report page errors and save a screenshot.` The agent uses a separate Edge session, reads page structure, clicks visible text and fills labelled fields. The browser closes after each turn. Screenshots are saved to Evidence. When you choose **Local**, the installed Qwen3.5 model can inspect the next screenshot; AMD is faster for code/tool work but is tools-only, so it verifies through page and accessibility text instead.
+In Act mode ask: `Use the browser to open http://localhost:3000, test the Start button, report page errors and save a screenshot.` The agent uses the configured browser, reads page structure, clicks visible text and fills labelled fields. The browser closes after each turn. Screenshots are saved to Evidence. Supported vision models can inspect screenshots; text-only models use page and accessibility text.
 
 ## Computer use on Windows
 
@@ -1282,7 +1302,7 @@ This is an original open-source-based integration, not Codex's proprietary skill
 
 ## Subagents for coding and games
 
-Ask: `Use a reviewer to inspect the combat code and a test planner to identify missing tests, then fix the confirmed issues.` The main agent can delegate focused local-project questions to reviewer, investigator or test_planner workers. Each gets a separate conversation context and can inspect project files. Findings return to the main conversation's tool activity; the main agent handles changes and tests. Workers run sequentially on the selected model, with at most two workers per turn and five model steps each. Stop cancels the active worker too. Workers cannot edit, run commands, operate the desktop, access SSH, or create more workers. They use additional model inference; Local/AMD uses your own runtime, while an optional API route follows that provider's pricing.
+Ask: `Use a reviewer to inspect the combat code and a test planner to identify missing tests, then fix the confirmed issues.` The main agent can delegate focused local-project questions to reviewer, investigator or test_planner workers. Each gets a separate conversation context and can inspect project files. Findings return to the main conversation's tool activity; the main agent handles changes and tests. Workers run sequentially on the selected model, with at most two workers per turn and five model steps each. Stop cancels the active worker too. Workers cannot edit, run commands, operate the desktop, access SSH, or create more workers. They use additional model inference; Local/Server uses your own runtime, while an optional API route follows that provider's pricing.
 
 ## Long commands and useful outputs
 
@@ -1314,9 +1334,22 @@ Invalid tool batches are retried before any action from that batch executes. Rep
 
 ## If something is slow
 
-Use Auto or AMD, stop a task, or steer it into a smaller request. The AMD route has been faster in measured coding acceptance. Large local models are slow on this CPU; model choices shows disk sizes and tested alternatives.
+Use an available local or server model, stop a task, or steer it into a smaller request. Speed and quality depend on the model, hardware and task. Increase **Settings → Model context window** only when the model and hardware support the larger context.
 ''');layout.addWidget(text,1)
         self.button('Close',dialog.accept,layout);dialog.exec()
+
+    def server_name(self):
+        return ' '.join(str(self.config.get('server_label','Server')).split())[:48] or 'Server'
+
+    def refresh_route_labels(self):
+        name=self.server_name()
+        labels=['Auto · '+name+' / local fallback',
+                'Local · '+str(self.config.get('local_model','configured model')),
+                name+' · '+str(self.config.get('server_model','configured model')),
+                'Local large · '+str(self.config.get('local_large_model','configured model'))]
+        for index,label in enumerate(labels):
+            self.route.setItemText(index,label[:72]);self.route.setItemData(index,label,Qt.ToolTipRole)
+        self.reconnect_button.setText('Reconnect '+name+' model')
 
     def model_performance(self):
         selected=self.config.get('num_ctx',8192)
@@ -1330,6 +1363,13 @@ Use Auto or AMD, stop a task, or steer it into a smaller request. The AMD route 
         intro.setWordWrap(True);intro.setObjectName('muted');layout.addWidget(intro)
         scroll=QScrollArea();scroll.setWidgetResizable(True)
         form_widget=QWidget();form=QVBoxLayout(form_widget);scroll.setWidget(form_widget);layout.addWidget(scroll,1)
+        server_name=QLineEdit(self.server_name());server_name.setObjectName('server_label');server_name.setMaxLength(48)
+        server_name.setPlaceholderText('Server');form.addWidget(QLabel('Server name'));form.addWidget(server_name)
+        model_fields={}
+        for key,title in [('server_model','Server model ID'),('local_model','Local model ID'),('local_large_model','Large local model ID')]:
+            field=QLineEdit(str(self.config.get(key,'')));field.setObjectName(key);field.setMaxLength(200)
+            form.addWidget(QLabel(title));form.addWidget(field);model_fields[key]=field
+        model_hint=QLabel('Use the exact Ollama model ID, including its tag. Saving settings does not download or load models. Server models must already be available on your server.');model_hint.setWordWrap(True);form.addWidget(model_hint)
         context_choice=QComboBox();context_choice.setObjectName('model_context_window')
         for title,value in [('8K tokens · default',8192),('16K tokens',16384),('32K tokens',32768)]:context_choice.addItem(title,value)
         context_choice.setCurrentIndex(context_choice.findData(self.model_performance()['num_ctx']))
@@ -1366,7 +1406,7 @@ Use Auto or AMD, stop a task, or steer it into a smaller request. The AMD route 
         try: serper_state='Serper key saved or supplied by environment' if configured() else 'Serper key not configured'
         except ValueError: serper_state='Saved Serper key needs to be replaced'
         form.addWidget(QLabel(serper_state+' · Serper searches may use account credits.'))
-        remote_pilot=QCheckBox('Remote Pilot: automatically use the configured SSH server for requested AMD / server tasks')
+        remote_pilot=QCheckBox('Remote Pilot: automatically use the configured SSH server for requested remote tasks')
         remote_pilot.setChecked(bool(self.config.get('remote_pilot',True)) and bool(self.config.get('remote_enabled')))
         remote_pilot.setToolTip('The agent verifies the configured SSH alias and remote project before commands. Authentication stays in OpenSSH; the app does not read keys, passwords or server API configuration.')
         form.addWidget(remote_pilot)
@@ -1379,10 +1419,13 @@ Use Auto or AMD, stop a task, or steer it into a smaller request. The AMD route 
             startup.setChecked(False);startup.setEnabled(False)
             startup.setToolTip('Startup shortcuts are configured by the desktop environment on this operating system.')
         form.addWidget(startup)
-        form.addWidget(QLabel('Say “use my AMD server” in Act mode; no Connections step is needed for the configured profile.'))
+        form.addWidget(QLabel('Say “connect to my server” in Act mode to inspect the configured SSH host.'))
         status=QLabel('Current active SSH: '+(self.config.get('active_ssh_alias') or 'none'));status.setObjectName('muted');form.addWidget(status);form.addStretch()
         buttons=QDialogButtonBox(QDialogButtonBox.Save|QDialogButtonBox.Cancel);buttons.accepted.connect(dialog.accept);buttons.rejected.connect(dialog.reject);layout.addWidget(buttons)
         if dialog.exec()==QDialog.Accepted:
+            model_values={key:field.text().strip() for key,field in model_fields.items()}
+            if any(not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}',value) for value in model_values.values()):
+                self.error('Model IDs must be nonempty, at most 200 characters, and contain only letters, numbers, dots, underscores, colons, slashes or hyphens.');return
             godot_value=godot_path.text().strip().strip('"')
             if godot_value and (not Path(godot_value).is_absolute() or not Path(godot_value).is_file()):
                 self.error('Godot executable must be an existing absolute file path.');return
@@ -1395,12 +1438,14 @@ Use Auto or AMD, stop a task, or steer it into a smaller request. The AMD route 
             self.config['web_browser']=browser_choice.currentData();self.config['web_search']=search_choice.currentData()
             self.config['num_ctx']=context_choice.currentData()
             self.config['godot_executable']=godot_value
+            self.config['server_label']=' '.join(server_name.text().split()) or 'Server'
+            self.config.update(model_values)
             try:
                 if not STORE_PACKAGE and os.name=='nt':self.set_start_with_windows(startup.isChecked())
             except Exception as exc:self.error('Could not update Windows startup: '+str(exc))
             if remote_pilot.isChecked() and policy.currentData()!='plan':self.config['approval_policy']='auto_remote'
             if self.config['approval_policy']=='plan':self.mode.setCurrentText('Plan')
-            self.write_config();self.refresh_connection_label();self.refresh_access_label();self.status.setText('Settings saved')
+            self.write_config();self.refresh_route_labels();self.refresh_connection_label();self.refresh_access_label();self.status.setText('Settings saved')
 
     def models_dialog(self):
         import shutil
@@ -1411,11 +1456,11 @@ Use Auto or AMD, stop a task, or steer it into a smaller request. The AMD route 
         info=QTextBrowser();info.setOpenExternalLinks(True)
         info.setMarkdown('''## Choose a model for your hardware
 
-**AMD Qwen3-Coder 30B-A3B** — default coding route. This is a 30B total / 3B active MoE model and stays on your AMD server. TalkToAi Code checks the server inventory before every task.
+**Server** — runs inference on your configured server model. The route dropdown shows its model name; **Settings → Server name** lets you give the server a personal label. TalkToAi Code checks the server inventory before tasks.
 
-**Qwen3.8 27B** — the larger local option for this PC. Select **Local · Qwen3.8 27B** and TalkToAi Code will run `ollama pull smtek/Qwen3.8-27B` once if it is missing. It is a large download and needs substantial RAM; the first run can be slow.
+**Local large** — uses your configured larger local model. Choosing this route and sending a task can download that model if it is missing. Large models need substantial disk space and RAM, and the first run can be slow.
 
-**Qwen3.5 4B · about 3.4 GB** — compact local option with tool and image support. Suitable for trials on this PC; check local test results before expecting AMD performance. [Model details](https://ollama.com/library/qwen3.5:4b)
+**Qwen3.5 4B · about 3.4 GB** — compact local option with tool and image support. Quality and speed depend on your hardware and task. [Model details](https://ollama.com/library/qwen3.5:4b)
 
 **Qwen3.5 9B · about 6.6 GB** — optional larger local alternative with tool and image support. More memory and CPU work; not speed-tested here. [Model details](https://ollama.com/library/qwen3.5:9b)
 
@@ -1427,8 +1472,29 @@ Use Auto or AMD, stop a task, or steer it into a smaller request. The AMD route 
 
 The compact model is intentionally kept as the weak-CPU fallback. TalkToAi Code never pulls a large model merely by opening this panel: downloads happen only when you choose that route and send a task, with progress shown in the status line.
 ''');layout.addWidget(info)
-        row=QHBoxLayout();self.button('Use installed local model…',self.select_installed_model,row);self.button('Close',dialog.accept,row);layout.addLayout(row)
+        row=QHBoxLayout();self.button('Use installed local model…',self.select_installed_model,row)
+        def compare():dialog.accept();self.compare_installed_models()
+        compare_button=self.button('Compare installed coding models',compare,row)
+        compare_button.setToolTip('Runs two short checks on the configured server and large local model. Uses your own runtimes, takes up to four minutes per route, and can be stopped. Does not download models or change your selection.')
+        self.button('Close',dialog.accept,row);layout.addLayout(row)
         dialog.exec()
+
+    def compare_installed_models(self):
+        if self.busy:return
+        self.task['messages'].append({'role':'user','content':'Compare my installed server and large local coding models.'})
+        self.partial='';self.render();self.persist();self.cancel=threading.Event();self.set_busy(True)
+        self.started_at=time.monotonic();self.route_description='Comparing installed coding models'
+        self.status.setText('Comparing two short code/tool fixtures on your runtimes…')
+        config=dict(self.config)
+        def work():
+            try:
+                from benchmark_models import compare_routes
+                result=compare_routes(config,self.cancel,self.bus.event.emit)
+                self.bus.event.emit('model_comparison',result)
+                self.bus.event.emit('status','Model comparison stopped' if result.get('cancelled') else 'Model comparison complete · route selection unchanged')
+            except Exception as exc:self.bus.event.emit('error',str(exc))
+            finally:self.bus.event.emit('finished',None)
+        threading.Thread(target=work,daemon=True).start()
 
     def select_installed_model(self):
         if self.busy:return
@@ -1438,7 +1504,7 @@ The compact model is intentionally kept as the weak-CPU fallback. TalkToAi Code 
             if not names:raise ValueError('No local models available.')
             name,ok=QInputDialog.getItem(self,'Installed local model','Choose a downloaded model:',names,editable=False)
             if ok:
-                self.config['local_model']=name;self.write_config();self.route.setCurrentIndex(1);self.health()
+                self.config['local_model']=name;self.write_config();self.refresh_route_labels();self.route.setCurrentIndex(1);self.health()
         except Exception as exc:self.error(exc)
 
     def export_task(self):
