@@ -1,6 +1,6 @@
 """Current-user desktop tools for TalkToAi Code.
 
-Commands run as the signed-in Windows user. File tools operate under the user
+Commands run as the signed-in user. File tools operate under the user
 profile and deliberately exclude credential material from agent reads/writes.
 """
 from __future__ import annotations
@@ -12,11 +12,13 @@ import subprocess
 import tempfile
 import time
 import uuid
+import signal
 from pathlib import Path
+from platform_paths import state_dir
 
 
-SKIP = {"AppData", ".ssh", ".codex", ".talktoai-code", ".git", "node_modules", "__pycache__", ".venv", "venv", "Library", "Temp", "obj", "bin", "vendor", "dist", "build"}
-SECRET_NAMES = {".env", "credentials.json", "tokens.json", "id_rsa", "id_ed25519", "known_hosts"}
+SKIP = {"AppData", ".ssh", ".codex", ".config", ".gnupg", ".aws", ".kube", ".local", ".talktoai-code", ".git", "node_modules", "__pycache__", ".venv", "venv", "Library", "Temp", "obj", "bin", "vendor", "dist", "build"}
+SECRET_NAMES = {".env", ".npmrc", ".netrc", "credentials.json", "tokens.json", "id_rsa", "id_ed25519", "known_hosts"}
 SECRET_SUFFIXES = {".pem", ".key", ".pfx", ".kdbx", ".dpapi"}
 
 
@@ -25,7 +27,7 @@ class DesktopTools:
         self.root = Path.home().resolve()
         self.act = act
         self.cancel = cancel
-        self.state = Path(state or os.environ.get("LOCALAPPDATA", str(self.root))) / "TalkToAiCode" / "desktop-checkpoints"
+        self.state = Path(state) if state else state_dir() / "desktop-checkpoints"
         self.changes = []
 
     def path(self, relative):
@@ -34,7 +36,7 @@ class DesktopTools:
             raise ValueError("Desktop path must stay inside the signed-in user's profile.")
         parts = {part.lower() for part in target.relative_to(self.root).parts}
         name = target.name.lower()
-        if parts.intersection({".ssh", "appdata"}) or name in SECRET_NAMES or name.startswith(".env.") or target.suffix.lower() in SECRET_SUFFIXES:
+        if parts.intersection({s.lower() for s in SKIP}) or name in SECRET_NAMES or name.startswith(".env.") or target.suffix.lower() in SECRET_SUFFIXES:
             raise PermissionError("Credential and private configuration files are excluded from agent file tools.")
         return target
 
@@ -69,11 +71,15 @@ class DesktopTools:
             workdir = workdir.parent
         flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
         with tempfile.TemporaryFile() as output:
-            process = subprocess.Popen(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", str(command)], cwd=workdir, stdout=output, stderr=subprocess.STDOUT, creationflags=flags)
+            invocation=(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", str(command)]
+                        if os.name=="nt" else ["/bin/sh", "-lc", str(command)])
+            process = subprocess.Popen(invocation, cwd=workdir, stdout=output, stderr=subprocess.STDOUT,
+                                       creationflags=flags, start_new_session=os.name!="nt")
             deadline = time.monotonic() + 180
             while process.poll() is None:
                 if (self.cancel and self.cancel.wait(.1)) or time.monotonic() > deadline:
-                    subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"], capture_output=True, creationflags=flags)
+                    if os.name=="nt":subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"], capture_output=True, creationflags=flags)
+                    else:os.killpg(process.pid,signal.SIGKILL)
                     process.wait(timeout=10)
                     raise InterruptedError("Desktop command stopped or reached its 180-second limit.")
             output.seek(0, 2);size=output.tell();output.seek(max(0,size-30000))

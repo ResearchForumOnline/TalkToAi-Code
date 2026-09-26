@@ -69,7 +69,8 @@ def key_identity(profile):
 
 
 def key_path(profile):
-    return Path(os.environ.get('LOCALAPPDATA') or str(Path.home()))/'TalkToAiCode'/'provider-keys'/(key_identity(profile)+'.dpapi')
+    from platform_paths import state_dir
+    return state_dir()/'provider-keys'/(key_identity(profile)+'.dpapi')
 
 
 def store_api_key(profile, key, remember=False):
@@ -80,27 +81,38 @@ def store_api_key(profile, key, remember=False):
     if parsed.scheme!='https' and parsed.hostname not in ('localhost','127.0.0.1','::1'):
         raise ValueError('Use HTTPS before storing a key for a remote provider.')
     if remember:
-        if os.name!='nt':raise ValueError('Remembered keys use Windows encryption. Use a session key or environment variable on this platform.')
-        import win32crypt
-        encrypted=win32crypt.CryptProtectData(key.encode(),'TalkToAi Code provider',None,None,None,0)
-        path=key_path(profile);path.parent.mkdir(parents=True,exist_ok=True)
-        temporary=path.with_suffix('.tmp');temporary.write_bytes(encrypted);temporary.replace(path)
+        if os.name=='nt':
+            import win32crypt
+            encrypted=win32crypt.CryptProtectData(key.encode(),'TalkToAi Code provider',None,None,None,0)
+            path=key_path(profile);path.parent.mkdir(parents=True,exist_ok=True)
+            temporary=path.with_suffix('.tmp');temporary.write_bytes(encrypted);temporary.replace(path)
+        else:
+            import keyring
+            keyring.set_password('TalkToAi Code provider',key_identity(profile),key)
     _SESSION_KEYS[key_identity(profile)]=key
 
 
 def forget_api_key(profile):
     _SESSION_KEYS.pop(key_identity(profile),None)
-    key_path(profile).unlink(missing_ok=True)
+    if os.name=='nt':key_path(profile).unlink(missing_ok=True)
+    else:
+        import keyring
+        try:keyring.delete_password('TalkToAi Code provider',key_identity(profile))
+        except keyring.errors.PasswordDeleteError:pass
 
 
 def api_key(profile):
     key=_SESSION_KEYS.get(key_identity(profile),'') or os.environ.get(profile.api_key_env,'')
     path=key_path(profile)
-    if not key and path.is_file():
+    if not key and os.name=='nt' and path.is_file():
         try:
             import win32crypt
             key=win32crypt.CryptUnprotectData(path.read_bytes(),None,None,None,0)[1].decode()
         except Exception:raise ValueError('Saved provider key could not be decrypted. Enter it again in API providers.') from None
+    if not key and os.name!='nt':
+        import keyring
+        try:key=keyring.get_password('TalkToAi Code provider',key_identity(profile)) or ''
+        except keyring.errors.KeyringError:key=''
     if profile.is_openai and not key:
         raise ValueError('OpenAI API key is missing. Enter one in API providers or set OPENAI_API_KEY, then restart the app.')
     if profile.is_groq and not key:

@@ -1,6 +1,7 @@
 PySide6==6.8.3
 Pillow==12.2.0
 playwright==1.63.0
-pywinauto==0.6.9
-comtypes==1.4.17
-pywin32==312
+keyring>=25,<27; platform_system != "Windows"
+pywinauto==0.6.9; platform_system == "Windows"
+comtypes==1.4.17; platform_system == "Windows"
+pywin32==312; platform_system == "Windows"

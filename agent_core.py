@@ -4,6 +4,8 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import shlex
+import signal
 import threading
 import urllib.request
 import uuid
@@ -96,7 +98,7 @@ TOOLS = [
     schema('write_file', 'Create or replace a project text file. Original bytes are checkpointed.', {'path': 'Relative file path', 'content': 'Complete new contents'}),
     schema('file_fingerprint', 'Report whether a project file exists, its byte size and SHA-256. Read the relevant file first; use this immediately before write_file_checked.', {'path':'Relative file path'}),
     schema('write_file_checked', 'Create or replace a project text file only if its current SHA-256 exactly matches expected_sha256. Set expected_sha256 to __absent__ only when creating a file that must not already exist. Original bytes are checkpointed.', {'path':'Relative file path','content':'Complete new contents','expected_sha256':'SHA-256 returned by file_fingerprint, or __absent__'}),
-    schema('run_command', 'Run a Windows PowerShell command. Working directory is the project. Commands have the current Windows user permissions, not a sandbox.', {'command': 'PowerShell command'}),
+    schema('run_command', 'Run a command in PowerShell on Windows or sh on Linux/macOS. Working directory is the project. Commands use the current user permissions, without an OS sandbox.', {'command': 'Command for the current operating system'}),
 ]
 TOOLS += [
     schema('read_project_files', 'Read 1-8 UTF-8 project files together with bounded output and SHA-256. Use next_offset and expected_sha256 for subsequent pages; errors are per file.', {'requests':'JSON array: [{"path":"src/main.py","offset":0}]. Optional expected_sha256 verifies a continued page.'}),
@@ -134,7 +136,7 @@ DESKTOP_TOOLS=[
     schema('desktop_list', 'List readable files under the signed-in user profile, excluding generated folders and credential material.', {}),
     schema('desktop_read_file', 'Read a UTF-8 file under the signed-in user profile, excluding credential and private configuration files.', {'path':'Path relative to the user profile'}),
     schema('desktop_write_file', 'Create or replace a text file under the signed-in user profile with a checkpoint. Use only when the user asked for a desktop change.', {'path':'Path relative to the user profile','content':'Complete new contents'}),
-    schema('desktop_run_command', 'Run a PowerShell command as the signed-in Windows user. This is not sandboxed; use the current task context and report the exact result.', {'command':'PowerShell command','cwd':'Optional path relative to the user profile'}),
+    schema('desktop_run_command', 'Run PowerShell on Windows or sh on Linux/macOS as the signed-in user. This is not sandboxed; report the actual result.', {'command':'Command for the current operating system','cwd':'Optional path relative to the user profile'}),
 ]
 BROWSER_TOOLS=[schema('browser', 'Use a task-owned browser. Search the web using the chosen engine with fallback, open original source URLs, inspect page text and links, click exact visible text, fill an exact field label, press a key, or save screenshot. Inspect before interacting. Browser closes after the turn.', {'action':'search, open, inspect, click, fill, press or screenshot','target':'Search query, URL, exact text, field label or key; empty for inspect/screenshot','value':'For search: optional duckduckgo, bing, google or brave engine; for fill: text; otherwise empty'})]
 MAIL_TOOLS=[
@@ -440,7 +442,8 @@ class ProjectTools:
             if not self.act or not ACTIVE_REMOTE_ALLOWED or not REMOTE_PILOT:
                 raise PermissionError('Request an SSH connection in Act mode or enable Remote Pilot in Settings.')
             from ssh_tools import discover_aliases, SSHProfile, SSHSession, load_profiles
-            state=Path(os.environ.get('LOCALAPPDATA',str(self.root)))/'TalkToAiCode'/'connections.json'
+            from platform_paths import state_dir
+            state=state_dir()/'connections.json'
             profiles={p.alias:p for p in load_profiles(state)}
             alias=args.get('alias','')
             if alias not in set(discover_aliases())|set(profiles):
@@ -452,7 +455,8 @@ class ProjectTools:
         if name == 'desktop_server_inventory':
             from desktop_inventory import inspect_desktop
             from ssh_tools import load_profiles
-            state=Path(os.environ.get('LOCALAPPDATA',str(self.root)))/'TalkToAiCode'/'connections.json'
+            from platform_paths import state_dir
+            state=state_dir()/'connections.json'
             return json.dumps(inspect_desktop(load_profiles(state)),indent=2)
         if name in ('desktop_list','desktop_read_file','desktop_write_file','desktop_run_command'):
             if not self.desktop:raise PermissionError('Desktop tools are disabled. Enable Desktop / user access in Settings.')
@@ -524,20 +528,21 @@ class ProjectTools:
                 if not blender:raise ValueError('Blender executable not found.')
                 script=self.path(args['path'])
                 if not script.is_file() or script.suffix!='.py':raise ValueError('Select a project Python script.')
-                command="& '"+blender.replace("'","''")+"' --background --python '"+str(script).replace("'","''")+"'"
+                command=("& '"+blender.replace("'","''")+"' --background --python '"+str(script).replace("'","''")+"'" if os.name=='nt' else shlex.quote(blender)+' --background --python '+shlex.quote(str(script)))
             elif (self.root/'project.godot').exists():
                 if not godot:raise ValueError('Godot executable not found.')
                 if name=='launch_game':
                     p=subprocess.Popen([godot,'--path',str(self.root)],cwd=self.root)
                     return f'Game launched. Process {p.pid}. Playability has not been verified.'
-                command="& '"+godot.replace("'","''")+"' --headless --path . --editor --quit"
+                command=("& '"+godot.replace("'","''")+"' --headless --path . --editor --quit" if os.name=='nt' else shlex.quote(godot)+' --headless --path . --editor --quit')
             elif name=='run_checks':
                 from project_checks import detect_checks
                 checks=detect_checks(self.root)
                 if not checks['commands']:raise ValueError(checks['note'])
                 results=[]
                 for check in checks['commands']:
-                    result=self.execute('run_command',{'command':"$env:CI='true'; "+check+'; exit $LASTEXITCODE'})
+                    command=("$env:CI='true'; "+check+'; exit $LASTEXITCODE') if os.name=='nt' else 'CI=true '+check
+                    result=self.execute('run_command',{'command':command})
                     results.append(check+'\n'+result)
                     if 'Ran 0 tests' in result:
                         results.append('UNVERIFIED: zero tests were discovered. Inspect the test framework and correct the command.');break
@@ -558,12 +563,16 @@ class ProjectTools:
             flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
             import tempfile, time
             with tempfile.TemporaryFile() as output:
-                process = subprocess.Popen(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', args['command']],
-                    cwd=self.root, stdout=output, stderr=subprocess.STDOUT, creationflags=flags)
+                invocation=(['powershell.exe','-NoProfile','-NonInteractive','-Command',args['command']]
+                            if os.name=='nt' else ['/bin/sh','-lc',args['command']])
+                process = subprocess.Popen(invocation,
+                    cwd=self.root, stdout=output, stderr=subprocess.STDOUT, creationflags=flags,
+                    start_new_session=os.name!='nt')
                 deadline = time.monotonic() + 180
                 while process.poll() is None:
                     if self.cancel.wait(.1) or time.monotonic() > deadline:
-                        subprocess.run(['taskkill', '/PID', str(process.pid), '/T', '/F'], capture_output=True, creationflags=flags)
+                        if os.name=='nt':subprocess.run(['taskkill', '/PID', str(process.pid), '/T', '/F'], capture_output=True, creationflags=flags)
+                        else:os.killpg(process.pid,signal.SIGKILL)
                         process.wait(timeout=10)
                         raise InterruptedError('Command stopped or reached its 180-second limit.')
                 output.seek(0, 2)
@@ -701,7 +710,7 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
             active_tools += [schema('connect_remote','Connect to an existing SSH alias for the server the user requested. First use desktop_server_inventory. If aliases are ambiguous ask which server. Credentials remain in OpenSSH. After connecting inspect the remote project before edits.',{'alias':'Exact existing SSH alias from inventory'})]
     if DESKTOP_ACCESS:
         active_tools += DESKTOP_TOOLS
-        if PC_PILOT:
+        if PC_PILOT and os.name=='nt':
             active_tools += [schema('computer','Windows computer use through accessibility. First windows then inspect a returned handle. Click, fill, select or focus a control id from inspect; inspect again after every input. Wait up to 10 seconds for an app transition. Screenshots are evidence only, not vision input. Never infer success from input delivery. Do not access passwords or credentials.',{'action':'windows, inspect, click, fill, select, focus, key, click_point, wait or screenshot','target':'Window handle for inspect; control id for click/fill/select/focus; otherwise empty','value':'Literal text for fill/select; key such as enter, tab, ctrl+s; seconds for wait; window-relative x,y for click_point based on observed bounds'})]
     if (ACTIVE_REMOTE_ALLOWED and REMOTE_PILOT) or any(w in latest for w in ('desktop','server login','login','ssh','remote','connection')):
         active_tools += DISCOVERY_TOOLS

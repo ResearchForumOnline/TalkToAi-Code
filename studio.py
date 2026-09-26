@@ -31,11 +31,12 @@ from updates import is_store_package
 from amd_runtime import ensure_amd_tunnel
 from mail_connectors import gmail_connect, gmail_status, zmail_connect, zmail_status
 from skynet_mode import run_improvement
+from platform_paths import state_dir
 
 SOURCE = Path(__file__).resolve().parent
 HOME = Path(os.environ.get('TALKTOAI_CODE_HOME', str(Path(sys.executable).parent if getattr(sys, 'frozen', False) else SOURCE)))
 STORE_PACKAGE = is_store_package()
-STATE = Path(os.environ.get('LOCALAPPDATA', str(HOME))) / ('TalkToAiCodeStore' if STORE_PACKAGE else 'TalkToAiCode')
+STATE = state_dir(STORE_PACKAGE)
 STATE.mkdir(parents=True, exist_ok=True)
 SESSION = STATE / 'studio.json'
 CONNECTIONS = STATE / 'connections.json'
@@ -110,7 +111,7 @@ class Studio(QMainWindow):
         self.tray=None
         self.job_manager=None
         self.config = {
-            'project': str(Path.home() / 'Documents' if STORE_PACKAGE and (Path.home() / 'Documents').is_dir() else (Path.home() if STORE_PACKAGE else HOME.parent)),
+            'project': str(Path.home() if os.name != 'nt' else (Path.home() / 'Documents' if STORE_PACKAGE and (Path.home() / 'Documents').is_dir() else Path.home() if STORE_PACKAGE else HOME.parent)),
             'local_model': 'qwen3.5:4b',
             'local_large_model': 'smtek/Qwen3.8-27B',
             'server_model': 'openzero-qwen3-coder-30b-a3b-q3',
@@ -302,7 +303,7 @@ class Studio(QMainWindow):
         self.button('Open Blender',self.blender,gl)
         self.button('Capture this app',self.capture,gl)
         self.button('Capture game / desktop in 3s',self.capture_desktop,gl)
-        self.button('Open project folder',lambda:os.startfile(self.task['project']),gl)
+        self.button('Open project folder',lambda:QDesktopServices.openUrl(QUrl.fromLocalFile(self.task['project'])),gl)
         gl.addStretch(); self.right.addTab(game,'Game')
         artifacts=QWidget();al=QVBoxLayout(artifacts)
         al.addWidget(QLabel('Screenshots and generated evidence'))
@@ -1023,7 +1024,7 @@ class Studio(QMainWindow):
 
     def refresh_access_label(self):
         enabled=self.config.get('access_mode','full_user')=='full_user'
-        self.access_label.setText('▣  Desktop tools · '+('ON' if enabled else 'project only'))
+        self.access_label.setText('▣  User files & shell · '+('ON' if enabled else 'project only') if os.name!='nt' else '▣  Desktop tools · '+('ON' if enabled else 'project only'))
         self.access_label.setToolTip('Full user mode uses the signed-in account for desktop commands. Credential file reads remain excluded.')
 
     def active_provider(self):
@@ -1146,7 +1147,7 @@ class Studio(QMainWindow):
             temporary=target.with_name(target.name+'.tmp')
             with zipfile.ZipFile(temporary,'w',zipfile.ZIP_DEFLATED) as archive:
                 archive.writestr('studio.json',SESSION.read_bytes())
-                archive.writestr('RESTORE.txt','Private conversation backup. Includes messages, tool evidence and paths. No provider key files are included. Referenced project files are not backed up. To restore: quit TalkToAi Code, keep a copy of your current app-data studio.json, then replace it with this studio.json in %LOCALAPPDATA%/TalkToAiCode and reopen. Restoration replaces the conversation list. Store installations use TalkToAiCodeStore. Keep this archive private.')
+                archive.writestr('RESTORE.txt','Private conversation backup. Includes messages, tool evidence and paths. No provider key files are included. Referenced project files are not backed up. To restore: quit TalkToAi Code, keep a copy of your current studio.json, then replace it with this studio.json at '+str(SESSION)+' and reopen. Restoration replaces the conversation list. Keep this archive private.')
             temporary.replace(target)
             self.status.setText('Conversations backed up: '+str(target)+' · keep this archive private')
         except Exception as exc:self.error('Backup failed: '+str(exc))
@@ -1181,7 +1182,7 @@ While the agent is working, the Send button becomes **Steer**. Type a correction
 
 ## Use the desktop
 
-The left sidebar shows **Desktop tools · ON** when the current-user workspace is enabled. In Act mode the agent can list, read, write and run PowerShell commands under your signed-in Windows profile. Commands use your normal Windows account and are not an operating-system sandbox. Credential/private configuration files remain excluded from file reads and writes.
+The left sidebar shows current-user tools when full-user workspace access is enabled. In Act mode the agent can list, read, write and run commands under your signed-in account. Windows uses PowerShell; Linux and macOS use sh. Commands are not an operating-system sandbox. Credential/private configuration files remain excluded from file reads and writes.
 
 Try `check my desktop for server logins` for a non-secret inventory, or `open desktop` when you want to work in the Desktop folder as a project.
 
@@ -1195,7 +1196,7 @@ Remote Pilot is ready for the configured **AMD OpenZero server**. Select **Act**
 
 OpenAI API billing is separate from this app. No subscription, API credit or free tier is included. A model-list response verifies metadata access, not inference/tool capability. The app uses `max_completion_tokens` for direct OpenAI requests and leaves sampling defaults alone. Each response has a configurable token ceiling, but a task can make multiple requests: this is not a currency cap. Reported token usage may be incomplete after cancellation and is not an invoice.
 
-Keys can remain in memory for this session, come from an environment variable, or be remembered using Windows user encryption in a separate file. Keys are never put in conversation/profile JSON. **Forget saved key** removes the app-held key without changing external environment variables. Project context and tool results are sent to the provider you explicitly select; review what you share. Other compatible endpoints and ZeroThink remain optional.
+Keys can remain in memory for this session, come from an environment variable, or be remembered in Windows user encryption, macOS Keychain or a Linux desktop keyring. Keys are never put in conversation/profile JSON. **Forget saved key** removes the app-held key without changing external environment variables. Project context and tool results are sent to the provider you explicitly select; review what you share. Other compatible endpoints and ZeroThink remain optional.
 
 ## Games and evidence
 
@@ -1266,6 +1267,7 @@ Use Auto or AMD, stop a task, or steer it into a smaller request. The AMD route 
         pilot=QCheckBox('PC Pilot: automatically operate accessible Windows app controls for requested tasks')
         pilot.setChecked(bool(self.config.get('pc_pilot',True)))
         pilot.setToolTip('In Act mode, the agent carries out its own observe → act → verify loop. It does not bypass sign-in, passwords, security prompts, payments or final external submissions.')
+        if os.name!='nt':pilot.setChecked(False);pilot.setEnabled(False);pilot.setToolTip('Native accessibility control is currently available on Windows. Browser tools and project/user shell tools work here.')
         form.addWidget(pilot)
         browser_choice=QComboBox()
         for title,code in [('Auto: Edge, Chrome, Firefox, Chromium','auto'),('Microsoft Edge','edge'),('Google Chrome','chrome'),('Firefox','firefox'),('Playwright Chromium','chromium')]:browser_choice.addItem(title,code)
@@ -1292,9 +1294,9 @@ Use Auto or AMD, stop a task, or steer it into a smaller request. The AMD route 
         startup=QCheckBox('Start TalkToAi Code with Windows (minimized to the notification area)')
         startup.setChecked(bool(self.config.get('start_with_windows',False)))
         startup.setToolTip('This creates a per-user Startup shortcut. It does not run as administrator and can be disabled here or from the Startup folder.')
-        if STORE_PACKAGE:
+        if STORE_PACKAGE or os.name!='nt':
             startup.setChecked(False);startup.setEnabled(False)
-            startup.setToolTip('Windows manages startup for Microsoft Store apps.')
+            startup.setToolTip('Startup shortcuts are configured by the desktop environment on this operating system.')
         form.addWidget(startup)
         form.addWidget(QLabel('Say “use my AMD server” in Act mode; no Connections step is needed for the configured profile.'))
         status=QLabel('Current active SSH: '+(self.config.get('active_ssh_alias') or 'none'));status.setObjectName('muted');form.addWidget(status);form.addStretch()
@@ -1308,7 +1310,7 @@ Use Auto or AMD, stop a task, or steer it into a smaller request. The AMD route 
             self.config['access_mode']=access.currentData();self.config['pc_pilot']=pilot.isChecked();self.config['remote_pilot']=remote_pilot.isChecked();self.config['remote_enabled']=remote_pilot.isChecked() or self.config.get('remote_enabled',False)
             self.config['web_browser']=browser_choice.currentData();self.config['web_search']=search_choice.currentData()
             try:
-                if not STORE_PACKAGE:self.set_start_with_windows(startup.isChecked())
+                if not STORE_PACKAGE and os.name=='nt':self.set_start_with_windows(startup.isChecked())
             except Exception as exc:self.error('Could not update Windows startup: '+str(exc))
             if remote_pilot.isChecked() and policy.currentData()!='plan':self.config['approval_policy']='auto_remote'
             if self.config['approval_policy']=='plan':self.mode.setCurrentText('Plan')
@@ -1376,9 +1378,13 @@ The compact model is intentionally kept as the weak-CPU fallback. TalkToAi Code 
         self.prompt.setPlainText('Run a Godot headless import check for this project using this executable and report errors: '+str(godot)+' . Use --headless --editor --quit --path .');self.mode.setCurrentText('Act');self.send()
 
     def blender(self):
-        path=Path('C:/Program Files/Blender Foundation/Blender 5.2/blender.exe')
-        if path.exists():os.startfile(path)
-        else:self.error('Blender 5.2 was not found at its configured path.')
+        import shutil
+        path=shutil.which('blender')
+        if not path and os.name=='nt':
+            candidate=Path('C:/Program Files/Blender Foundation/Blender 5.2/blender.exe')
+            if candidate.exists():path=str(candidate)
+        if path:subprocess.Popen([path],stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+        else:self.error('Blender was not found on PATH.')
 
     def capture(self):
         folder=Path(self.task['project'])/'.talktoai-code/screenshots';folder.mkdir(parents=True,exist_ok=True)

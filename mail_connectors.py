@@ -1,6 +1,6 @@
 """Opt-in, read-only mail connectors for TalkToAi Code.
 
-Tokens stay in Windows Credential Manager or in a host-owned token provider.
+Tokens stay in Windows Credential Manager, macOS Keychain or a Linux desktop keyring.
 Mailbox content returned by these tools is untrusted task data, never instructions.
 """
 
@@ -57,6 +57,14 @@ def _windows_credential_store():
 
 
 def _load_credential(name):
+    if os.name != 'nt':
+        import keyring
+        try:raw=keyring.get_password('TalkToAi Code mail',name)
+        except keyring.errors.KeyringError:return None
+        if not raw:return None
+        try:value=json.loads(raw)
+        except (TypeError,ValueError):return None
+        return value if isinstance(value,dict) else None
     store = _windows_credential_store()
     try:
         raw = store.CredRead(name, store.CRED_TYPE_GENERIC)["CredentialBlob"]
@@ -72,6 +80,10 @@ def _load_credential(name):
 
 
 def _save_credential(name, value):
+    if os.name != 'nt':
+        import keyring
+        keyring.set_password('TalkToAi Code mail',name,json.dumps(value))
+        return
     store = _windows_credential_store()
     store.CredWrite({"Type": store.CRED_TYPE_GENERIC, "TargetName": name,
                      "UserName": "TalkToAi Code", "CredentialBlob": json.dumps(value),

@@ -1,0 +1,40 @@
+name: Portable desktop smoke
+on:
+  workflow_dispatch:
+jobs:
+  launch:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Linux source
+        if: runner.os == 'Linux'
+        env:
+          TALKTOAI_SKIP_BROWSER_DOWNLOAD: '1'
+        run: bash install-linux.sh
+      - name: Install macOS source
+        if: runner.os == 'macOS'
+        env:
+          TALKTOAI_SKIP_BROWSER_DOWNLOAD: '1'
+        run: bash install-macos.sh
+      - name: Open Linux workspace
+        if: runner.os == 'Linux'
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          "$HOME/.local/bin/talktoai-code" --preview
+          test -s "$HOME/.local/share/talktoai-code/studio-preview.png"
+      - name: Open macOS workspace
+        if: runner.os == 'macOS'
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          "$HOME/bin/talktoai-code" --preview
+          test -s "$HOME/Library/Application Support/TalkToAiCode/studio-preview.png"
+          test -x "$HOME/Applications/TalkToAi Code.app/Contents/MacOS/TalkToAiCode"

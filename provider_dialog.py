@@ -28,9 +28,9 @@ class ProviderDialog(QDialog):
         self.tokens=QSpinBox();self.tokens.setRange(256,8192);self.tokens.setValue(2048);self.tokens.setSingleStep(256)
         for title,widget in [('Profile name',self.label),('Base URL',self.url),('Model (type a model ID or fetch the list)',self.model),('API key environment variable (optional)',self.env),('API key (never shown again)',self.key),('Output-token limit per model response',self.tokens)]:
             form.addWidget(QLabel(title));form.addWidget(widget)
-        self.remember=QCheckBox('Remember pasted key with Windows user encryption');self.remember.setEnabled(os.name=='nt');form.addWidget(self.remember)
+        self.remember=QCheckBox('Remember pasted key in the system credential store');form.addWidget(self.remember)
         self.default_api=QCheckBox('Use this API profile by default when I next open the app');form.addWidget(self.default_api)
-        fine=QLabel('Session-only keys disappear on exit. Remembered keys are encrypted separately from profile metadata. A task may make several model calls; the token setting is not a money/spending cap. A listed model is not proof that it supports tools.');fine.setWordWrap(True);fine.setObjectName('muted');form.addWidget(fine)
+        fine=QLabel('Session-only keys disappear on exit. Remembered keys use Windows encryption, macOS Keychain or a Linux desktop keyring, separately from profile metadata. A task may make several model calls; the token setting is not a money/spending cap. A listed model is not proof that it supports tools.');fine.setWordWrap(True);fine.setObjectName('muted');form.addWidget(fine)
         self.status=QLabel('Select a provider above, add your own key if required and fetch available models.');self.status.setWordWrap(True);self.status.setTextFormat(Qt.PlainText);form.addWidget(self.status)
         actions=QHBoxLayout();layout.addLayout(actions)
         self.buttons={}
