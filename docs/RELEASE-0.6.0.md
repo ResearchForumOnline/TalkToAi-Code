@@ -26,7 +26,7 @@ This release repairs project targeting and long-task context failures reported d
 
 - 221 automated regression checks passed on Windows.
 - Packaged Windows app: browser interaction/screenshot, managed process execution, batch reads, output registration, bundled example and image attachment checks passed; GUI launch exited successfully.
-- Ubuntu and macOS source installation, offscreen GUI startup and portable agent regressions passed: https://github.com/ResearchForumOnline/TalkToAi-Code/actions/runs/36273569304
+- Ubuntu and macOS source installation, offscreen GUI startup and portable agent regressions passed: https://github.com/ResearchForumOnline/TalkToAi-Code/actions/runs/36274863285
 - The reported NIGHTFALL request resolves to the intended native Godot project using directory/manifest metadata.
 
 - Real server-model coding trial: [fixture, checks, timings and limitations](AMD-ACCEPTANCE-0.6.0.md). Both implementation bugs were repaired and all four frozen checks passed.
