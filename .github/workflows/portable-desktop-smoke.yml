@@ -45,4 +45,13 @@ jobs:
           test -s "$HOME/Library/Application Support/TalkToAiCode/studio-preview.png"
           test -x "$HOME/Applications/TalkToAi Code.app/Contents/MacOS/TalkToAiCode"
       - name: Portable agent regression checks
-        run: python -m unittest test_context_window test_project_target test_skynet_mode test_progress_guard test_engine_discovery test_benchmark_models test_keep_going test_research_journal test_runtime_diagnostics test_task_goals test_tool_protocol -v
+        env:
+          QT_QPA_PLATFORM: offscreen
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            runtime="$HOME/Library/Application Support/TalkToAiCode/.venv/bin/python"
+          else
+            runtime="$HOME/.local/share/talktoai-code/.venv/bin/python"
+          fi
+          "$runtime" -m unittest test_context_window test_project_target test_skynet_mode test_progress_guard test_engine_discovery test_benchmark_models test_keep_going test_research_journal test_runtime_diagnostics test_task_goals test_tool_protocol test_control_cancel test_workspace_ui -v

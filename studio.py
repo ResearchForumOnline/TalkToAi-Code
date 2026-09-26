@@ -34,6 +34,8 @@ from mail_connectors import gmail_connect, gmail_status, zmail_connect, zmail_st
 from skynet_mode import run_improvement
 from platform_paths import state_dir
 from project_context import resolve_project_target, requested_runtime, explicit_project_directory
+from control_overlay import ControlOverlay, CONTROL_TOOLS, safe_action_label
+from control_cancel import EscapeCancel
 
 
 def conversation_prose(content):
@@ -114,6 +116,12 @@ class Studio(QMainWindow):
         self.bus.event.connect(self.handle_event)
         self.cancel = threading.Event()
         self.busy = False
+        self.control_overlay=None;self.control_active=False;self.global_escape=False
+        self.escape_cancel=EscapeCancel();self.control_cancel_token=None
+        self.explicit_stop=threading.Event()
+        self.escape_shortcut=QShortcut(QKeySequence('Escape'),self)
+        self.escape_shortcut.setContext(Qt.ApplicationShortcut);self.escape_shortcut.setEnabled(False)
+        self.escape_shortcut.activated.connect(self.stop_task)
         self.current_file = None
         self.partial = ''
         self.stream_dirty=False
@@ -289,6 +297,9 @@ class Studio(QMainWindow):
         self.transcript = QTextBrowser(); self.transcript.setOpenExternalLinks(False); self.transcript.document().setDefaultStyleSheet('p {line-height:1.6;} pre {background:#242424; padding:12px;} code {font-family:Consolas;} h2 {font-size:17px;}')
         chat.addWidget(self.transcript,1)
         self.status = QLabel('Ready'); self.status.setObjectName('muted'); chat.addWidget(self.status)
+        self.control_banner=QLabel();self.control_banner.setTextFormat(Qt.PlainText);self.control_banner.setWordWrap(True)
+        self.control_banner.setStyleSheet('background:#173a35;color:#d9fff1;border:1px solid #65bea5;border-radius:7px;padding:8px;')
+        self.control_banner.hide();chat.addWidget(self.control_banner)
         box = QFrame(); box.setObjectName('composer'); composer = QVBoxLayout(box)
         self.prompt = Composer(); self.prompt.setPlaceholderText('Ask anything, or describe what to build…'); self.prompt.setFixedHeight(104); self.prompt.submitted.connect(self.send); composer.addWidget(self.prompt)
         options = QHBoxLayout()
@@ -847,7 +858,7 @@ class Studio(QMainWindow):
         if self.busy:
             self.pending_prompt=(self.pending_prompt+'\n\n'+text).strip()
             self.prompt.clear()
-            self.stop_task()
+            self._request_stop(clear_pending=False)
             self.status.setText('Steering queued · finishing the current tool safely')
             return
         if self.natural_control(text):return
@@ -1001,17 +1012,51 @@ class Studio(QMainWindow):
             self.output.clear();self.status.setText('Starting new run…')
             self.task['activity_run_start']=len(self.task.get('activity',[]))
             self.task.pop('last_metrics',None)
+            token=object();self.control_cancel_token=token;cancel=self.cancel
+            self.explicit_stop=threading.Event();explicit_stop=self.explicit_stop
+            def escape():
+                explicit_stop.set();cancel.set();self.bus.event.emit('control_cancel',token)
+            self.global_escape=self.escape_cancel.arm(escape)
+        if not busy:
+            self.control_cancel_token=None;self.escape_cancel.disarm();self.global_escape=False
+            self.end_control_session()
         self.busy=busy
+        self.escape_shortcut.setEnabled(busy and not self.global_escape)
         for w in (self.new_button,self.project_button,self.task_list,self.task_view,self.route,self.mode,self.step_budget,self.keep_going,self.goal_button,self.chat_space,self.code_space,self.skynet_button):w.setEnabled(not busy)
         self.prompt.setEnabled(True);self.send_button.setEnabled(True);self.send_button.setText('✦  Steer' if busy else '↑  Send')
         self.stop.setEnabled(busy)
         if self.tray:self.tray.setToolTip('TalkToAi Code — '+('working in background' if busy else 'ready'))
 
+    def start_control_session(self,name,args):
+        if not self.busy or self.cancel.is_set():return
+        if self.control_overlay is None:
+            self.control_overlay=ControlOverlay();self.control_overlay.stop_requested.connect(self.stop_task)
+        self.control_active=True;action=safe_action_label(name,args)
+        self.control_overlay.show_control(action,self.global_escape,browser=name=='browser')
+        headline='TalkToAi is working in its browser' if name=='browser' else 'TalkToAi is using your computer'
+        self.control_banner.setText(headline+' · '+('Esc to cancel' if self.global_escape else 'Esc in TalkToAi to cancel, or use Stop')+'\n'+action)
+        self.control_banner.show()
+
+    def end_control_session(self):
+        self.control_active=False;self.control_banner.hide()
+        if self.control_overlay:self.control_overlay.finish_control()
+
     def stop_task(self):
+        self._request_stop(clear_pending=True)
+
+    def _request_stop(self,clear_pending=True):
+        if clear_pending:self.explicit_stop.set()
+        if clear_pending and self.pending_prompt:
+            draft=self.prompt.toPlainText().strip();queued=self.pending_prompt;self.pending_prompt=''
+            self.prompt.setPlainText(queued+('\n\n'+draft if draft and draft!=queued else ''))
         self.cancel.set(); self.status.setText('Stopping · waiting for model or running command to yield')
+        if self.control_active:
+            self.control_overlay.show_stopping();self.control_banner.setText('TalkToAi is stopping…\nWaiting for the current action to finish safely.')
 
     def handle_event(self,kind,data):
-        if kind=='delta':self.partial+=data;self.stream_dirty=True
+        if kind=='control_cancel':
+            if self.busy and data is self.control_cancel_token:self.stop_task()
+        elif kind=='delta':self.partial+=data;self.stream_dirty=True
         elif kind=='job':
             target=next((task for task in self.tasks if task['id']==data.get('task_id',self.task['id'])),None)
             if target is None:return
@@ -1039,9 +1084,11 @@ class Studio(QMainWindow):
             self.task['verification']=data;self.refresh_plan();self.persist()
         elif kind=='message':self.task['messages'].append(data);self.partial='';self.persist();self.render()
         elif kind=='tool':
+            if data['name'] in CONTROL_TOOLS:self.start_control_session(data['name'],data.get('args',{}))
             line='→ '+data['name']+'\n'+json.dumps(data['args'],ensure_ascii=False)[:2000]
             if self.config.get('show_tool_activity',True):self.output.appendPlainText(line)
-            self.task.setdefault('activity',[]).append(line);self.status.setText('Using '+data['name'])
+            self.task.setdefault('activity',[]).append(line)
+            if not self.cancel.is_set():self.status.setText('Using '+data['name'])
         elif kind=='result':
             if self.config.get('show_tool_activity',True):self.output.appendPlainText(str(data)+'\n')
             self.task.setdefault('activity',[]).append(str(data)[-6000:]);self.persist()
@@ -1092,7 +1139,8 @@ class Studio(QMainWindow):
                 self.performance_label.setText(f"API: {usage.get('total_tokens','unknown')} tokens this response · {totals['total_tokens']} reported in chat · not a billing total")
             else:self.performance_label.setText(f"{data['tokens_per_second']} tokens/s · {data['seconds']}s · step {data['step']}")
         elif kind=='change':self.task['changes'].append(data);self.persist();self.refresh_changes()
-        elif kind=='status':self.status.setText(data)
+        elif kind=='status':
+            if not (self.busy and self.cancel.is_set()):self.status.setText(data)
         elif kind=='health':self.health_label.setText(data)
         elif kind=='runtime_diagnostics':
             self.output.setPlainText(data);self.right.setCurrentIndex(2);self.status.setText('Model diagnostics complete; see Tools for recovery steps')
@@ -1102,6 +1150,7 @@ class Studio(QMainWindow):
             self.status.setText(data)
             self.refresh_mail_status()
         elif kind=='error':
+            self.end_control_session()
             if not self.prompt.toPlainText().strip():
                 previous=next((m.get('content','') for m in reversed(self.task['messages']) if m.get('role')=='user'), '')
                 self.prompt.setPlainText(previous)
@@ -1109,8 +1158,13 @@ class Studio(QMainWindow):
             self.task.setdefault('activity',[]).append('Task error: '+str(data))
             self.task['messages'].append({'role':'assistant','content':'Task error: '+str(data)});self.persist();self.render()
         elif kind=='finished':
+            if self.explicit_stop.is_set():
+                failure_status=self.status.text() if self.status.text().startswith('Request failed') else ''
+                self._request_stop(clear_pending=True)
+                if failure_status:self.status.setText(failure_status)
             if self.partial:self.task['messages'].append({'role':'assistant','content':self.partial+'\n\n[Interrupted]'});self.partial=''
             self.set_busy(False);self.task['draft']=self.prompt.toPlainText();self.persist();self.render()
+            if self.cancel.is_set() and not self.status.text().startswith('Request failed'):self.status.setText('Stopped · review the last tool result before continuing')
             metrics=self.task.get('last_metrics',{})
             if metrics.get('api_usage'):
                 self.performance_label.setText(f"{self.route_description} · {self.task.get('api_usage',{}).get('total_tokens',0)} reported API tokens in chat · not a billing total")
@@ -1687,7 +1741,9 @@ The compact model is intentionally kept as the weak-CPU fallback. TalkToAi Code 
         self.persist()
         if self.tray and not self.allow_quit:
             self.hide();event.ignore();return
-        self.cancel.set();event.accept()
+        self.cancel.set();self.control_cancel_token=None;self.escape_cancel.disarm();self.escape_shortcut.setEnabled(False);self.end_control_session()
+        if self.control_overlay:self.control_overlay.close();self.control_overlay.deleteLater()
+        event.accept()
 
 if __name__=='__main__':
     import multiprocessing

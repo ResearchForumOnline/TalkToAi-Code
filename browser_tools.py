@@ -2,6 +2,7 @@
 import json
 import uuid
 import base64
+import re
 from pathlib import Path
 from urllib.parse import urlsplit, quote_plus, parse_qs
 
@@ -26,12 +27,18 @@ class BrowserTools:
     def __init__(self, project, cancel, browser_name='auto', search_engine='auto'):
         self.project=Path(project);self.cancel=cancel
         self.browser_name=browser_name;self.search_engine=search_engine
-        self.runtime=None;self.browser=None;self.page=None
+        self.runtime=None;self.browser=None;self.page=None;self.context=None
+        self.observed_page=None;self.observed_url='';self.observed_snapshot=''
         self.errors=[]
         self.active_browser='';self.active_search='';self.search_attempts=[]
 
     def start(self):
-        if self.page:return
+        if self.page and not self.page.is_closed():return
+        if self.context:
+            pages=[page for page in self.context.pages if not page.is_closed()]
+            self.page=pages[0] if pages else self.context.new_page()
+            self.observed_page=None
+            return
         from playwright.sync_api import sync_playwright
         self.runtime=sync_playwright().start()
         failures=[]
@@ -51,9 +58,9 @@ class BrowserTools:
                     failures.append(name+': '+str(exc).splitlines()[0][:180])
             if self.browser is None:
                 raise RuntimeError('No supported browser could start. Install Edge or Chrome, or a Playwright browser. '+ '; '.join(failures))
-            self.page=self.browser.new_page(viewport={'width':1280,'height':800})
-            self.page.set_default_timeout(8000)
-            self.page.on('pageerror',lambda error:self.errors.append(str(error)[:1500]))
+            self.context=self.browser.new_context(viewport={'width':1280,'height':800})
+            self.context.on('page',self._configure_page)
+            self.page=self.context.new_page()
         except Exception:
             self.close();raise
 
@@ -74,6 +81,8 @@ class BrowserTools:
                 self.search_attempts.append('serper: '+str(exc).splitlines()[0][:200])
                 preferred='auto'
         self.start()
+        previous_page=self.page
+        previous_pages=list(self.context.pages)
         if action=='search':
             query=str(target).strip()[:1000]
             if not query:raise ValueError('Enter a web search query.')
@@ -97,7 +106,7 @@ class BrowserTools:
             if parsed.scheme not in ('http','https') or parsed.username or parsed.password:
                 raise ValueError('Open an http(s) page URL without credentials.')
             self.page.goto(target,wait_until='domcontentloaded',timeout=25000)
-        elif action=='click':self.page.get_by_text(target,exact=True).click()
+        elif action=='click':self._click_observed(target)
         elif action=='fill':self.page.get_by_label(target,exact=True).fill(value)
         elif action=='press':self.page.keyboard.press(target)
         elif action=='screenshot':
@@ -106,9 +115,52 @@ class BrowserTools:
             self.page.screenshot(path=str(path))
             return json.dumps({'artifact':str(path),'type':'image','url':self.page.url})
         elif action!='inspect':raise ValueError('Use search, open, inspect, click, fill, press or screenshot.')
+        if action in ('click','fill','press'):
+            # Follow immediate popups, not arbitrary delayed/background windows.
+            # Pump queued page events without waiting for a popup that may not exist.
+            if not previous_page.is_closed():previous_page.wait_for_timeout(50)
+            opened=[page for page in self.context.pages if page not in previous_pages and not page.is_closed()]
+            if len(opened)>1:
+                self.observed_page=None
+                raise ValueError('The action opened multiple browser pages; no page was selected. Inspect the original page or open the intended source URL. Do not repeat the action.')
+            if opened:self.page=opened[0]
+        if self.cancel.is_set():raise InterruptedError('Task stopped.')
+        if self.page.is_closed():self.start()
+        self.page.wait_for_load_state('domcontentloaded',timeout=8000)
         snapshot=self.page.locator('body').aria_snapshot()
+        self.observed_page=self.page;self.observed_url=self.page.url;self.observed_snapshot=snapshot[:15000]
         links=self._links()
         return json.dumps({'browser':self.active_browser,'search_engine':self.active_search,'search_attempts':self.search_attempts,'links':links,'url':self.page.url,'title':self.page.title(),'page':snapshot[:15000],'errors':self.errors[-8:]})
+
+    def _configure_page(self,page):
+        page.set_default_timeout(8000)
+        def error(value):
+            self.errors.append(str(value)[:1500]);self.errors[:]=self.errors[-8:]
+        page.on('pageerror',error)
+
+    def _click_observed(self,target):
+        if self.observed_page is not self.page or self.observed_url!=self.page.url:
+            raise ValueError('Inspect the current browser page before clicking a control.')
+        roles=set()
+        for role,quoted in re.findall(r'^\s*- ([a-z]+) ("(?:[^"\\]|\\.)*")',self.observed_snapshot,re.M):
+            try:name=json.loads(quoted)
+            except ValueError:continue
+            if name==target:roles.add(role)
+        locator=None
+        for role in sorted(roles):
+            candidate=self.page.get_by_role(role,name=target,exact=True)
+            locator=candidate if locator is None else locator.or_(candidate)
+        if locator is None:
+            if not target or target not in self.observed_snapshot:
+                raise ValueError('Use a control name or text from the latest browser inspection.')
+            locator=self.page.get_by_text(target,exact=True)
+        locator=locator.filter(visible=True)
+        count=locator.count()
+        if count!=1:
+            raise ValueError(f'Observed browser target matches {count} visible controls; inspect and choose a unique name. No click was sent.')
+        if self.cancel.is_set():raise InterruptedError('Task stopped before browser input.')
+        self.observed_page=None
+        locator.click()
 
     def _links(self):
         links=self.page.locator('a[href]').evaluate_all("nodes => nodes.filter(a => (a.textContent || '').trim() && /^https?:/.test(a.href)).slice(0,100).map(a => ({title:(a.textContent || '').trim().slice(0,200),url:a.href}))")
@@ -140,4 +192,4 @@ class BrowserTools:
         if self.runtime:
             try:self.runtime.stop()
             except Exception:pass
-        self.runtime=None;self.browser=None;self.page=None
+        self.runtime=None;self.browser=None;self.page=None;self.context=None;self.observed_page=None

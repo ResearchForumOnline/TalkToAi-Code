@@ -21,6 +21,8 @@ class WorkspaceUITests(unittest.TestCase):
             self.stack.enter_context(patch.object(studio,name,value))
         self.stack.enter_context(patch.object(studio.Studio,'health'))
         self.stack.enter_context(patch.object(studio.Studio,'install_tray'))
+        self.escape_hook=self.stack.enter_context(patch('studio.EscapeCancel')).return_value
+        self.escape_hook.arm.return_value=False
         self.window=studio.Studio()
 
     def tearDown(self):
@@ -253,6 +255,64 @@ class WorkspaceUITests(unittest.TestCase):
         w.select_task_by_id(w.task['id'])
         self.assertNotIn('Old failure',w.output.toPlainText())
         self.assertIn('Current run genuinely failed',w.output.toPlainText())
+
+    def test_control_overlay_starts_only_for_control_and_never_exposes_arguments(self):
+        w=self.window;w.set_busy(True)
+        w.handle_event('tool',{'name':'read_file','args':{'path':'private-user-text'}})
+        self.assertFalse(w.control_active);self.assertIsNone(w.control_overlay)
+        w.handle_event('tool',{'name':'browser','args':{'action':'fill','target':'private-user-url','value':'secret-typed-text'}})
+        overlay=w.control_overlay
+        self.assertTrue(w.control_active);self.assertTrue(overlay.isVisible())
+        self.assertTrue(overlay.windowFlags() & Qt.WindowDoesNotAcceptFocus)
+        self.assertTrue(overlay.windowFlags() & Qt.WindowStaysOnTopHint)
+        self.assertTrue(overlay.testAttribute(Qt.WA_ShowWithoutActivating))
+        shown=overlay.headline.text()+overlay.detail.text()+w.control_banner.text()
+        self.assertNotIn('private-user',shown);self.assertNotIn('secret-typed',shown)
+        self.assertIn('working in its browser',shown)
+        self.assertIn('Esc in TalkToAi',shown);self.assertTrue(w.escape_shortcut.isEnabled())
+        with patch.object(overlay,'show') as show:
+            w.handle_event('tool',{'name':'computer','args':{'action':'click'}});show.assert_not_called()
+        self.assertIn('using your computer',overlay.headline.text())
+        overlay.stop_button.click()
+        self.assertTrue(w.cancel.is_set());self.assertIn('stopping',overlay.headline.text())
+        self.assertTrue(overlay.isVisible());self.assertFalse(overlay.stop_button.isEnabled())
+        w.set_busy(False);self.assertFalse(overlay.isVisible());self.assertFalse(w.escape_shortcut.isEnabled())
+
+    def test_global_escape_is_task_bound_and_does_not_restart_queued_steering(self):
+        import time
+        w=self.window;self.escape_hook.arm.return_value=True
+        w.started_at=time.monotonic();w.route_description='Control fixture';w.set_busy(True)
+        token=w.control_cancel_token
+        w.handle_event('tool',{'name':'computer','args':{'action':'inspect'}})
+        self.assertIn('Esc to cancel',w.control_overlay.detail.text())
+        self.assertFalse(w.escape_shortcut.isEnabled())
+        w.pending_prompt='Continue with another action'
+        w.handle_event('control_cancel',object());self.assertFalse(w.cancel.is_set())
+        w.handle_event('control_cancel',token)
+        self.assertEqual(w.pending_prompt,'');self.assertIn('Continue with another action',w.prompt.toPlainText())
+        with patch.object(w,'_send_queued') as resume:w.handle_event('finished',None);resume.assert_not_called()
+        self.assertFalse(w.control_overlay.isVisible());self.escape_hook.disarm.assert_called()
+
+    def test_overlay_close_requests_stop_and_errors_hide_indicator(self):
+        w=self.window;w.set_busy(True);w.handle_event('tool',{'name':'capture_screenshot','args':{}})
+        overlay=w.control_overlay;overlay.close()
+        self.assertTrue(w.cancel.is_set());self.assertTrue(overlay.isVisible())
+        w.handle_event('error','Actual control failure')
+        self.assertFalse(overlay.isVisible());self.assertIn('Request failed',w.status.text())
+        w.set_busy(False)
+
+    def test_finished_before_global_escape_ui_event_cannot_resume_steering(self):
+        import time
+        from types import SimpleNamespace
+        w=self.window;self.escape_hook.arm.return_value=True
+        w.started_at=time.monotonic();w.route_description='Control fixture';w.set_busy(True)
+        w.pending_prompt='Queued steering to preserve'
+        pending=[];callback=self.escape_hook.arm.call_args.args[0]
+        with patch.object(w,'bus',SimpleNamespace(event=SimpleNamespace(emit=lambda *args:pending.append(args)))):callback()
+        self.assertTrue(w.explicit_stop.is_set());self.assertTrue(w.cancel.is_set())
+        with patch.object(w,'_send_queued') as resume:w.handle_event('finished',None);resume.assert_not_called()
+        w.handle_event(*pending[0])
+        self.assertEqual(w.pending_prompt,'');self.assertIn('Queued steering',w.prompt.toPlainText())
 
     def test_continue_prefers_explicit_saved_goal_but_new_steering_wins_and_clears_goal(self):
         w=self.window;w.task['project']=str(self.root)

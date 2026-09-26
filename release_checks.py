@@ -14,11 +14,19 @@ def smoke(destination):
         def log_message(self,*args):pass
         def do_GET(self):
             self.send_response(200);self.send_header('Content-Type','text/html');self.end_headers()
-            self.wfile.write(b'<label>Player<input aria-label="Player"></label><button onclick="document.querySelector(\'h1\').textContent=\'Hello \'+document.querySelector(\'input\').value">Start</button><h1>Ready</h1>')
+            if self.path=='/report':
+                self.wfile.write(b'<title>Report</title><h1>Packaged report ready</h1>')
+            else:
+                self.wfile.write(b'<label>Player<input aria-label="Player"></label><button aria-label="Start" onclick="document.querySelector(\'h1\').textContent=\'Hello \'+document.querySelector(\'input\').value">+</button><h1>Ready</h1><a href="/report" target="_blank">Open report</a>')
     server=None;browser=None
     try:
         import pywinauto
         result['computer_dependency']=pywinauto.__version__
+        if os.name=='nt':
+            from control_cancel import EscapeCancel
+            escape=EscapeCancel()
+            try:result['escape_hook_registration']=escape.arm(lambda:None)
+            finally:escape.disarm()
         from browser_tools import BrowserTools
         server=ThreadingHTTPServer(('127.0.0.1',0),Handler)
         threading.Thread(target=server.serve_forever,daemon=True).start()
@@ -50,8 +58,10 @@ def smoke(destination):
             result['browser_screenshot']=Path(artifact['artifact']).stat().st_size>1000
             from agent_core import image_for_model
             result['vision_attachment']=len(image_for_model(artifact['artifact']))>1000
+            report=json.loads(browser.execute('click','Open report'))
+            result['browser_popup']=report['url'].endswith('/report') and 'Packaged report ready' in report['page']
             browser.close();browser=None
-        result['passed']=all(result.get(key,False) for key in ('bundled_example','browser_interaction','browser_screenshot','vision_attachment','batch_read','output_registration')) and (os.name!='nt' or result.get('managed_process',False))
+        result['passed']=all(result.get(key,False) for key in ('bundled_example','browser_interaction','browser_popup','browser_screenshot','vision_attachment','batch_read','output_registration')) and (os.name!='nt' or (result.get('managed_process',False) and result.get('escape_hook_registration',False)))
     except Exception as exc:result.update(passed=False,error=f'{type(exc).__name__}: {exc}')
     finally:
         if browser:browser.close()

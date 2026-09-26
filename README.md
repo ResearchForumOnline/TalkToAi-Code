@@ -1,6 +1,12 @@
 # TalkToAi Code — Your projects. Your AI. Your workspace.
 
-> **Latest release: 0.7.1** — [Download the Windows installer](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v0.7.1/TalkToAi-Code-0.7.1-Windows-Setup.exe) · [View release notes and checksums](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/tag/v0.7.1)
+> **Latest release: 0.8.0** — [Download the Windows installer](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v0.8.0/TalkToAi-Code-0.8.0-Windows-Setup.exe) · [View release notes and checksums](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/tag/v0.8.0)
+
+### 0.8.0: visible computer control and Escape cancellation
+
+During desktop control a floating indicator says **TalkToAi is using your computer**, describes the current action without displaying typed text, and provides **Stop**. Browser automation is labelled **TalkToAi is working in its browser** because it uses an app-owned browser. The overlay stays visible until the session finishes and does not take keyboard focus. Physical **Escape** cancels the active task on Windows even when another app is foreground. Injected keyboard actions do not trigger this shortcut. Other platforms, or failed hook registration, clearly show the in-app Escape fallback. Stop preserves queued steering as a draft instead of restarting it. Cancellation stops further work; an action already delivered is not undone.
+
+Browser clicks now use exact accessible names from the current observation, reject ambiguous targets, and follow one immediate popup. Closing that popup returns to a live page. Multiple or delayed popups may require opening the intended URL explicitly.
 
 ### 0.7.1: Qwen tool-call compatibility repair
 
@@ -146,10 +152,10 @@ In Act mode, try: **“Connect to my website server using my existing SSH config
 
 ### Platform installers
 
-- **Windows:** use the [0.7.1 Windows installer](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v0.7.1/TalkToAi-Code-0.7.1-Windows-Setup.exe). This is an unsigned desktop installer, not a Microsoft Store package. The standard per-user installer creates Start Menu/Desktop shortcuts and an uninstaller, and preserves local task data during upgrades.
+- **Windows:** use the [0.8.0 Windows installer](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v0.8.0/TalkToAi-Code-0.8.0-Windows-Setup.exe). This is an unsigned desktop installer, not a Microsoft Store package. The standard per-user installer creates Start Menu/Desktop shortcuts and an uninstaller, and preserves local task data during upgrades.
 - **Portable Windows:** use the [0.1.3 portable ZIP](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v0.1.3-preview/TalkToAi-Code-0.1.3-Windows-Portable.zip) when you do not want an installer.
-- **Linux:** install Python 3.10+ with `venv`, extract the [0.7.1 source ZIP](https://github.com/ResearchForumOnline/TalkToAi-Code/archive/refs/tags/v0.7.1.zip) outside your app-data folder, and run `bash install-linux.sh` from that folder. This creates a user-local virtual environment, launcher and desktop entry. The app uses `~/.local/state/TalkToAiCode` or `XDG_STATE_HOME` for chats/settings. Install Ollama separately and pull a model before selecting Auto. A Secret Service desktop keyring is needed to remember API keys or OAuth tokens.
-- **macOS:** install Python 3.10+, extract the [0.7.1 source ZIP](https://github.com/ResearchForumOnline/TalkToAi-Code/archive/refs/tags/v0.7.1.zip), and run `bash install-macos.sh` from that folder. This creates a local virtual environment, `~/bin/talktoai-code` launcher, and `~/Applications/TalkToAi Code.app` launcher. Chats/settings use `~/Library/Application Support/TalkToAiCode`. Install Ollama separately and pull a model. Remembered keys and account tokens use macOS Keychain.
+- **Linux:** install Python 3.10+ with `venv`, extract the [0.8.0 source ZIP](https://github.com/ResearchForumOnline/TalkToAi-Code/archive/refs/tags/v0.8.0.zip) outside your app-data folder, and run `bash install-linux.sh` from that folder. This creates a user-local virtual environment, launcher and desktop entry. The app uses `~/.local/state/TalkToAiCode` or `XDG_STATE_HOME` for chats/settings. Install Ollama separately and pull a model before selecting Auto. A Secret Service desktop keyring is needed to remember API keys or OAuth tokens.
+- **macOS:** install Python 3.10+, extract the [0.8.0 source ZIP](https://github.com/ResearchForumOnline/TalkToAi-Code/archive/refs/tags/v0.8.0.zip), and run `bash install-macos.sh` from that folder. This creates a local virtual environment, `~/bin/talktoai-code` launcher, and `~/Applications/TalkToAi Code.app` launcher. Chats/settings use `~/Library/Application Support/TalkToAiCode`. Install Ollama separately and pull a model. Remembered keys and account tokens use macOS Keychain.
 
 Windows has a packaged x64 installer. Linux and macOS use source installers with per-user virtual environments; the [native Ubuntu and macOS install-and-launch smoke run](https://github.com/ResearchForumOnline/TalkToAi-Code/actions/runs/36245686313) passed using an offscreen GUI on clean GitHub runners. An interactive human workflow has not been confirmed on those hosts. Browser research, Chat/Code, local Ollama, project edits, shell commands, jobs and SSH use portable code paths. Windows accessibility PC Pilot and Windows startup shortcuts are Windows-only. Linux browser operation may need desktop libraries for Playwright Chromium; if its browser download fails, install them and rerun `python -m playwright install chromium` inside the app virtual environment.
 
@@ -164,7 +170,7 @@ Use your account's device controls to revoke access. Closing the linking dialog 
 ## Working
 
 - Act permits project edits and commands. Plan is for inspection. Commands run with your signed-in Windows account permissions.
-- Desktop / user access and PC Pilot can operate accessible Windows controls. Browser tools use a separate Edge session, not personal cookies. Close unrelated sensitive windows before screenshots.
+- Desktop / user access and PC Pilot can operate accessible Windows controls. Browser tools use a separate app-owned browser session with the configured browser preference and fallback, without personal cookies. Close unrelated sensitive windows before screenshots.
 - File-tool edits are checkpointed. Shell/SSH changes do not receive the same automatic rollback.
 - Ask for a reviewer, investigator or test planner subagent. Up to two workers run sequentially per turn, five model steps each. They inspect local project files; the main agent makes changes.
 - Checks detect Godot import, Python, package scripts, Rust and .NET. Unity uses project-specific commands. Blender and Godot must be installed separately.
@@ -194,7 +200,7 @@ Auto can start installed local Ollama when Server is unavailable. Failed request
 
 ### Research and Windows control
 
-Use the Research with sources starter or ask for a web search. Browser search returns page observations and source URLs; Plan allows search/open/inspect, while input actions require Act. Research instructions ask the model to open original sources and cite observed links. Search uses Bing in a task-owned Edge browser; access can be blocked. Use Operate a Windows app in Act with Desktop/user access and PC Pilot enabled. The existing accessibility controls inspect windows, click, type and observe results. Completion depends on the model and application accessibility.
+Use the Research with sources starter or ask for a web search. Browser search returns page observations and source URLs; Plan allows search/open/inspect, while input actions require Act. Research instructions ask the model to open original sources and cite observed links. Search uses your configured engine with fallback in a task-owned browser; access can be blocked. Use Operate a Windows app in Act with Desktop/user access and PC Pilot enabled. The existing accessibility controls inspect windows, click, type and observe results. Completion depends on the model and application accessibility.
 
 ### Search choices in 0.6.0
 
