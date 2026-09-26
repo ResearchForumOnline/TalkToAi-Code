@@ -18,3 +18,7 @@
 The model's criterion statuses remain self-reported. These changes improve task orchestration and continuity; they do not change model weights, establish AGI or guarantee a scientific discovery.
 
 See [goal-driven work](https://github.com/ResearchForumOnline/TalkToAi-Code/blob/v0.7.0/docs/GOAL-DRIVEN-WORK.md) for examples and primary design references.
+
+Packaged Windows self-test and GUI startup passed. Ubuntu/macOS source installation, offscreen startup and portable regressions passed: https://github.com/ResearchForumOnline/TalkToAi-Code/actions/runs/36278384205
+
+A real 30B server trial reloaded the saved goal, read an evidence file, recovered a corrected metadata error and finished with the expected result in 151.11 seconds. [Trial details and limits](https://github.com/ResearchForumOnline/TalkToAi-Code/blob/v0.7.0/docs/GOAL-ACCEPTANCE-0.7.0.md).
