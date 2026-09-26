@@ -192,6 +192,28 @@ class WorkspaceUITests(unittest.TestCase):
         w.handle_event('task_goal',{'objective':'Bad','criteria':[]})
         self.assertEqual(w.current_task_goal(),previous)
 
+    def test_manual_goal_change_and_clear_remove_stale_checkpoint_but_identical_save_keeps_it(self):
+        w=self.window
+        w.handle_event('task_goal',{'objective':'Pause menu','criteria':[{'text':'Menu opens'}]})
+        checkpoint={'pass':1,'total_passes':3,'steps':12,'state':'completed'}
+        w.handle_event('goal_checkpoint',checkpoint)
+        def identical(dialog):
+            next(button for button in dialog.findChildren(QPushButton) if button.text()=='Save goal').click()
+        with patch.object(studio.QDialog,'exec',identical):w.task_goal_dialog()
+        self.assertEqual(w.task['goal_checkpoint'],checkpoint)
+        def change(dialog):
+            dialog.findChild(QPlainTextEdit,'goal_objective').setPlainText('Inventory menu')
+            next(button for button in dialog.findChildren(QPushButton) if button.text()=='Save goal').click()
+        with patch.object(studio.QDialog,'exec',change):w.task_goal_dialog()
+        self.assertNotIn('goal_checkpoint',w.task)
+        self.assertNotIn('Work pass',w.plan_summary.text())
+        w.handle_event('goal_checkpoint',checkpoint)
+        def clear(dialog):
+            next(button for button in dialog.findChildren(QPushButton) if button.text()=='Clear goal').click()
+        with patch.object(studio.QDialog,'exec',clear):w.task_goal_dialog()
+        self.assertNotIn('goal_checkpoint',w.task);self.assertIsNone(w.current_task_goal())
+        self.assertNotIn('goal_checkpoint',load_tasks(studio.SESSION)[0][0])
+
     def test_continue_prefers_explicit_saved_goal_but_new_steering_wins_and_clears_goal(self):
         w=self.window;w.task['project']=str(self.root)
         old=self.root/'old';old.mkdir();new=self.root/'new';new.mkdir();steered=self.root/'steered';steered.mkdir()

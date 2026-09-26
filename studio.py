@@ -482,8 +482,10 @@ class Studio(QMainWindow):
             items=[dict(old[line]) if same_objective and line in old else {'text':line,'status':'pending','evidence':''} for line in (line.strip() for line in criteria.toPlainText().splitlines()) if line]
             try:goal=normalize_goal({'objective':text,'criteria':items,'next_action':next_action.text()},previous=previous or None)
             except ValueError as exc:self.error(exc);return
+            if goal!=previous:self.task.pop('goal_checkpoint',None)
             self.task['task_goal']=goal;self.task['task_goal_project']=self.task['project'];self.persist();self.refresh_plan();dialog.accept()
         def clear():
+            self.task.pop('goal_checkpoint',None)
             self.task.pop('task_goal',None);self.task.pop('task_goal_project',None);self.persist();self.refresh_plan();dialog.accept()
         row=QHBoxLayout();layout.addLayout(row)
         self.button('Save goal',save,row,True);self.button('Clear goal',clear,row);self.button('Cancel',dialog.reject,row)

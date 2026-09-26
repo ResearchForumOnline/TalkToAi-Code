@@ -8,10 +8,12 @@
 - Resume with the stored goal after reopening. Current user steering takes priority; changing project clears the previous goal.
 - Review pending or blocked criteria before completion, then pause explicitly if unresolved. Goal metadata does not count as actual tool progress or independent verification.
 - Include the goal in exported task reports.
+- Recover from corrected goal-validation errors without clearing real tool failures; this fix came from a live server-model trial.
+- Clear stale completion checkpoints when a user changes the goal.
 
 ## Verification
 
-262 tests passed on Windows with native acceptance enabled. Tests cover normalization, stable criterion IDs, bounded storage/context, persistence, project changes, current steering, completion gates and UI editing.
+267 tests passed on Windows with native acceptance enabled. Tests cover normalization, stable criterion IDs, bounded storage/context, persistence, project changes, current steering, completion gates and UI editing.
 
 The model's criterion statuses remain self-reported. These changes improve task orchestration and continuity; they do not change model weights, establish AGI or guarantee a scientific discovery.
 

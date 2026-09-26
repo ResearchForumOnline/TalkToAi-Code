@@ -862,6 +862,9 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
         active_tools=[t for t in TOOLS+CONTEXT_TOOLS if t['function']['name'] in ('list_files','read_file','read_project_files','file_fingerprint','project_info','search_code','project_map','review_changes','triage_failures')]
     else:
         active_tools.append(schema('delegate_review','Delegate a focused local-project review/investigation to a separate read-only context on the current model. No shell, desktop, remote access, edits or nested workers. Maximum two sequential workers per turn; each has five model steps. Use for complex work, not trivial questions.',{'role':'reviewer, investigator or test_planner','task':'Self-contained question, relevant paths and any necessary context; no secrets'}))
+    if goal:
+        # Resuming an existing goal should not cost a separate discovery turn.
+        active_tools+=GOAL_TOOLS
     performance=performance or {}
     essential_tools={t['function']['name'] for t in TOOLS}|{'enable_tools','update_plan','delegate_review','run_checks'}
     delegated=0
@@ -884,6 +887,7 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
         messages[0]['content']+=' For multi-step Keep going work, establish a task goal yourself using enable_tools goals and update_task_goal; the user need not fill a form. Preserve unmet criteria until completed or honestly blocked. Only revise the objective or remove criteria when the current user request changes scope, never merely to claim completion.'
     goal_base_prompt=messages[0]['content'].replace(goal_context(goal),'',1) if goal else messages[0]['content']
     progress_seen=set();pass_progress=0;pass_errors=False;pass_recovered_errors=False
+    goal_validation_error=False
     def goal_checkpoint(state,steps,blockers=None):
         if keep_going and not worker_mode and not improvement_mode:
             emit('goal_checkpoint',{'pass':max(1,min(total_passes,(max(1,steps)-1)//rounds+1)),
@@ -896,7 +900,7 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
             emit('status', 'Stopped')
             return
         if step and step%rounds==0:
-            if not pass_progress or pass_errors or discovery_guard.paused:
+            if not pass_progress or pass_errors or goal_validation_error or discovery_guard.paused:
                 goal_checkpoint('paused',step)
                 emit('status','Keep going paused: the last pass had no new verified tool observations or had unresolved tool errors. The task remains unfinished.')
                 return
@@ -1021,7 +1025,7 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
             # Prose cannot erase failed actions or pending process evidence.
             # Permit one bounded recovery opportunity, then remain unfinished.
             running_jobs=list(tools.jobs.running()) if tools.jobs else []
-            if keep_going and act and not worker_mode and not improvement_mode and pass_errors and not error_review_requested and step+1<max_steps:
+            if keep_going and act and not worker_mode and not improvement_mode and (pass_errors or goal_validation_error) and not error_review_requested and step+1<max_steps:
                 error_review_requested=True
                 messages.append({'role':'user','_automation_nudge':True,'content':
                     'Before finishing: one or more tool actions failed and recovery is not verified. '+
@@ -1033,6 +1037,7 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
             blockers=[]
             if running_jobs:blockers.append('Owned processes still running: '+', '.join(running_jobs))
             if pass_errors:blockers.append('Tool failures remain without verified recovery')
+            if goal_validation_error:blockers.append('Task goal update remains invalid; correct its metadata')
             if verification and verification['status']!='passed':blockers.append('checks '+verification['status'])
             if blockers:
                 goal_checkpoint('paused',step+1,blockers)
@@ -1077,6 +1082,7 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
                     goal=candidate_goal
                     messages[0]['content']=candidate_prompt
                     emit('task_goal',goal);result=json.dumps(goal)
+                    goal_validation_error=False
                 elif name=='update_plan':
                     plan=normalize_plan(args.get('steps'),args.get('explanation',''))
                     emit('plan',plan);result=json.dumps(plan)
@@ -1106,7 +1112,12 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
                 failed_calls.clear()
                 if command_failed:failed_calls[signature]=retries
             except Exception as exc:
-                pass_errors=True
+                # Metadata repair cannot clear a failed file/command action.
+                # Only a successful goal update resolves its own validation error.
+                if name=='update_task_goal' and isinstance(exc,(ValueError,TypeError)):
+                    goal_validation_error=True
+                else:
+                    pass_errors=True
                 result = f'{type(exc).__name__}: {exc}'
                 retries=failed_calls.get(signature,0)+1;failed_calls.clear();failed_calls[signature]=retries
             if name=='run_checks':

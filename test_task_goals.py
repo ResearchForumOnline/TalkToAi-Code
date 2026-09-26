@@ -68,6 +68,37 @@ class GoalTests(unittest.TestCase):
         self.assertEqual([v for k,v in events if k=='goal_checkpoint'][-1]['state'],'completed')
         self.assertFalse(any(k=='verification' for k,v in events))
 
+    def test_resumed_goal_update_is_available_without_discovery(self):
+        payloads,events=self.run_sequence([response('update_task_goal',goal('met')),response()],saved=goal())
+        self.assertIn('update_task_goal',{tool['function']['name'] for tool in payloads[0]['tools']})
+        self.assertEqual(len(payloads),2)
+        self.assertEqual([v for k,v in events if k=='goal_checkpoint'][-1]['state'],'completed')
+
+    def test_corrected_goal_validation_error_can_complete(self):
+        invalid=goal('met');invalid['criteria'][0]['status']='completed'
+        valid=goal('met')
+        _,events=self.run_sequence([response('enable_tools',{'group':'goals'}),response('update_task_goal',invalid),response('update_task_goal',valid),response()])
+        self.assertEqual([v for k,v in events if k=='goal_checkpoint'][-1]['state'],'completed')
+        self.assertTrue(any(k=='result' and 'ValueError' in v for k,v in events))
+
+    def test_uncorrected_goal_validation_blocks_completion_and_extra_pass(self):
+        invalid=goal('met');invalid['criteria'][0]['status']='completed'
+        _,events=self.run_sequence([response('enable_tools',{'group':'goals'}),response('update_task_goal',invalid),response()])
+        checkpoint=[v for k,v in events if k=='goal_checkpoint'][-1]
+        self.assertEqual(checkpoint['state'],'paused')
+        self.assertIn('Task goal update remains invalid; correct its metadata',checkpoint['blockers'])
+        payloads,events=self.run_sequence([response('enable_tools',{'group':'goals'}),response('read_file',{'path':'score.py'}),response('update_task_goal',invalid)],rounds=3)
+        self.assertEqual(len(payloads),3)
+        self.assertEqual([v for k,v in events if k=='goal_checkpoint'][-1]['state'],'paused')
+
+    def test_valid_goal_cannot_clear_unrelated_file_failure(self):
+        invalid=goal('met');invalid['criteria'][0]['status']='completed'
+        _,events=self.run_sequence([response('enable_tools',{'group':'goals'}),response('read_file',{'path':'missing.py'}),response('update_task_goal',invalid),response('update_task_goal',goal('met')),response()])
+        checkpoint=[v for k,v in events if k=='goal_checkpoint'][-1]
+        self.assertEqual(checkpoint['state'],'paused')
+        self.assertIn('Tool failures remain without verified recovery',checkpoint['blockers'])
+        self.assertFalse(any('goal update remains invalid' in blocker for blocker in checkpoint['blockers']))
+
     def test_goal_metadata_alone_does_not_extend_pass(self):
         update=goal();update['criteria']=json.dumps(update['criteria'])
         payloads,events=self.run_sequence([response('enable_tools',{'group':'goals'}),response('update_task_goal',update)],rounds=2)
