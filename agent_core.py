@@ -24,6 +24,7 @@ from process_jobs import ProcessJobs
 from workspace_outputs import read_batch, register_output
 from progress_guard import DiscoveryProgressGuard
 from task_goals import normalize_goal, goal_context
+from tool_protocol import has_tool_markup, parse_qwen_tool_calls, VisibleTextStream
 
 SKIP = {'.git', '.godot', 'node_modules', '__pycache__', '.venv', 'venv', '.talktoai-code', 'Library', 'Temp', 'obj', 'bin', 'vendor', 'artifacts', 'build', 'dist'}
 ACTIVE_REMOTE = None
@@ -169,6 +170,11 @@ def repair_tool_history(messages):
         pending.clear()
     for original in messages:
         message=dict(original)
+        if message.get('role')=='assistant' and not message.get('tool_calls') and has_tool_markup(message.get('content','')):
+            # Provider-only repair: saved transcripts are untouched, and old
+            # protocol text is never turned into executable actions.
+            visible=VisibleTextStream().feed(message['content']).rstrip()
+            message['content']=(visible+'\n' if visible else '')+'[Earlier unexecuted protocol output omitted; it is not evidence that a tool ran.]'
         if message['role']=='tool':
             match=next((c for c in pending if (message.get('tool_call_id')==c.get('id') if message.get('tool_call_id') else message.get('tool_name')==c['function']['name'])),None)
             if match:
@@ -745,7 +751,7 @@ def run_subagent(url, model, project, task, role, cancel, emit, performance=None
             replies.append(data.get('content',''))
         elif kind=='tool':
             evidence.append(data['name'])
-            emit('status','Subagent '+role+' Â· '+data['name'])
+            emit('status','Subagent '+role+' - '+data['name'])
         elif kind=='status':
             if data=='Ready':state[0]='completed'
             elif data=='Stopped':state[0]='stopped'
@@ -888,6 +894,7 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
     goal_base_prompt=messages[0]['content'].replace(goal_context(goal),'',1) if goal else messages[0]['content']
     progress_seen=set();pass_progress=0;pass_errors=False;pass_recovered_errors=False
     goal_validation_error=False
+    protocol_error=False
     def goal_checkpoint(state,steps,blockers=None):
         if keep_going and not worker_mode and not improvement_mode:
             emit('goal_checkpoint',{'pass':max(1,min(total_passes,(max(1,steps)-1)//rounds+1)),
@@ -900,7 +907,7 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
             emit('status', 'Stopped')
             return
         if step and step%rounds==0:
-            if not pass_progress or pass_errors or goal_validation_error or discovery_guard.paused:
+            if not pass_progress or pass_errors or goal_validation_error or protocol_error or discovery_guard.paused:
                 goal_checkpoint('paused',step)
                 emit('status','Keep going paused: the last pass had no new verified tool observations or had unresolved tool errors. The task remains unfinished.')
                 return
@@ -910,7 +917,7 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
                 'Do not repeat completed work or expand the scope. Verify remaining outcomes; finish as soon as the requested task is done. Report genuine blockers.'})
             emit('status',f'Keep going: continuing pass {step//rounds+1}/{total_passes} with saved progress.')
             pass_progress=0;pass_errors=False;pass_recovered_errors=False
-        emit('status', f'Working Â· step {step + 1}')
+        emit('status', f'Working - step {step + 1}')
         num_ctx=performance.get('num_ctx',8192)
         try:window=context_window(messages,context_budget(num_ctx,messages[0],active_tools))
         except (ValueError,TypeError):
@@ -924,6 +931,7 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
                    'stream': True, 'think':False, 'keep_alive':'15m',
                    'options': {'num_ctx': num_ctx, 'num_predict': 1536, 'temperature': .1}}
         content, calls = '', []
+        visible_stream=VisibleTextStream()
         started=time.monotonic();first=None;stats={}
         try:
             for data in stream_chat(url,payload,cancel):
@@ -938,7 +946,8 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
                 if delta:
                     if first is None:first=time.monotonic()-started
                     content += delta
-                    emit('delta', delta)
+                    visible_delta=visible_stream.feed(delta)
+                    if visible_delta:emit('delta',visible_delta)
                 calls.extend(message.get('tool_calls', []))
                 if data.get('done'):stats=data
         except InterruptedError:
@@ -953,19 +962,41 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
         if not stats:raise RuntimeError('Model stream ended before completion; no tool calls were executed.')
         emit('metrics',{'seconds':round(time.monotonic()-started,2),'first_token_seconds':round(first,2) if first else None,
              'tokens_per_second':round(stats.get('eval_count',0)/max(stats.get('eval_duration',1)/1e9,.001),2),'tokens':stats.get('eval_count',0),'step':step+1,'api_usage':stats.get('api_usage')})
+        visible_tail=visible_stream.finish()
+        if visible_tail:emit('delta',visible_tail)
         truncated=stats.get('done_reason')=='length'
         if truncated and calls:
             # Incomplete action batches cannot be executed safely or reliably.
             calls=[]
             content+='\n\n[Incomplete tool batch was not executed.]'
+        if has_tool_markup(content):
+            try:
+                if calls:raise ValueError('Mixed native and textual tool batches are ambiguous')
+                calls=parse_qwen_tool_calls(content,active_tools,truncated=truncated)
+                content=''
+                emit('status','Recovered complete Qwen tool response')
+            except (ValueError,TypeError) as exc:
+                protocol_error=True
+                malformed_retries+=1
+                if malformed_retries>2:
+                    raise RuntimeError('Model repeatedly returned incomplete or invalid tool output. No actions from those responses were executed.') from exc
+                messages.append({'role':'user','_automation_nudge':True,'content':
+                    'The previous tool response was invalid and NONE of its actions executed. '+
+                    'Return a native structured tool call, or a complete Qwen block: <tool_call><function=NAME>'+
+                    '<parameter=ARG>VALUE</parameter></function></tool_call>. '+
+                    'Use only enabled tools and their required arguments. No prose, code fences, partial tags or mixed formats. '+
+                    'For a tool with no arguments omit parameter tags. Continue the original task. Error: '+str(exc)[:180]})
+                emit('status','Retrying malformed tool response - no action executed')
+                continue
         try:calls=validate_calls(calls)
         except (ValueError,TypeError) as exc:
-            pass_errors=True
+            protocol_error=True
             malformed_retries+=1
             if malformed_retries>2:raise RuntimeError('Model repeatedly produced invalid structured tool calls. No actions from those batches were executed.') from exc
             messages.append({'role':'user','_automation_nudge':True,'content':'Your previous structured tool batch was invalid and none of it was executed. Return function names and JSON-object arguments for available tools. Error: '+str(exc)[:200]})
-            emit('status','Repairing invalid tool arguments Â· no action executed')
+            emit('status','Repairing invalid tool arguments - no action executed')
             continue
+        if calls:protocol_error=False
         assistant = {'role': 'assistant', 'content': content}
         if calls:
             assistant['tool_calls'] = calls
@@ -981,18 +1012,11 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
                 if continuations<2 and step+1<max_steps:
                     continuations+=1
                     messages.append({'role':'user','_automation_nudge':True,'content':'Continue the unfinished response/task from the saved state. Do not repeat actions already executed. Any incomplete tool batch in the last response was NOT executed; inspect current state before retrying. Stay within the original request.'})
-                    emit('status',f'Continuing automatically after output limit Â· {continuations}/2')
+                    emit('status',f'Continuing automatically after output limit - {continuations}/2')
                     continue
                 goal_checkpoint('paused',step+1)
-                emit('status','Paused at the output limit Â· progress is saved; send Continue when ready')
+                emit('status','Paused at the output limit - progress is saved; send Continue when ready')
                 return
-            if '<function=' in content or '<tool_call>' in content or '</tool_call>' in content:
-                malformed_retries+=1
-                if malformed_retries>2:
-                    raise RuntimeError('Model repeatedly returned tool markup as text. Those actions were NOT executed. Try another model or a smaller task.')
-                messages.append({'role':'user','_automation_nudge':True,'content':'The previous response contained tool markup as ordinary text. It was NOT executed. Use the native structured tool_calls interface with a function name and JSON arguments, not XML in content. Continue the original task and verify the result.'})
-                emit('status','Retrying malformed tool response Â· no action executed')
-                continue
             if act and len(tools.changes)>checked_changes and verification_requested_at!=len(tools.changes) and step+1<max_steps:
                 verification_requested_at=len(tools.changes)
                 messages.append({'role':'user','_automation_nudge':True,'content':'Before finishing: you changed project files after the last check. Inspect the project type if needed and run the relevant test/build/import check now. Fix task-related failures if practical. If no suitable check exists, explicitly report that verification was not run. Do not claim checks passed without their output.'})
@@ -1006,7 +1030,7 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
                 continue
             if unfinished:
                 goal_checkpoint('paused',step+1)
-                emit('status',f'Response finished Â· {len(unfinished)} task steps remain unresolved')
+                emit('status',f'Response finished - {len(unfinished)} task steps remain unresolved')
                 return
             unmet=[criterion for criterion in (goal or {}).get('criteria',[]) if criterion['status']!='met']
             if unmet and not goal_review_requested and step+1<max_steps:
@@ -1025,7 +1049,7 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
             # Prose cannot erase failed actions or pending process evidence.
             # Permit one bounded recovery opportunity, then remain unfinished.
             running_jobs=list(tools.jobs.running()) if tools.jobs else []
-            if keep_going and act and not worker_mode and not improvement_mode and (pass_errors or goal_validation_error) and not error_review_requested and step+1<max_steps:
+            if keep_going and act and not worker_mode and not improvement_mode and (pass_errors or goal_validation_error or protocol_error) and not error_review_requested and step+1<max_steps:
                 error_review_requested=True
                 messages.append({'role':'user','_automation_nudge':True,'content':
                     'Before finishing: one or more tool actions failed and recovery is not verified. '+
@@ -1038,6 +1062,7 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
             if running_jobs:blockers.append('Owned processes still running: '+', '.join(running_jobs))
             if pass_errors:blockers.append('Tool failures remain without verified recovery')
             if goal_validation_error:blockers.append('Task goal update remains invalid; correct its metadata')
+            if protocol_error:blockers.append('Tool protocol failure remains without a valid replacement call')
             if verification and verification['status']!='passed':blockers.append('checks '+verification['status'])
             if blockers:
                 goal_checkpoint('paused',step+1,blockers)

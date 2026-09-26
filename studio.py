@@ -35,6 +35,17 @@ from skynet_mode import run_improvement
 from platform_paths import state_dir
 from project_context import resolve_project_target, requested_runtime, explicit_project_directory
 
+
+def conversation_prose(content):
+    """Hide unrenderable assistant protocol tails without changing saved history."""
+    lines=[];fenced=False
+    for line in (content or '').splitlines():
+        if line.lstrip().startswith('```'):fenced=not fenced
+        if not fenced and re.match(r'\s*<(?:tool_call\b|function[=>]|parameter[=>])',line):
+            return '\n'.join(lines).strip(),True
+        lines.append(line)
+    return '\n'.join(lines).strip(),False
+
 SOURCE = Path(__file__).resolve().parent
 HOME = Path(os.environ.get('TALKTOAI_CODE_HOME', str(Path(sys.executable).parent if getattr(sys, 'frozen', False) else SOURCE)))
 STORE_PACKAGE = is_store_package()
@@ -649,17 +660,24 @@ class Studio(QMainWindow):
         self.partial=''; self.current_file=None; self.editor.clear(); self.output.clear()
         self.prompt.setPlainText(self.task.get('draft',''))
         self.task.setdefault('artifacts',[]);self.task.setdefault('activity',[]);self.refresh_artifacts()
-        for line in self.task['activity'][-60:]:self.output.appendPlainText(line)
+        start=self.task.get('activity_run_start',0)
+        if not isinstance(start,int) or not 0<=start<=len(self.task['activity']):start=0
+        for line in self.task['activity'][start:][-60:]:self.output.appendPlainText(line)
         self.title.setText(self.task['title']+(' · Archived' if self.task.get('archived') else '')); self.project_label.setText(Path(self.task['project']).name)
         self.project_label.setToolTip(self.task['project']); self.render(); self.refresh_changes();self.refresh_plan();self.refresh_jobs()
         self.files.clear(); self.filter_label.setText('Double-click a file to edit · Refresh to list')
 
     def render(self):
-        parts=[]
+        parts=[];hidden_protocol=False
         for m in self.task['messages']:
             if m['role']=='tool': continue
-            if m.get('content'): parts.append(('## You' if m['role']=='user' else '## TalkToAi Code')+'\n\n'+m['content'])
-        if self.partial: parts.append('## TalkToAi Code\n\n'+self.partial)
+            content=(m.get('content') or '').strip()
+            if m['role']=='assistant':
+                content,hidden=conversation_prose(content);hidden_protocol=hidden_protocol or hidden
+            if content:parts.append(('## You' if m['role']=='user' else '## TalkToAi Code')+'\n\n'+content)
+        partial,hidden=conversation_prose(self.partial);hidden_protocol=hidden_protocol or hidden
+        if partial:parts.append('## TalkToAi Code\n\n'+partial)
+        if hidden_protocol:parts.append('Model protocol text is hidden from this conversation view. Actual tool activity appears in Tools; protocol text alone does not establish execution.')
         if not parts:
             if self.task.get('kind','code')=='chat':
                 parts=['# Start a conversation\n\nAsk a question, explore an idea, or plan your next move. Chat starts in **Plan** mode so it can read relevant files without changing them. Switch to **Act** if you want it to take action.\n\nPinned chats stay at the top of this space. Use the conversation menu to rename, branch, archive, or move a chat into Code.']
@@ -979,6 +997,10 @@ class Studio(QMainWindow):
         threading.Thread(target=work,daemon=True).start()
 
     def set_busy(self,busy):
+        if busy and not self.busy:
+            self.output.clear();self.status.setText('Starting new run…')
+            self.task['activity_run_start']=len(self.task.get('activity',[]))
+            self.task.pop('last_metrics',None)
         self.busy=busy
         for w in (self.new_button,self.project_button,self.task_list,self.task_view,self.route,self.mode,self.step_budget,self.keep_going,self.goal_button,self.chat_space,self.code_space,self.skynet_button):w.setEnabled(not busy)
         self.prompt.setEnabled(True);self.send_button.setEnabled(True);self.send_button.setText('✦  Steer' if busy else '↑  Send')
@@ -1084,6 +1106,7 @@ class Studio(QMainWindow):
                 previous=next((m.get('content','') for m in reversed(self.task['messages']) if m.get('role')=='user'), '')
                 self.prompt.setPlainText(previous)
             self.status.setText('Request failed · prompt restored; adjust model/settings and send again');self.output.appendPlainText(str(data));self.right.setCurrentIndex(2)
+            self.task.setdefault('activity',[]).append('Task error: '+str(data))
             self.task['messages'].append({'role':'assistant','content':'Task error: '+str(data)});self.persist();self.render()
         elif kind=='finished':
             if self.partial:self.task['messages'].append({'role':'assistant','content':self.partial+'\n\n[Interrupted]'});self.partial=''

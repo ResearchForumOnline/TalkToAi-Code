@@ -214,6 +214,46 @@ class WorkspaceUITests(unittest.TestCase):
         self.assertNotIn('goal_checkpoint',w.task);self.assertIsNone(w.current_task_goal())
         self.assertNotIn('goal_checkpoint',load_tasks(studio.SESSION)[0][0])
 
+    def test_empty_tool_call_messages_do_not_create_blank_chat_rows(self):
+        w=self.window
+        w.task['messages']=[{'role':'user','content':'Inspect game'},
+            {'role':'assistant','content':'   \n ','tool_calls':[{'function':{'name':'project_info','arguments':{}}}]},
+            {'role':'tool','content':'result'}, {'role':'assistant','content':'Game located.'}]
+        with patch.object(w.transcript,'setMarkdown') as display:w.render()
+        markdown=display.call_args.args[0]
+        self.assertEqual(markdown.count('## TalkToAi Code'),1)
+        self.assertEqual(markdown.count('\n\n---\n\n'),1)
+
+    def test_historical_and_streamed_protocol_is_hidden_without_destroying_evidence(self):
+        w=self.window;raw='<tool_call>\n<function=read_file>\n<parameter=path>main.gd</parameter>\n</function>\n</tool_call>'
+        w.task['messages']=[{'role':'assistant','content':raw}, {'role':'assistant','content':'Task error: Model failed'}]
+        w.partial='Inspecting the game.\n'+raw
+        with patch.object(w.transcript,'setMarkdown') as display:w.render()
+        markdown=display.call_args.args[0]
+        self.assertNotIn('<function=',markdown);self.assertNotIn('<tool_call>',markdown)
+        self.assertIn('Inspecting the game.',markdown);self.assertIn('Task error: Model failed',markdown)
+        self.assertIn('does not establish execution',markdown)
+        self.assertEqual(w.task['messages'][0]['content'],raw)
+        example='Example:\n```xml\n<tool_call>example</tool_call>\n```'
+        self.assertEqual(studio.conversation_prose(example),(example,False))
+
+    def test_new_run_clears_stale_tools_but_retains_history_and_new_failures(self):
+        w=self.window;w.task['activity']=['Old failure'];w.output.setPlainText('Old failure')
+        w.status.setText('Request failed');w.task['last_metrics']={'seconds':9}
+        w.set_busy(True)
+        self.assertEqual(w.output.toPlainText(),'');self.assertEqual(w.task['activity'],['Old failure'])
+        self.assertEqual(w.task['activity_run_start'],1);self.assertNotIn('last_metrics',w.task)
+        self.assertNotIn('failed',w.status.text())
+        w.handle_event('status','Retrying model tool response · no actions executed')
+        self.assertIn('Retrying',w.status.text())
+        w.handle_event('error','Current run genuinely failed')
+        self.assertIn('Current run genuinely failed',w.output.toPlainText())
+        self.assertIn('Current run genuinely failed',w.task['activity'][-1])
+        w.set_busy(False)
+        w.select_task_by_id(w.task['id'])
+        self.assertNotIn('Old failure',w.output.toPlainText())
+        self.assertIn('Current run genuinely failed',w.output.toPlainText())
+
     def test_continue_prefers_explicit_saved_goal_but_new_steering_wins_and_clears_goal(self):
         w=self.window;w.task['project']=str(self.root)
         old=self.root/'old';old.mkdir();new=self.root/'new';new.mkdir();steered=self.root/'steered';steered.mkdir()
