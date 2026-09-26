@@ -1,6 +1,15 @@
 # TalkToAi Code — Your projects. Your AI. Your workspace.
 
-> **Latest release: 0.5.0** — [Download the Windows installer](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v0.5.0/TalkToAi-Code-0.5.0-Windows-Setup.exe) · [View release notes and checksums](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/tag/v0.5.0)
+> **Latest release: 0.6.0** — [Download the Windows installer](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v0.6.0/TalkToAi-Code-0.6.0-Windows-Setup.exe) · [View release notes and checksums](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/tag/v0.6.0)
+
+### 0.6.0: project targeting and longer coding tasks
+
+Named projects such as `game: NIGHTFALL` are resolved inside the selected or explicitly named workspace before inference. Ambiguous matches stop for project selection. `use AMD always` selects AMD inference without moving your local project to a server.
+
+The agent now condenses older exchanges into an evidence checkpoint instead of aborting when ordinary conversation history fills its context budget. The current objective and complete recent tool batches stay together, and saved history remains intact. Context sizes are estimates; important omitted details may require rereading the source.
+
+Skynet candidates now preserve supported Godot and Unity source and small assets, including nested source ZIP projects. Use project `AGENTS.md` for coding conventions and acceptance criteria. See [Customize and improve](docs/CUSTOMIZE-AND-IMPROVE.md) for project guidance and editing TalkToAi Code's own source.
+
 
 **Microsoft Store:** The separate MSIX edition was submitted for certification on 23 September 2026 with a manual publication hold at the last recorded check. See [submission status](docs/MICROSOFT-STORE-STATUS.md) and verify the current Store state separately. The installer above is the GitHub release.
 
@@ -8,7 +17,7 @@
 
 ## Product tour
 
-![TalkToAi Code 0.4.1 with Chat and Code spaces](assets/screens/studio-chat-code-041.png)
+![TalkToAi Code 0.4.1 with Chat and Code spaces](assets/screens/studio-project-workflow-060.png)
 
 The workspace above is rendered from the actual app with a disposable profile; it is not a model-performance result. Earlier Windows screenshots below show real user conversations.
 
@@ -123,10 +132,10 @@ In Act mode, try: **“Connect to my website server using my existing SSH config
 
 ### Platform installers
 
-- **Windows:** use the [0.5.0 Windows installer](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v0.5.0/TalkToAi-Code-0.5.0-Windows-Setup.exe). This is an unsigned desktop installer, not a Microsoft Store package. The standard per-user installer creates Start Menu/Desktop shortcuts and an uninstaller, and preserves local task data during upgrades.
+- **Windows:** use the [0.6.0 Windows installer](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v0.6.0/TalkToAi-Code-0.6.0-Windows-Setup.exe). This is an unsigned desktop installer, not a Microsoft Store package. The standard per-user installer creates Start Menu/Desktop shortcuts and an uninstaller, and preserves local task data during upgrades.
 - **Portable Windows:** use the [0.1.3 portable ZIP](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v0.1.3-preview/TalkToAi-Code-0.1.3-Windows-Portable.zip) when you do not want an installer.
-- **Linux:** install Python 3.10+ with `venv`, extract the [0.5.0 source ZIP](https://github.com/ResearchForumOnline/TalkToAi-Code/archive/refs/tags/v0.5.0.zip) outside your app-data folder, and run `bash install-linux.sh` from that folder. This creates a user-local virtual environment, launcher and desktop entry. The app uses `~/.local/state/TalkToAiCode` or `XDG_STATE_HOME` for chats/settings. Install Ollama separately and pull a model before selecting Auto. A Secret Service desktop keyring is needed to remember API keys or OAuth tokens.
-- **macOS:** install Python 3.10+, extract the [0.5.0 source ZIP](https://github.com/ResearchForumOnline/TalkToAi-Code/archive/refs/tags/v0.5.0.zip), and run `bash install-macos.sh` from that folder. This creates a local virtual environment, `~/bin/talktoai-code` launcher, and `~/Applications/TalkToAi Code.app` launcher. Chats/settings use `~/Library/Application Support/TalkToAiCode`. Install Ollama separately and pull a model. Remembered keys and account tokens use macOS Keychain.
+- **Linux:** install Python 3.10+ with `venv`, extract the [0.6.0 source ZIP](https://github.com/ResearchForumOnline/TalkToAi-Code/archive/refs/tags/v0.6.0.zip) outside your app-data folder, and run `bash install-linux.sh` from that folder. This creates a user-local virtual environment, launcher and desktop entry. The app uses `~/.local/state/TalkToAiCode` or `XDG_STATE_HOME` for chats/settings. Install Ollama separately and pull a model before selecting Auto. A Secret Service desktop keyring is needed to remember API keys or OAuth tokens.
+- **macOS:** install Python 3.10+, extract the [0.6.0 source ZIP](https://github.com/ResearchForumOnline/TalkToAi-Code/archive/refs/tags/v0.6.0.zip), and run `bash install-macos.sh` from that folder. This creates a local virtual environment, `~/bin/talktoai-code` launcher, and `~/Applications/TalkToAi Code.app` launcher. Chats/settings use `~/Library/Application Support/TalkToAiCode`. Install Ollama separately and pull a model. Remembered keys and account tokens use macOS Keychain.
 
 Windows has a packaged x64 installer. Linux and macOS use source installers with per-user virtual environments; the [native Ubuntu and macOS install-and-launch smoke run](https://github.com/ResearchForumOnline/TalkToAi-Code/actions/runs/36245686313) passed using an offscreen GUI on clean GitHub runners. An interactive human workflow has not been confirmed on those hosts. Browser research, Chat/Code, local Ollama, project edits, shell commands, jobs and SSH use portable code paths. Windows accessibility PC Pilot and Windows startup shortcuts are Windows-only. Linux browser operation may need desktop libraries for Playwright Chromium; if its browser download fails, install them and rerun `python -m playwright install chromium` inside the app virtual environment.
 
@@ -165,7 +174,7 @@ Source/releases: https://github.com/ResearchForumOnline/TalkToAi-Code
 
 Groq now has its own API preset. Open **Models & APIs**, choose **Groq API**, enter your own key (or set `GROQ_API_KEY`), fetch models, select a tool-capable model and save/use the profile. Provider account limits apply. Coding stays inside TalkToAi Code; the Cline launcher has been removed. The updater now discovers published Windows preview releases as well as stable releases.
 
-### Keep working with 0.5.0
+### Keep working with 0.6.0
 
 Auto can start installed local Ollama when AMD is unavailable. Failed requests return to the composer. More > Back up conversations exports a private ZIP. See [the guide](KEEP-WORKING.txt). Back up projects separately.
 
@@ -173,10 +182,10 @@ Auto can start installed local Ollama when AMD is unavailable. Failed requests r
 
 Use the Research with sources starter or ask for a web search. Browser search returns page observations and source URLs; Plan allows search/open/inspect, while input actions require Act. Research instructions ask the model to open original sources and cite observed links. Search uses Bing in a task-owned Edge browser; access can be blocked. Use Operate a Windows app in Act with Desktop/user access and PC Pilot enabled. The existing accessibility controls inspect windows, click, type and observe results. Completion depends on the model and application accessibility.
 
-### Search choices in 0.5.0
+### Search choices in 0.6.0
 
 Settings lets you prefer Edge, Chrome, Firefox or Playwright Chromium, with a browser fallback if the first one cannot start. Web search tries DuckDuckGo, Bing, Google and Brave. Add your own Serper key in Settings and select Serper to use its structured search results; those searches may use Serper account credits. Search results include source URLs, and the agent should open originals before citing them. More > Link ZeroThink account & vault already pairs your account with its provider vault; provider/model access requires account setup.
 
-### Linux and macOS source install in 0.5.0
+### Linux and macOS source install in 0.6.0
 
 The source installers copy only runtime modules and the public sample, avoiding build output and local configuration. They install dependencies for their host OS and download Playwright Chromium when possible. Use `bash install-linux.sh` or `bash install-macos.sh` from an extracted release source folder. Linux requires a graphical desktop and a working Secret Service keyring for remembered credentials; macOS uses Keychain. On Ubuntu/Debian, install Qt runtime libraries with `sudo apt-get install libegl1 libgl1 libxcb-cursor0 libxkbcommon-x11-0 libxcb-xinerama0` if they are missing. On both platforms, the bundled Windows update installer is disabled; download a newer source release and rerun the appropriate script. Native signed Linux/macOS packages and interactive GUI validation are still outstanding. The source installer and offscreen GUI launch passed on Ubuntu and macOS GitHub runners.

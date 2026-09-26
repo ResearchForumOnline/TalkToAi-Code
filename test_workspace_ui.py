@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QPlainTextEdit, QPushButton, QComboBox, QDialog, QLineEdit
 import studio
 from session_store import load_tasks
 
@@ -25,6 +25,76 @@ class WorkspaceUITests(unittest.TestCase):
 
     def tearDown(self):
         self.window.allow_quit=True;self.window.close();self.window.deleteLater();self.app.processEvents();self.stack.close()
+
+    def test_targeting_selects_native_game_and_persists_amd_without_escalating_plan(self):
+        w=self.window;w.task['project']=str(self.root)
+        native=self.root/'blacksite_nightfall'/'native';native.mkdir(parents=True)
+        (native/'project.godot').write_text('[application]\nconfig/name="NIGHTFALL"\n')
+        w.mode.setCurrentText('Plan')
+        with patch.object(w,'write_config') as save:
+            self.assertTrue(w.prepare_task_target('use AMD always, game: NIGHTFALL. improve it'))
+            save.assert_called_once()
+        self.assertEqual(Path(w.task['project']),native.resolve())
+        self.assertEqual(w.route.currentIndex(),2);self.assertEqual(w.config['preferred_route'],'server')
+        self.assertEqual(w.mode.currentText(),'Plan');self.assertIn('read-only',w.mode_hint.text())
+        self.assertEqual(w.step_budget.currentData(),32)
+
+    def test_context_setting_persists_and_cancel_keeps_saved_value(self):
+        import json
+        w=self.window
+        godot=self.root/'godot';godot.write_text('fixture')
+        self.assertEqual(w.model_performance(),{'num_ctx':8192})
+        def save(dialog):
+            choice=dialog.findChild(QComboBox,'model_context_window')
+            self.assertEqual(choice.currentData(),8192)
+            choice.setCurrentIndex(choice.findData(16384))
+            dialog.findChild(QLineEdit,'godot_executable').setText(str(godot.resolve()))
+            return QDialog.Accepted
+        with patch.object(studio.QDialog,'exec',save),patch.object(w,'set_start_with_windows'),patch('search_provider.configured',return_value=False):
+            w.settings()
+        self.assertEqual(w.model_performance(),{'num_ctx':16384})
+        self.assertEqual(json.loads((self.root/'config.json').read_text())['num_ctx'],16384)
+        self.assertEqual(json.loads((self.root/'config.json').read_text())['godot_executable'],str(godot.resolve()))
+        def cancel(dialog):
+            choice=dialog.findChild(QComboBox,'model_context_window')
+            self.assertEqual(choice.currentData(),16384)
+            choice.setCurrentIndex(choice.findData(32768))
+            self.assertEqual(dialog.findChild(QLineEdit,'godot_executable').text(),str(godot.resolve()))
+            return QDialog.Rejected
+        with patch.object(studio.QDialog,'exec',cancel),patch('search_provider.configured',return_value=False):w.settings()
+        self.assertEqual(w.model_performance(),{'num_ctx':16384})
+
+    def test_invalid_context_setting_falls_back_to_8k(self):
+        self.window.config['num_ctx']='999999'
+        self.assertEqual(self.window.model_performance(),{'num_ctx':8192})
+
+    def test_project_switch_preserves_unsaved_editor_by_stopping(self):
+        w=self.window;w.task['project']=str(self.root)
+        new=self.root/'other';new.mkdir()
+        w.current_file='main.py';w.editor.setPlainText('original');w.editor.insertPlainText('unsaved')
+        with patch.object(w,'error') as error:
+            self.assertFalse(w.prepare_task_target(f'Improve "{new}"'))
+            error.assert_called_once()
+        self.assertEqual(w.task['project'],str(self.root));self.assertIn('unsaved',w.editor.toPlainText())
+
+    def test_project_instructions_cancel_preserves_existing_bytes(self):
+        w=self.window;w.task['project']=str(self.root)
+        path=self.root/'AGENTS.md';original=b'# Existing\r\nUse Godot.\r\n';path.write_bytes(original)
+        def cancel(dialog):
+            editor=dialog.findChild(QPlainTextEdit)
+            self.assertIn('Use Godot.',editor.toPlainText());editor.setPlainText('changed');dialog.reject()
+        with patch.object(studio.QDialog,'exec',cancel):w.instructions_dialog()
+        self.assertEqual(path.read_bytes(),original)
+
+    def test_project_instructions_save_is_checkpointed(self):
+        w=self.window;w.task['project']=str(self.root)
+        path=self.root/'AGENTS.md';path.write_text('# Old\n')
+        def save(dialog):
+            dialog.findChild(QPlainTextEdit).setPlainText('# New instructions\nUse Godot checks.\n')
+            next(button for button in dialog.findChildren(QPushButton) if button.text()=='Save instructions').click()
+        with patch.object(studio.QDialog,'exec',save):w.instructions_dialog()
+        self.assertIn('Use Godot checks.',path.read_text())
+        self.assertTrue(w.task['changes'])
 
     def test_new_and_branch_select_correct_identity_with_pinned_chat(self):
         w=self.window;old=w.task['id'];w.toggle_pin_task()

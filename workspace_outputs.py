@@ -30,7 +30,8 @@ def read_batch(tools, requests):
             if not 0 <= offset <= len(text):
                 raise ValueError('offset is outside the file.')
             # Share the response budget across all files; offsets are Unicode characters.
-            chunk = text[offset:offset+max(256, 12000//len(requests))]
+            limit=max(1,min(int(request.get('limit',12000//len(requests))),12000//len(requests)))
+            chunk = text[offset:offset+limit]
             result.update(sha256=digest, bytes=len(data), offset=offset, content=chunk,
                           next_offset=offset+len(chunk) if offset+len(chunk)<len(text) else None,
                           complete=offset+len(chunk)>=len(text))

@@ -35,6 +35,7 @@ jobs:
         run: |
           "$HOME/.local/bin/talktoai-code" --preview
           test -s "$HOME/.local/share/talktoai-code/studio-preview.png"
+          test ! -d "$HOME/Library/Application Support/TalkToAiCode"
       - name: Open macOS workspace
         if: runner.os == 'macOS'
         env:
@@ -43,3 +44,5 @@ jobs:
           "$HOME/bin/talktoai-code" --preview
           test -s "$HOME/Library/Application Support/TalkToAiCode/studio-preview.png"
           test -x "$HOME/Applications/TalkToAi Code.app/Contents/MacOS/TalkToAiCode"
+      - name: Portable agent regression checks
+        run: python -m unittest test_context_window test_project_target test_skynet_mode -v

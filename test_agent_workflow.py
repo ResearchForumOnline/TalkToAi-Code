@@ -111,8 +111,9 @@ class AgentAutomationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             payloads,events=self.run_sequence(root,[response(calls=[call('enable_tools',group='browser'),call('enable_tools',group='desktop'),call('enable_tools',group='ssh')]),response('These operations are unavailable in this mode.')],act=False)
         names={t['function']['name'] for t in payloads[-1]['tools']}
-        self.assertFalse(names&{'browser','run_checks','write_file','connect_remote','computer'})
-        self.assertEqual(sum(k=='result' and 'PermissionError' in v for k,v in events),3)
+        self.assertIn('browser',names)
+        self.assertFalse(names&{'run_checks','write_file','connect_remote','computer'})
+        self.assertEqual(sum(k=='result' and 'PermissionError' in v for k,v in events),2)
 
     def test_project_overview_does_not_require_an_extra_model_turn(self):
         with tempfile.TemporaryDirectory() as root:
@@ -121,6 +122,18 @@ class AgentAutomationTests(unittest.TestCase):
         self.assertEqual(len(payloads),1)
         self.assertIn('npm run build',payloads[0]['messages'][0]['content'])
         self.assertTrue(any(k=='project_context' for k,v in events))
+
+    def test_plan_browser_can_read_but_cannot_interact(self):
+        with tempfile.TemporaryDirectory() as root:
+            tools=core.ProjectTools(root,False)
+            with patch('browser_tools.BrowserTools') as browser:
+                browser.return_value.execute.return_value='Observed page'
+                for action in ('search','open','inspect'):
+                    self.assertEqual(tools.execute('browser',{'action':action,'target':'','value':''}),'Observed page')
+                for action in ('click','fill','press','screenshot'):
+                    with self.assertRaises(PermissionError):
+                        tools.execute('browser',{'action':action,'target':'','value':''})
+                self.assertEqual(browser.return_value.execute.call_count,3)
 
     def test_invalid_batch_does_not_execute_the_first_valid_call(self):
         bad=call('read_file',path='a');bad['function']['arguments']='{invalid'
@@ -186,7 +199,7 @@ class AgentAutomationTests(unittest.TestCase):
             with patch.object(tools,'execute',return_value='Exit 1\nTest failed'):
                 _,events=self.run_sequence(root,[response(calls=[call('run_checks')]),response('Tests passed!')],tools=tools)
         self.assertEqual([v for k,v in events if k=='verification'][-1]['status'],'failed')
-        self.assertIn(('status','Response finished · checks failed'),events)
+        self.assertTrue(any(k=='status' and v.startswith('Response finished') and v.endswith('checks failed') for k,v in events))
 
 
 if __name__=='__main__':unittest.main()

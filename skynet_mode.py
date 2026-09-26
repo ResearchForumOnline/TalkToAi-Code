@@ -21,15 +21,23 @@ from agent_workflow import check_evidence
 
 SOURCE_SUFFIXES = {'.py', '.js', '.jsx', '.ts', '.tsx', '.json', '.toml', '.yaml',
                    '.yml', '.html', '.css', '.scss', '.md', '.txt', '.ps1', '.bat',
-                   '.sh', '.spec', '.ini', '.cfg', '.rs', '.go', '.c', '.h', '.cpp'}
+                   '.sh', '.spec', '.ini', '.cfg', '.rs', '.go', '.c', '.h', '.cpp',
+                   '.gd', '.godot', '.tscn', '.tres', '.gdshader', '.shader', '.uid',
+                   '.cs', '.csproj', '.sln', '.lua', '.hpp', '.svg', '.gltf', '.obj',
+                   '.mtl', '.import', '.unity', '.prefab', '.mat', '.meta', '.asmdef',
+                   '.uss', '.uxml', '.lock'}
+ASSET_SUFFIXES = {'.png', '.jpg', '.jpeg', '.webp', '.ico', '.ogg', '.wav', '.mp3',
+                  '.glb', '.ttf', '.otf', '.woff', '.woff2'}
 EXCLUDED_PARTS = {'.git', '.talktoai-code', '.venv', 'venv', 'node_modules', 'build', 'dist',
                   '__pycache__', '.pytest_cache', '.mypy_cache', '.tox',
-                  'backups', 'archive', 'archives', 'private', 'secrets'}
+                  'backups', 'archive', 'archives', 'private', 'secrets', '.godot',
+                  'library', 'temp', 'logs', 'obj', 'bin', '.ssh', '.aws', '.azure'}
 EXCLUDED_NAMES = {'.env', '.env.local', 'id_rsa', 'id_ed25519', 'credentials.json',
                   'token.json', 'secrets.json', 'appsettings.production.json'}
 MAX_FILES = 1500
 MAX_BYTES = 60 * 1024 * 1024
 MAX_FILE_BYTES = 4 * 1024 * 1024
+MAX_SCANNED_FILES = 20000
 
 
 def _eligible(relative: Path) -> bool:
@@ -37,30 +45,37 @@ def _eligible(relative: Path) -> bool:
         return False
     parts = [p.lower() for p in relative.parts]
     name = parts[-1]
-    if any(p in EXCLUDED_PARTS for p in parts) or name in EXCLUDED_NAMES:
+    if any(p in EXCLUDED_PARTS for p in parts) or name in EXCLUDED_NAMES or name.startswith('.env'):
         return False
     if any(word in name for word in ('credential', 'password', 'private_key', '.pem', '.pfx', '.key')):
         return False
-    return relative.suffix.lower() in SOURCE_SUFFIXES or name in {'dockerfile', 'makefile', 'agents.md'}
+    return relative.suffix.lower() in SOURCE_SUFFIXES | ASSET_SUFFIXES or name in {'dockerfile', 'makefile', 'agents.md'}
 
 
 def _source_paths(root: Path):
+    root = root.resolve()
     try:
         proc = subprocess.run(['git', 'ls-files', '--cached', '-z'],
                               cwd=root, capture_output=True, timeout=20, check=True)
         names = [Path(os.fsdecode(part)) for part in proc.stdout.split(b'\0') if part]
     except (OSError, subprocess.SubprocessError):
-        # A folder without Git has no reliable source ledger. Limit intake to
-        # conventional code locations and code extensions only.
+        # Exported projects and downloaded source ZIPs have no Git ledger.
+        # Prune generated/private folders before traversing and retain only
+        # recognized source/assets. Never walk through directory links.
         names = []
-        for base in (root, root / 'src', root / 'tests'):
-            if not base.is_dir():
-                continue
-            for p in (base.glob('*') if base == root else base.rglob('*')):
-                if p.is_file() and p.suffix.lower() in {'.py', '.js', '.jsx', '.ts', '.tsx',
-                                                         '.html', '.css', '.scss', '.rs', '.go',
-                                                         '.c', '.h', '.cpp'}:
-                    names.append(p.relative_to(root))
+        scanned = 0
+        for base, directories, files in os.walk(root, followlinks=False):
+            directories[:] = sorted(d for d in directories
+                if d.lower() not in EXCLUDED_PARTS and not d.startswith('.')
+                and not (Path(base) / d).is_symlink()
+                and (Path(base) / d).resolve().is_relative_to(root))
+            for name in sorted(files):
+                scanned += 1
+                if scanned > MAX_SCANNED_FILES:
+                    raise ValueError('Project scan exceeds 20,000 files. Select the specific app or game folder.')
+                relative = (Path(base) / name).relative_to(root)
+                if _eligible(relative):
+                    names.append(relative)
     return sorted({p for p in names if _eligible(p)}, key=lambda p: str(p).lower())
 
 
@@ -69,11 +84,11 @@ def _copy_candidate(root: Path, candidate: Path):
     total = 0
     for relative in _source_paths(root):
         source = root / relative
-        if not source.is_file() or source.is_symlink():
+        if not source.is_file() or source.is_symlink() or not source.resolve().is_relative_to(root.resolve()):
             continue
         size = source.stat().st_size
         if size > MAX_FILE_BYTES:
-            continue
+            raise ValueError(f'Candidate file exceeds the 4 MB copy limit: {relative}. Select a smaller project or prepare a source copy with smaller assets.')
         total += size
         if len(manifest) >= MAX_FILES or total > MAX_BYTES:
             raise ValueError('Project exceeds Skynet Mode copy limits (1,500 files or 60 MB of source).')
@@ -89,7 +104,8 @@ def _copy_candidate(root: Path, candidate: Path):
 def _changes(candidate: Path, original_hashes: dict[str, str]):
     changes = []
     now = {str(p.relative_to(candidate)).replace('\\', '/'): p for p in candidate.rglob('*')
-           if p.is_file() and _eligible(p.relative_to(candidate)) and not p.is_symlink()}
+           if p.is_file() and _eligible(p.relative_to(candidate)) and not p.is_symlink()
+           and p.resolve().is_relative_to(candidate.resolve())}
     for name in sorted(set(original_hashes) | set(now)):
         path = now.get(name)
         after = path.read_bytes() if path else b''
@@ -107,6 +123,9 @@ def _diff(original: Path, candidate: Path, changes: list[dict]):
     lines = []
     for item in changes:
         name = item['path']
+        if Path(name).suffix.lower() in ASSET_SUFFIXES:
+            lines.append(f'Binary asset {item["status"]}: {name} (SHA256: {item["sha256"] or "deleted"})\n')
+            continue
         before = (original / name).read_text(encoding='utf-8', errors='replace').splitlines(True) if (original / name).is_file() else []
         after = (candidate / name).read_text(encoding='utf-8', errors='replace').splitlines(True) if (candidate / name).is_file() else []
         lines.extend(difflib.unified_diff(before, after, fromfile='original/' + name, tofile='candidate/' + name))

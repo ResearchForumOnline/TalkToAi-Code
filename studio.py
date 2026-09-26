@@ -10,6 +10,7 @@ import time
 import re
 import copy
 import subprocess
+import hashlib
 from PySide6.QtCore import Qt, Signal, QObject, QTimer, QEvent
 from PySide6.QtGui import QFont, QTextCursor, QKeySequence, QShortcut, QDesktopServices, QIcon, QPixmap, QPainter, QColor
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
@@ -17,7 +18,7 @@ from PySide6.QtCore import QUrl
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QLabel, QPushButton, QComboBox, QListWidget, QListWidgetItem, QSplitter, QTabWidget,
     QTextBrowser, QPlainTextEdit, QFileDialog, QMessageBox, QFrame, QInputDialog,
-    QSystemTrayIcon, QMenu, QDialog, QLineEdit, QCheckBox, QDialogButtonBox)
+    QSystemTrayIcon, QMenu, QDialog, QLineEdit, QCheckBox, QDialogButtonBox, QScrollArea)
 from agent_core import ProjectTools, run_agent, restore_checkpoint, set_active_remote, set_agent_preferences, set_active_provider
 from routing import choose_route, ensure_local_model, ensure_local_runtime
 from ssh_tools import SSHProfile, SSHSession, load_profiles, save_profiles
@@ -27,11 +28,12 @@ from session_store import load_tasks, save_tasks, matches_task
 from task_starters import STARTERS
 from process_jobs import ProcessJobs
 from workspace_outputs import register_output
-from updates import is_store_package
+from updates import is_store_package, VERSION
 from amd_runtime import ensure_amd_tunnel
 from mail_connectors import gmail_connect, gmail_status, zmail_connect, zmail_status
 from skynet_mode import run_improvement
 from platform_paths import state_dir
+from project_context import resolve_project_target, requested_runtime
 
 SOURCE = Path(__file__).resolve().parent
 HOME = Path(os.environ.get('TALKTOAI_CODE_HOME', str(Path(sys.executable).parent if getattr(sys, 'frozen', False) else SOURCE)))
@@ -94,7 +96,7 @@ class Composer(QPlainTextEdit):
 class Studio(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle('TalkToAi Code')
+        self.setWindowTitle('TalkToAi Code · '+VERSION)
         self.resize(1480, 930)
         self.setMinimumSize(1100, 700)
         self.bus = Bus()
@@ -117,6 +119,7 @@ class Studio(QMainWindow):
             'server_model': 'openzero-qwen3-coder-30b-a3b-q3',
             'approval_policy': 'ask_remote',
             'auto_context': True,
+            'num_ctx': 8192,
             'show_tool_activity': True,
             'remote_enabled': True,
             'remote_pilot': True,
@@ -146,6 +149,8 @@ class Studio(QMainWindow):
         self.task = None
         self.workspace = 'code'
         self.build()
+        if self.config.get('preferred_route') in ('local','server','local_large'):
+            self.route.setCurrentIndex(('auto','local','server','local_large').index(self.config['preferred_route']))
         if self.config.get('preferred_route')=='provider' and self.active_provider():self.route.setCurrentIndex(4)
         if self.config.get('approval_policy')=='plan':self.mode.setCurrentText('Plan')
         self.refresh_tasks()
@@ -244,7 +249,7 @@ class Studio(QMainWindow):
         self.zmail_button = self.button('Connect Zmail', lambda:self.connect_mail('Zmail'), side)
         self.mail_status_label = QLabel('Mail: checking connections…');self.mail_status_label.setWordWrap(True);self.mail_status_label.setObjectName('muted');side.addWidget(self.mail_status_label)
         more=QPushButton('More  ·  tools && help');more_menu=QMenu(more)
-        for title,callback in [('Actions · Ctrl+K',self.command_palette),('Project memory · Ctrl+Shift+M',self.memory_dialog),('Back up conversations',self.backup_conversations),('API providers',self.providers_dialog),('Link ZeroThink account & vault',self.link_zerothink),('Model choices and storage',self.models_dialog),('FAQ / How to · F1',self.faq_dialog),('Open app data folder',lambda:QDesktopServices.openUrl(QUrl.fromLocalFile(str(STATE))))]:
+        for title,callback in [('Actions · Ctrl+K',self.command_palette),('Project memory · Ctrl+Shift+M',self.memory_dialog),('Project instructions · AGENTS.md',self.instructions_dialog),('Back up conversations',self.backup_conversations),('API providers',self.providers_dialog),('Link ZeroThink account & vault',self.link_zerothink),('Model choices and storage',self.models_dialog),('FAQ / How to · F1',self.faq_dialog),('Open app data folder',lambda:QDesktopServices.openUrl(QUrl.fromLocalFile(str(STATE))))]:
             more_menu.addAction(title,callback)
         more.setMenu(more_menu);side.addWidget(more)
         self.connection_label = QLabel('⌁  No SSH connection'); self.connection_label.setObjectName('muted'); side.addWidget(self.connection_label)
@@ -276,10 +281,16 @@ class Studio(QMainWindow):
         options = QHBoxLayout()
         self.route = QComboBox(); self.route.addItems(['Auto · AMD 30B / fallback', 'Local · compact CPU', 'AMD · Qwen Coder 30B-A3B', 'Local · Qwen3.8 27B', 'API · optional provider']); options.addWidget(self.route)
         self.mode = QComboBox(); self.mode.addItems(['Act', 'Plan']); self.mode.setToolTip('Act permits file edits and host commands. Plan only reads project files. Commands are not OS-sandboxed.'); options.addWidget(self.mode)
+        self.step_budget=QComboBox()
+        for steps in (16,32,64):self.step_budget.addItem(f'{steps} steps',steps)
+        self.step_budget.setCurrentIndex(1);self.step_budget.setToolTip('Maximum model/tool cycles per code request. Stop or steer at any time. Larger budgets can use more time and provider tokens.');options.addWidget(self.step_budget)
         options.addStretch()
         self.stop = self.button('Stop', self.stop_task, options); self.stop.setEnabled(False)
         self.send_button = self.button('↑  Send', self.send, options, True)
         composer.addLayout(options); chat.addWidget(box)
+        self.mode_hint=QLabel();self.mode_hint.setObjectName('muted');self.mode_hint.setWordWrap(True)
+        def show_mode():self.mode_hint.setText('Act: the agent can edit files and run project commands.' if self.mode.currentText()=='Act' else 'Plan: read-only research and planning. Select Act to build or edit your project.')
+        self.mode.currentTextChanged.connect(show_mode);show_mode();chat.addWidget(self.mode_hint)
         hint=QLabel('Enter to send  ·  Shift+Enter for a new line  ·  Ctrl+O to open a project'); hint.setObjectName('muted'); chat.addWidget(hint)
         self.performance_label=QLabel('Auto prefers a verified coding route, then falls back when unavailable.');self.performance_label.setObjectName('muted');chat.addWidget(self.performance_label)
         split.addWidget(center)
@@ -357,6 +368,35 @@ class Studio(QMainWindow):
             self.status.setText('Project memory saved for future tasks');dialog.accept()
         row=QHBoxLayout();layout.addLayout(row)
         self.button('Save notes',save,row,True);self.button('Cancel',dialog.reject,row)
+        dialog.exec()
+
+    def instructions_dialog(self):
+        if self.busy:return
+        tools=ProjectTools(self.task['project'],True)
+        try:
+            path=tools.path('AGENTS.md')
+            original=path.read_bytes() if path.exists() else None
+            if original is not None and len(original)>24000:
+                raise ValueError('AGENTS.md exceeds the 24,000-byte instruction limit; edit it in the file editor.')
+            previous=original.decode('utf-8') if original is not None else ''
+        except (OSError,ValueError) as exc:self.error(exc);return
+        expected=hashlib.sha256(original).hexdigest() if original is not None else '__absent__'
+        dialog=QDialog(self);dialog.setWindowTitle('Project instructions · AGENTS.md');dialog.resize(720,550)
+        layout=QVBoxLayout(dialog)
+        label=QLabel('Tell the agent how to work on this project: coding conventions, build commands, design goals and review requirements. Saved in AGENTS.md and included in future model requests.');label.setWordWrap(True);layout.addWidget(label)
+        editor=QPlainTextEdit();editor.setPlainText(previous);layout.addWidget(editor)
+        status=QLabel();layout.addWidget(status)
+        def count():status.setText(f'{len(editor.toPlainText().encode("utf-8")):,} / 24,000 bytes · '+str(path))
+        editor.textChanged.connect(count);count()
+        def save():
+            content=editor.toPlainText()
+            if len(content.encode('utf-8'))>24000:self.error('Keep project instructions under 24,000 bytes.');return
+            try:tools.execute('write_file_checked',{'path':'AGENTS.md','content':content,'expected_sha256':expected})
+            except (OSError,ValueError) as exc:self.error(exc);return
+            self.task['changes']+=tools.changes;self.persist();self.refresh_files();self.refresh_changes()
+            self.status.setText('Project instructions saved for future tasks');dialog.accept()
+        row=QHBoxLayout();layout.addLayout(row)
+        self.button('Save instructions',save,row,True);self.button('Cancel',dialog.reject,row)
         dialog.exec()
 
     def filter_tasks(self,text):
@@ -501,7 +541,7 @@ class Studio(QMainWindow):
         dialog=QDialog(self);dialog.setWindowTitle('Actions');dialog.resize(600,480);layout=QVBoxLayout(dialog)
         query=QLineEdit();query.setPlaceholderText('Find an action…');layout.addWidget(query);items=QListWidget();layout.addWidget(items)
         actions=[('New chat',lambda:self.new_in_workspace('chat')),('New code task',lambda:self.new_in_workspace('code')),('Open project',self.choose_project),('Open Desktop',lambda:self.quick_command('open desktop')),('Inspect project',lambda:self.quick_command('inspect project')),('Run tests',lambda:self.quick_command('run tests')),('Launch game',lambda:self.quick_command('launch game')),('Capture screenshot',lambda:self.quick_command('take a screenshot')),('Map project',lambda:self.quick_command('map project')),('Rename task',self.rename_task),('Pin or unpin task',self.toggle_pin_task),('Move chat between Chat and Code',self.move_task_workspace),('Branch conversation',self.fork_task),('Export task report',self.export_task),('Settings',self.settings),('SSH connections',self.connections_dialog),('API providers',self.providers_dialog),('Model choices and storage',self.models_dialog),('FAQ / How to',self.faq_dialog)]
-        actions += [('Project memory · Ctrl+Shift+M',self.memory_dialog),('About & updates',self.updates_dialog),('Open app data folder',lambda:QDesktopServices.openUrl(QUrl.fromLocalFile(str(STATE)))),('Open project folder',lambda:QDesktopServices.openUrl(QUrl.fromLocalFile(self.task['project'])))]
+        actions += [('Project memory · Ctrl+Shift+M',self.memory_dialog),('Project instructions · AGENTS.md',self.instructions_dialog),('About & updates',self.updates_dialog),('Open app data folder',lambda:QDesktopServices.openUrl(QUrl.fromLocalFile(str(STATE)))),('Open project folder',lambda:QDesktopServices.openUrl(QUrl.fromLocalFile(self.task['project'])))]
         actions += [('Archive or restore conversation',self.toggle_archive_task),('Search chats · Ctrl+Shift+F',self.focus_task_search),('Find in conversation · Ctrl+F',self.find_in_chat),('Copy last reply',self.copy_last_reply)]
         actions += [('Starter: '+name,lambda n=name:self.use_starter(n)) for name in STARTERS]
         actions += [('Open example game · Score Arena',lambda:self.quick_command('open score arena'))]
@@ -740,6 +780,7 @@ class Studio(QMainWindow):
             return
         if self.natural_control(text):return
         text=self.prompt.toPlainText().strip()
+        if not self.prepare_task_target(text):return
         try:ProjectTools(self.task['project'])
         except Exception as exc:self.error(exc);return
         self.prompt.clear(); self.task['messages'].append({'role':'user','content':text})
@@ -749,6 +790,8 @@ class Studio(QMainWindow):
         preference=('auto','local','server','local_large','provider')[self.route.currentIndex()]
         self.started_at=time.monotonic();self.route_description='Selecting runtime';self.status.setText('Checking installed models…')
         project=self.task['project']; history=list(self.task['messages']); act=self.mode.currentText()=='Act';task_id=self.task['id']
+        task_kind=self.task.get('kind','code');rounds=self.step_budget.currentData() if task_kind=='code' else 16
+        performance=self.model_performance()
         active_remote=self.active_remote()
         requested_ssh=act and bool(re.search(r'\b(ssh|log ?in|connect)\b',text,re.I)) and bool(re.search(r'\b(server|host|ssh)\b|\.[a-z]{2,}',text,re.I))
         set_active_remote(active_remote if self.config.get('remote_enabled') and self.config.get('remote_pilot',True) else None)
@@ -789,7 +832,7 @@ class Studio(QMainWindow):
                 self.bus.event.emit('route',selected)
                 def job_event(kind,data):self.bus.event.emit(kind,dict(data,task_id=task_id))
                 self.job_manager=ProcessJobs(project,self.cancel,job_event)
-                run_agent(selected['url'],selected['model'],history,project,act,self.cancel,self.bus.event.emit,jobs=self.job_manager,task_kind=self.task.get('kind','code'))
+                run_agent(selected['url'],selected['model'],history,project,act,self.cancel,self.bus.event.emit,rounds=rounds,performance=performance,jobs=self.job_manager,task_kind=task_kind)
             except Exception as exc:self.bus.event.emit('error',str(exc))
             finally:
                 set_active_remote(None)
@@ -797,6 +840,29 @@ class Studio(QMainWindow):
                 set_agent_preferences(False, True, False, True, False)
                 self.bus.event.emit('finished',None)
         threading.Thread(target=work,daemon=True).start()
+
+    def prepare_task_target(self,text):
+        if requested_runtime(text)=='server':
+            self.route.setCurrentIndex(2)
+            if re.search(r'\balways\b',text,re.I):
+                self.config['preferred_route']='server';self.write_config()
+        if self.task.get('kind','code')!='code':return True
+        target=resolve_project_target(self.task['project'],text)
+        if target.get('error'):
+            details='\n'.join(target['candidates'])
+            self.error(target['error']+('\n\nCandidates:\n'+details if details else ''))
+            return False
+        if Path(target['root'])!=Path(self.task['project']).resolve():
+            if self.current_file and self.editor.document().isModified():
+                self.error('Save your open file before switching to the project named in this request.');return False
+            self.task['project']=target['root'];self.task['project_target']=target
+            self.task.pop('project_context',None)
+            self.current_file=None;self.editor.clear()
+            self.project_label.setText(Path(target['root']).name)
+            self.project_label.setToolTip(target['root'])
+            self.refresh_files();self.persist()
+            self.task['messages'].append({'role':'assistant','content':'Working project: '+target['root']+'\n'+target['reason']})
+        return True
 
     def start_skynet(self):
         if self.busy or not self.task or self.task.get('kind','code')!='code':return
@@ -807,6 +873,7 @@ class Studio(QMainWindow):
             goal=goal.strip()
         if not goal or len(goal)>4000:
             self.status.setText('Give Skynet Mode a focused goal of 1–4,000 characters.');return
+        if not self.prepare_task_target(goal):return
         try:ProjectTools(self.task['project'])
         except Exception as exc:self.error(exc);return
         self.task['messages'].append({'role':'user','content':'Skynet Mode candidate: '+goal})
@@ -815,6 +882,7 @@ class Studio(QMainWindow):
         self.started_at=time.monotonic();self.route_description='Selecting Skynet Mode runtime'
         self.status.setText('Skynet Mode: preparing a separate candidate…')
         project=self.task['project'];preference=('auto','local','server','local_large','provider')[self.route.currentIndex()]
+        performance=self.model_performance()
         def work():
             try:
                 if preference=='provider':
@@ -831,7 +899,7 @@ class Studio(QMainWindow):
                         if not ready and preference=='server':raise ConnectionError(detail)
                     selected=choose_route(self.config,preference,{})
                 self.bus.event.emit('route',selected)
-                run_improvement(selected['url'],selected['model'],project,goal,self.cancel,self.bus.event.emit,max_iterations=2)
+                run_improvement(selected['url'],selected['model'],project,goal,self.cancel,self.bus.event.emit,performance=performance,max_iterations=2)
             except Exception as exc:self.bus.event.emit('error',str(exc))
             finally:
                 set_active_provider(None)
@@ -840,7 +908,7 @@ class Studio(QMainWindow):
 
     def set_busy(self,busy):
         self.busy=busy
-        for w in (self.new_button,self.project_button,self.task_list,self.task_view,self.route,self.mode,self.chat_space,self.code_space,self.skynet_button):w.setEnabled(not busy)
+        for w in (self.new_button,self.project_button,self.task_list,self.task_view,self.route,self.mode,self.step_budget,self.chat_space,self.code_space,self.skynet_button):w.setEnabled(not busy)
         self.prompt.setEnabled(True);self.send_button.setEnabled(True);self.send_button.setText('✦  Steer' if busy else '↑  Send')
         self.stop.setEnabled(busy)
         if self.tray:self.tray.setToolTip('TalkToAi Code — '+('working in background' if busy else 'ready'))
@@ -1250,13 +1318,26 @@ Use Auto or AMD, stop a task, or steer it into a smaller request. The AMD route 
 ''');layout.addWidget(text,1)
         self.button('Close',dialog.accept,layout);dialog.exec()
 
+    def model_performance(self):
+        selected=self.config.get('num_ctx',8192)
+        return {'num_ctx':selected if selected in (8192,16384,32768) else 8192}
+
     def settings(self):
         if self.busy:return
         dialog=QDialog(self);dialog.setWindowTitle('TalkToAi Code settings');dialog.resize(620,580)
         layout=QVBoxLayout(dialog)
         intro=QLabel('Control the defaults that make the agent feel automatic while keeping remote access explicit.')
         intro.setWordWrap(True);intro.setObjectName('muted');layout.addWidget(intro)
-        form=QVBoxLayout();layout.addLayout(form)
+        scroll=QScrollArea();scroll.setWidgetResizable(True)
+        form_widget=QWidget();form=QVBoxLayout(form_widget);scroll.setWidget(form_widget);layout.addWidget(scroll,1)
+        context_choice=QComboBox();context_choice.setObjectName('model_context_window')
+        for title,value in [('8K tokens · default',8192),('16K tokens',16384),('32K tokens',32768)]:context_choice.addItem(title,value)
+        context_choice.setCurrentIndex(context_choice.findData(self.model_performance()['num_ctx']))
+        form.addWidget(QLabel('Model context window'));form.addWidget(context_choice)
+        context_hint=QLabel('Larger context uses more RAM/VRAM and can slow local models. The model and API provider may impose a smaller limit. Applies to new requests, including Skynet Mode.');context_hint.setWordWrap(True);form.addWidget(context_hint)
+        godot_path=QLineEdit(str(self.config.get('godot_executable','')));godot_path.setObjectName('godot_executable')
+        godot_path.setPlaceholderText('Optional full path to Godot; leave blank for automatic discovery')
+        form.addWidget(QLabel('Godot executable'));form.addWidget(godot_path)
         policy=QComboBox();policy.addItem('Remote agent commands off','ask_remote');policy.addItem('Allow agent remote commands','auto_remote');policy.addItem('Plan / read-only default','plan')
         policy.setCurrentIndex(max(0,policy.findData(self.config.get('approval_policy','ask_remote'))))
         form.addWidget(QLabel('Permission default'));form.addWidget(policy)
@@ -1302,6 +1383,9 @@ Use Auto or AMD, stop a task, or steer it into a smaller request. The AMD route 
         status=QLabel('Current active SSH: '+(self.config.get('active_ssh_alias') or 'none'));status.setObjectName('muted');form.addWidget(status);form.addStretch()
         buttons=QDialogButtonBox(QDialogButtonBox.Save|QDialogButtonBox.Cancel);buttons.accepted.connect(dialog.accept);buttons.rejected.connect(dialog.reject);layout.addWidget(buttons)
         if dialog.exec()==QDialog.Accepted:
+            godot_value=godot_path.text().strip().strip('"')
+            if godot_value and (not Path(godot_value).is_absolute() or not Path(godot_value).is_file()):
+                self.error('Godot executable must be an existing absolute file path.');return
             try:
                 if forget_serper.isChecked():forget_key()
                 if serper_key.text().strip():save_key(serper_key.text().strip())
@@ -1309,6 +1393,8 @@ Use Auto or AMD, stop a task, or steer it into a smaller request. The AMD route 
             self.config['approval_policy']=policy.currentData();self.config['auto_context']=auto.isChecked();self.config['show_tool_activity']=activity.isChecked()
             self.config['access_mode']=access.currentData();self.config['pc_pilot']=pilot.isChecked();self.config['remote_pilot']=remote_pilot.isChecked();self.config['remote_enabled']=remote_pilot.isChecked() or self.config.get('remote_enabled',False)
             self.config['web_browser']=browser_choice.currentData();self.config['web_search']=search_choice.currentData()
+            self.config['num_ctx']=context_choice.currentData()
+            self.config['godot_executable']=godot_value
             try:
                 if not STORE_PACKAGE and os.name=='nt':self.set_start_with_windows(startup.isChecked())
             except Exception as exc:self.error('Could not update Windows startup: '+str(exc))
@@ -1372,7 +1458,7 @@ The compact model is intentionally kept as the weak-CPU fallback. TalkToAi Code 
     def game_command(self,smoke):
         if self.busy:return
         root=Path(self.task['project']);godot,_=ProjectTools(root).engine_paths()
-        if not (root/'project.godot').exists() or not godot:self.error('Select a Godot project and install Godot on PATH or set TALKTOAI_GODOT.');return
+        if not (root/'project.godot').exists() or not godot:self.error('Select a Godot project and set its Godot executable in Settings, or add godot/godot4 to PATH.');return
         import subprocess
         if not smoke:subprocess.Popen([str(godot),'--path',str(root)],cwd=root);self.status.setText('Game launched');return
         self.prompt.setPlainText('Run a Godot headless import check for this project using this executable and report errors: '+str(godot)+' . Use --headless --editor --quit --path .');self.mode.setCurrentText('Act');self.send()
@@ -1420,7 +1506,10 @@ if __name__=='__main__':
     if '--preview' not in sys.argv:
         # Keep this release independently launchable while an older tray build
         # is still running. This avoids force-closing a potentially active task.
-        instance_name=('TalkToAiCode.Studio.Store.v1.' if STORE_PACKAGE else 'TalkToAiCode.Studio.v6.')+os.environ.get('USERNAME','user')
+        install_identity=str(HOME.resolve())
+        if os.name=='nt':install_identity=install_identity.casefold()
+        install_identity=hashlib.sha256(install_identity.encode()).hexdigest()[:12]
+        instance_name=('TalkToAiCode.Studio.Store.v1.' if STORE_PACKAGE else 'TalkToAiCode.Studio.v6.')+os.environ.get('USERNAME','user')+'.'+install_identity
         client=QLocalSocket();client.connectToServer(instance_name)
         if client.waitForConnected(300):
             client.write(b'show');client.flush();client.waitForBytesWritten(300);sys.exit(0)

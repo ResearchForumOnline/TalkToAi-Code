@@ -10,6 +10,56 @@ import skynet_mode
 
 
 class SkynetModeTests(unittest.TestCase):
+    def test_exported_godot_project_preserves_playable_inputs(self):
+        with tempfile.TemporaryDirectory() as folder, tempfile.TemporaryDirectory() as candidate:
+            root = Path(folder)
+            files = {'project.godot': b'[application]\nconfig/name="Fixture"\n',
+                     'AGENTS.md': b'Use Godot 4.',
+                     'scripts/player.gd': b'extends CharacterBody3D\n',
+                     'scenes/main.tscn': b'[gd_scene format=3]\n',
+                     'assets/pixel.png': b'\x89PNG\r\n\x1a\n',
+                     '.godot/imported/cache.gd': b'generated',
+                     '.env.production': b'SECRET=private',
+                     'secrets/settings.json': b'{}'}
+            for name, content in files.items():
+                path = root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(content)
+            manifest = skynet_mode._copy_candidate(root, Path(candidate))
+            self.assertEqual(set(manifest), {'project.godot', 'AGENTS.md', 'scripts/player.gd',
+                                            'scenes/main.tscn', 'assets/pixel.png'})
+            self.assertEqual((Path(candidate) / 'assets/pixel.png').read_bytes(), files['assets/pixel.png'])
+
+    def test_large_asset_does_not_silently_create_broken_candidate(self):
+        with tempfile.TemporaryDirectory() as folder, tempfile.TemporaryDirectory() as candidate:
+            root = Path(folder)
+            (root / 'project.godot').write_text('[application]')
+            (root / 'huge.png').write_bytes(b'x' * 64)
+            with patch.object(skynet_mode, 'MAX_FILE_BYTES', 32):
+                with self.assertRaisesRegex(ValueError, 'huge.png'):
+                    skynet_mode._copy_candidate(root, Path(candidate))
+
+    def test_binary_changes_are_reported_without_corrupt_text_diff(self):
+        with tempfile.TemporaryDirectory() as folder, tempfile.TemporaryDirectory() as candidate:
+            root, target = Path(folder), Path(candidate)
+            (root / 'sprite.png').write_bytes(b'\x89PNG\x00before')
+            baseline = skynet_mode._copy_candidate(root, target)
+            (target / 'sprite.png').write_bytes(b'\x89PNG\x00after')
+            changes = skynet_mode._changes(target, baseline)
+            diff = skynet_mode._diff(root, target, changes)
+            self.assertIn('Binary asset modified: sprite.png', diff)
+            self.assertIn(changes[0]['sha256'], diff)
+            self.assertNotIn('\x00', diff)
+
+    def test_scan_limit_gives_actionable_error(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            for name in ('one.py', 'two.py'):
+                (root / name).write_text('pass')
+            with patch.object(skynet_mode, 'MAX_SCANNED_FILES', 1):
+                with self.assertRaisesRegex(ValueError, 'specific app or game folder'):
+                    skynet_mode._source_paths(root)
+
     def test_git_candidate_uses_tracked_source_only(self):
         with tempfile.TemporaryDirectory() as folder, tempfile.TemporaryDirectory() as candidate:
             root = Path(folder)

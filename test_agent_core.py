@@ -136,7 +136,8 @@ class CoreTests(unittest.TestCase):
             def log_message(self,*a):pass
             def do_POST(self):
                 received.append(json.loads(self.rfile.read(int(self.headers['Content-Length']))))
-                raw=(json.dumps({'message':{'role':'assistant','content':'Ready.'},'done':True})+'\n').encode()
+                message=({'role':'assistant','tool_calls':[{'function':{'name':'enable_tools','arguments':{'group':'desktop'}}}]} if len(received)==1 else {'role':'assistant','content':'Ready.'})
+                raw=(json.dumps({'message':message,'done':True})+'\n').encode()
                 self.send_response(200);self.send_header('Content-Length',str(len(raw)));self.end_headers();self.wfile.write(raw)
         server=ThreadingHTTPServer(('127.0.0.1',0),Handler);threading.Thread(target=server.serve_forever,daemon=True).start()
         try:
@@ -172,7 +173,8 @@ class CoreTests(unittest.TestCase):
             def log_message(self,*a):pass
             def do_POST(self):
                 received.append(json.loads(self.rfile.read(int(self.headers['Content-Length']))))
-                raw=(json.dumps({'message':{'role':'assistant','content':'Ready.'},'done':True})+'\n').encode()
+                message=({'role':'assistant','tool_calls':[{'function':{'name':'enable_tools','arguments':{'group':'ssh'}}}]} if len(received)==1 else {'role':'assistant','content':'Ready.'})
+                raw=(json.dumps({'message':message,'done':True})+'\n').encode()
                 self.send_response(200);self.send_header('Content-Length',str(len(raw)));self.end_headers();self.wfile.write(raw)
         server=ThreadingHTTPServer(('127.0.0.1',0),Handler);threading.Thread(target=server.serve_forever,daemon=True).start()
         try:
