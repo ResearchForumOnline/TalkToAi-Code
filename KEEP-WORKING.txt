@@ -48,9 +48,13 @@ the agreed change. Run the relevant check and explain what remains unfinished.
 
 RESEARCH AND COMPUTER CONTROL
 For research, ask: Web search for [topic], open original sources and cite direct links.
-Plan mode permits browser search, page opening and reading. Search uses Bing and needs internet/Edge.
+Plan mode permits browser search, page opening and reading. Settings chooses Edge, Chrome, Firefox or Chromium, plus DuckDuckGo, Bing, Google, Brave or your own Serper key. Serper may use account credits. Search sites can block access.
 For desktop operation, choose Act with Desktop/user access and PC Pilot enabled in Settings.
 Ask for the specific app and task. The agent can inspect controls, click, type and observe results.
 Use Stop to interrupt. Handle logins and two-factor authentication yourself.
 Task starters includes Research with sources and Operate a Windows app.
 Search engines and sites may block automated access; models can misinterpret pages or controls.
+
+ZEROTHINK VAULT
+More > Link ZeroThink account & vault pairs your account and opens its provider vault.
+Choose a provider and exact model available to that account. Provider limits apply.

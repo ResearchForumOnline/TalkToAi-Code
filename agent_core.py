@@ -29,6 +29,8 @@ AUTO_CONTEXT = True
 ACTIVE_PROVIDER = None
 DESKTOP_ACCESS = False
 PC_PILOT = True
+WEB_BROWSER = 'auto'
+WEB_SEARCH = 'auto'
 VISION_CACHE = {}
 
 def load_project_instructions(project):
@@ -69,13 +71,15 @@ def set_active_remote(profile):
     global ACTIVE_REMOTE
     ACTIVE_REMOTE = profile
 
-def set_agent_preferences(remote_allowed=False, auto_context=True, desktop_access=False, pc_pilot=True, remote_pilot=False):
-    global ACTIVE_REMOTE_ALLOWED, AUTO_CONTEXT, DESKTOP_ACCESS, PC_PILOT, REMOTE_PILOT
+def set_agent_preferences(remote_allowed=False, auto_context=True, desktop_access=False, pc_pilot=True, remote_pilot=False, web_browser='auto', web_search='auto'):
+    global ACTIVE_REMOTE_ALLOWED, AUTO_CONTEXT, DESKTOP_ACCESS, PC_PILOT, REMOTE_PILOT, WEB_BROWSER, WEB_SEARCH
     ACTIVE_REMOTE_ALLOWED = bool(remote_allowed)
     AUTO_CONTEXT = bool(auto_context)
     DESKTOP_ACCESS = bool(desktop_access)
     PC_PILOT = bool(pc_pilot)
     REMOTE_PILOT = bool(remote_pilot)
+    WEB_BROWSER = web_browser
+    WEB_SEARCH = web_search
 
 def set_active_provider(profile):
     global ACTIVE_PROVIDER
@@ -132,7 +136,7 @@ DESKTOP_TOOLS=[
     schema('desktop_write_file', 'Create or replace a text file under the signed-in user profile with a checkpoint. Use only when the user asked for a desktop change.', {'path':'Path relative to the user profile','content':'Complete new contents'}),
     schema('desktop_run_command', 'Run a PowerShell command as the signed-in Windows user. This is not sandboxed; use the current task context and report the exact result.', {'command':'PowerShell command','cwd':'Optional path relative to the user profile'}),
 ]
-BROWSER_TOOLS=[schema('browser', 'Use a task-owned Edge browser. Search the web with a query, open URL, inspect page text and source links, click exact visible text, fill an exact field label, press a key, or save screenshot. Inspect before interacting. Browser closes after the turn.', {'action':'search, open, inspect, click, fill, press or screenshot','target':'Search query, URL, exact text, field label or key; empty for inspect/screenshot','value':'Text for fill; otherwise empty'})]
+BROWSER_TOOLS=[schema('browser', 'Use a task-owned browser. Search the web using the chosen engine with fallback, open original source URLs, inspect page text and links, click exact visible text, fill an exact field label, press a key, or save screenshot. Inspect before interacting. Browser closes after the turn.', {'action':'search, open, inspect, click, fill, press or screenshot','target':'Search query, URL, exact text, field label or key; empty for inspect/screenshot','value':'For search: optional duckduckgo, bing, google or brave engine; for fill: text; otherwise empty'})]
 MAIL_TOOLS=[
     schema('gmail_status', 'Check whether the optional read-only Gmail connector is configured and signed in. No mailbox access.', {}),
     schema('gmail_search', 'Search the connected Gmail mailbox. Returns message IDs, not message bodies. Read-only; only when the user requests mail access.', {'query':'Gmail search query','limit':'Maximum 1-25 results'}),
@@ -409,7 +413,7 @@ class ProjectTools:
                 raise PermissionError('Plan mode permits web search and reading only. Use Act for browser interaction.')
             if not self.browser:
                 from browser_tools import BrowserTools
-                self.browser=BrowserTools(self.root,self.cancel)
+                self.browser=BrowserTools(self.root,self.cancel,WEB_BROWSER,WEB_SEARCH)
             return self.browser.execute(args.get('action','inspect'),args.get('target',''),args.get('value',''))
         if name == 'list_files':
             return '\n'.join(self.files())

@@ -243,7 +243,7 @@ class Studio(QMainWindow):
         self.zmail_button = self.button('Connect Zmail', lambda:self.connect_mail('Zmail'), side)
         self.mail_status_label = QLabel('Mail: checking connections…');self.mail_status_label.setWordWrap(True);self.mail_status_label.setObjectName('muted');side.addWidget(self.mail_status_label)
         more=QPushButton('More  ·  tools && help');more_menu=QMenu(more)
-        for title,callback in [('Actions · Ctrl+K',self.command_palette),('Project memory · Ctrl+Shift+M',self.memory_dialog),('Back up conversations',self.backup_conversations),('API providers',self.providers_dialog),('Link ZeroThink account',self.link_zerothink),('Model choices and storage',self.models_dialog),('FAQ / How to · F1',self.faq_dialog),('Open app data folder',lambda:QDesktopServices.openUrl(QUrl.fromLocalFile(str(STATE))))]:
+        for title,callback in [('Actions · Ctrl+K',self.command_palette),('Project memory · Ctrl+Shift+M',self.memory_dialog),('Back up conversations',self.backup_conversations),('API providers',self.providers_dialog),('Link ZeroThink account & vault',self.link_zerothink),('Model choices and storage',self.models_dialog),('FAQ / How to · F1',self.faq_dialog),('Open app data folder',lambda:QDesktopServices.openUrl(QUrl.fromLocalFile(str(STATE))))]:
             more_menu.addAction(title,callback)
         more.setMenu(more_menu);side.addWidget(more)
         self.connection_label = QLabel('⌁  No SSH connection'); self.connection_label.setObjectName('muted'); side.addWidget(self.connection_label)
@@ -757,6 +757,8 @@ class Studio(QMainWindow):
             desktop_access=self.config.get('access_mode','full_user')=='full_user',
             pc_pilot=bool(self.config.get('pc_pilot',True)),
             remote_pilot=requested_ssh or bool(self.config.get('remote_pilot',True)),
+            web_browser=self.config.get('web_browser','auto'),
+            web_search=self.config.get('web_search','auto'),
         )
         def work():
             try:
@@ -1157,6 +1159,8 @@ class Studio(QMainWindow):
 ## Keep working without an OpenAI subscription
 
 - **Auto** uses your AMD/local models. It never switches to a paid API automatically.
+- **Settings → Research browser** chooses Edge, Chrome, Firefox or Chromium, with fallback if the preferred browser cannot start. **Preferred web search** can use free browser search engines or your own Serper key. Serper searches may consume account credits. Open original pages before citing them.
+- **More → Link ZeroThink account & vault** pairs your account and opens its provider vault. Provider access and quota depend on your ZeroThink account.
 - If the AMD connection fails, Auto now tries to start your installed local Ollama service and use your configured local model. It does not download a model in Auto mode.
 - **Models & APIs → Groq API** connects your own Groq key. Provider limits apply; no OpenAI account is needed for that route.
 - After an error your latest request returns to the composer. Change the model or repair the connection, then send again. Check existing changes first because a failed task may have completed some actions.
@@ -1247,7 +1251,7 @@ Use Auto or AMD, stop a task, or steer it into a smaller request. The AMD route 
 
     def settings(self):
         if self.busy:return
-        dialog=QDialog(self);dialog.setWindowTitle('TalkToAi Code settings');dialog.resize(620,420)
+        dialog=QDialog(self);dialog.setWindowTitle('TalkToAi Code settings');dialog.resize(620,580)
         layout=QVBoxLayout(dialog)
         intro=QLabel('Control the defaults that make the agent feel automatic while keeping remote access explicit.')
         intro.setWordWrap(True);intro.setObjectName('muted');layout.addWidget(intro)
@@ -1263,6 +1267,22 @@ Use Auto or AMD, stop a task, or steer it into a smaller request. The AMD route 
         pilot.setChecked(bool(self.config.get('pc_pilot',True)))
         pilot.setToolTip('In Act mode, the agent carries out its own observe → act → verify loop. It does not bypass sign-in, passwords, security prompts, payments or final external submissions.')
         form.addWidget(pilot)
+        browser_choice=QComboBox()
+        for title,code in [('Auto: Edge, Chrome, Firefox, Chromium','auto'),('Microsoft Edge','edge'),('Google Chrome','chrome'),('Firefox','firefox'),('Playwright Chromium','chromium')]:browser_choice.addItem(title,code)
+        browser_choice.setCurrentIndex(max(0,browser_choice.findData(self.config.get('web_browser','auto'))))
+        form.addWidget(QLabel('Research browser'));form.addWidget(browser_choice)
+        search_choice=QComboBox()
+        for title,code in [('Auto: try available engines','auto'),('Serper API (your key)','serper'),('DuckDuckGo','duckduckgo'),('Bing','bing'),('Google','google'),('Brave Search','brave')]:search_choice.addItem(title,code)
+        search_choice.setCurrentIndex(max(0,search_choice.findData(self.config.get('web_search','auto'))))
+        form.addWidget(QLabel('Preferred web search'));form.addWidget(search_choice)
+        from search_provider import configured, save_key, forget_key
+        serper_key=QLineEdit();serper_key.setEchoMode(QLineEdit.Password)
+        serper_key.setPlaceholderText('Paste your Serper key; leave empty to keep the current key')
+        form.addWidget(QLabel('Optional Serper search key'));form.addWidget(serper_key)
+        forget_serper=QCheckBox('Forget saved Serper key');form.addWidget(forget_serper)
+        try: serper_state='Serper key saved or supplied by environment' if configured() else 'Serper key not configured'
+        except ValueError: serper_state='Saved Serper key needs to be replaced'
+        form.addWidget(QLabel(serper_state+' · Serper searches may use account credits.'))
         remote_pilot=QCheckBox('Remote Pilot: automatically use the configured SSH server for requested AMD / server tasks')
         remote_pilot.setChecked(bool(self.config.get('remote_pilot',True)) and bool(self.config.get('remote_enabled')))
         remote_pilot.setToolTip('The agent verifies the configured SSH alias and remote project before commands. Authentication stays in OpenSSH; the app does not read keys, passwords or server API configuration.')
@@ -1280,8 +1300,13 @@ Use Auto or AMD, stop a task, or steer it into a smaller request. The AMD route 
         status=QLabel('Current active SSH: '+(self.config.get('active_ssh_alias') or 'none'));status.setObjectName('muted');form.addWidget(status);form.addStretch()
         buttons=QDialogButtonBox(QDialogButtonBox.Save|QDialogButtonBox.Cancel);buttons.accepted.connect(dialog.accept);buttons.rejected.connect(dialog.reject);layout.addWidget(buttons)
         if dialog.exec()==QDialog.Accepted:
+            try:
+                if forget_serper.isChecked():forget_key()
+                if serper_key.text().strip():save_key(serper_key.text().strip())
+            except Exception as exc:self.error('Could not save Serper key: '+str(exc));return
             self.config['approval_policy']=policy.currentData();self.config['auto_context']=auto.isChecked();self.config['show_tool_activity']=activity.isChecked()
             self.config['access_mode']=access.currentData();self.config['pc_pilot']=pilot.isChecked();self.config['remote_pilot']=remote_pilot.isChecked();self.config['remote_enabled']=remote_pilot.isChecked() or self.config.get('remote_enabled',False)
+            self.config['web_browser']=browser_choice.currentData();self.config['web_search']=search_choice.currentData()
             try:
                 if not STORE_PACKAGE:self.set_start_with_windows(startup.isChecked())
             except Exception as exc:self.error('Could not update Windows startup: '+str(exc))

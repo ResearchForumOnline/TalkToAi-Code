@@ -1,6 +1,6 @@
 # TalkToAi Code — Your projects. Your AI. Your workspace.
 
-> **Latest release: 0.4.3** — [Download the Windows installer](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v0.4.3/TalkToAi-Code-0.4.3-Windows-Setup.exe) · [View release notes and checksums](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/tag/v0.4.3)
+> **Latest release: 0.4.4** — [Download the Windows installer](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v0.4.4/TalkToAi-Code-0.4.4-Windows-Setup.exe) · [View release notes and checksums](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/tag/v0.4.4)
 
 **Microsoft Store:** The separate MSIX edition was submitted for certification on 23 September 2026 with a manual publication hold at the last recorded check. See [submission status](docs/MICROSOFT-STORE-STATUS.md) and verify the current Store state separately. The installer above is the GitHub release.
 
@@ -123,7 +123,7 @@ In Act mode, try: **“Connect to my website server using my existing SSH config
 
 ### Platform installers
 
-- **Windows:** use the [0.4.3 Windows installer](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v0.4.3/TalkToAi-Code-0.4.3-Windows-Setup.exe). This is an unsigned desktop installer, not a Microsoft Store package. The standard per-user installer creates Start Menu/Desktop shortcuts and an uninstaller, and preserves local task data during upgrades.
+- **Windows:** use the [0.4.4 Windows installer](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v0.4.4/TalkToAi-Code-0.4.4-Windows-Setup.exe). This is an unsigned desktop installer, not a Microsoft Store package. The standard per-user installer creates Start Menu/Desktop shortcuts and an uninstaller, and preserves local task data during upgrades.
 - **Portable Windows:** use the [0.1.3 portable ZIP](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v0.1.3-preview/TalkToAi-Code-0.1.3-Windows-Portable.zip) when you do not want an installer.
 - **Linux:** install Python 3, extract the source ZIP, and run `bash install-linux.sh`. This creates a virtual environment, a `talktoai-code` launcher, and a desktop entry.
 - **macOS:** install Python 3, extract the source ZIP, and run `bash install-macos.sh`. This creates a local virtual environment and a `talktoai-code` launcher.
@@ -165,10 +165,14 @@ Source/releases: https://github.com/ResearchForumOnline/TalkToAi-Code
 
 Groq now has its own API preset. Open **Models & APIs**, choose **Groq API**, enter your own key (or set `GROQ_API_KEY`), fetch models, select a tool-capable model and save/use the profile. Provider account limits apply. Coding stays inside TalkToAi Code; the Cline launcher has been removed. The updater now discovers published Windows preview releases as well as stable releases.
 
-### Keep working with 0.4.3
+### Keep working with 0.4.4
 
 Auto can start installed local Ollama when AMD is unavailable. Failed requests return to the composer. More > Back up conversations exports a private ZIP. See [the guide](KEEP-WORKING.txt). Back up projects separately.
 
 ### Research and Windows control
 
 Use the Research with sources starter or ask for a web search. Browser search returns page observations and source URLs; Plan allows search/open/inspect, while input actions require Act. Research instructions ask the model to open original sources and cite observed links. Search uses Bing in a task-owned Edge browser; access can be blocked. Use Operate a Windows app in Act with Desktop/user access and PC Pilot enabled. The existing accessibility controls inspect windows, click, type and observe results. Completion depends on the model and application accessibility.
+
+### Search choices in 0.4.4
+
+Settings lets you prefer Edge, Chrome, Firefox or Playwright Chromium, with a browser fallback if the first one cannot start. Web search tries DuckDuckGo, Bing, Google and Brave. Add your own Serper key in Settings and select Serper to use its structured search results; those searches may use Serper account credits. Search results include source URLs, and the agent should open originals before citing them. More > Link ZeroThink account & vault already pairs your account with its provider vault; provider/model access requires account setup.
