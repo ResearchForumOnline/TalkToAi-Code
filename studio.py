@@ -330,7 +330,7 @@ class Studio(QMainWindow):
         progress=QWidget();progress_layout=QVBoxLayout(progress)
         self.context_summary=QLabel('Project overview appears when an agent task starts.');self.context_summary.setWordWrap(True);progress_layout.addWidget(self.context_summary)
         self.goal_summary=QLabel('No saved task goal. Add an objective and completion criteria.');self.goal_summary.setWordWrap(True);self.goal_summary.setTextFormat(Qt.PlainText);progress_layout.addWidget(self.goal_summary)
-        self.goal_list=QListWidget();self.goal_list.setWordWrap(True);self.goal_list.setMaximumHeight(180);progress_layout.addWidget(self.goal_list)
+        self.goal_list=QListWidget();self.goal_list.setWordWrap(True);self.goal_list.setTextElideMode(Qt.ElideNone);self.goal_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff);self.goal_list.setMaximumHeight(180);progress_layout.addWidget(self.goal_list)
         self.goal_button=self.button('Task goal…',self.task_goal_dialog,progress_layout)
         self.verification_summary=QLabel('Checks: not run for this task');self.verification_summary.setWordWrap(True);progress_layout.addWidget(self.verification_summary)
         self.plan_summary=QLabel('For multi-step work, the agent can maintain a checklist here. Steps are agent-reported; review tool evidence before trusting a completion claim.');self.plan_summary.setWordWrap(True);self.plan_summary.setObjectName('muted');progress_layout.addWidget(self.plan_summary)
