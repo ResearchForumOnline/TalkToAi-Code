@@ -12,6 +12,9 @@ if [[ "${TALKTOAI_SKIP_BROWSER_DOWNLOAD:-0}" != 1 ]]; then
     echo 'Browser download failed; use an installed Chrome or retry the Playwright install.' >&2
   fi
 fi
+if command -v ldconfig >/dev/null 2>&1 && ! ldconfig -p 2>/dev/null | grep -q 'libEGL.so.1'; then
+  echo 'Qt needs libEGL.so.1. On Ubuntu/Debian install libegl1 and libgl1 before launching the app.' >&2
+fi
 mkdir -p "${XDG_DATA_HOME:-$HOME/.local/share}/applications" "$HOME/.local/bin"
 cat > "$HOME/.local/bin/talktoai-code" <<EOF
 #!/usr/bin/env bash
