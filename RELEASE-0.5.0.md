@@ -7,4 +7,4 @@
 - Browser research, Chat/Code, local Ollama, SSH and project tools use portable paths. Windows accessibility PC Pilot and Windows startup shortcuts remain Windows-only.
 - About & updates on Linux/macOS points users to source releases instead of offering a Windows installer.
 
-Windows compilation, shell-script syntax, the runtime source copy and the packaged Windows application were checked on this host. A Linux distribution and macOS host were unavailable, so native GUI launches and platform keyring connections remain unverified.
+Windows compilation, shell-script syntax, runtime source copy and packaged Windows app startup passed on this host. A clean Ubuntu runner and macOS runner each installed the source and opened the GUI in offscreen mode: https://github.com/ResearchForumOnline/TalkToAi-Code/actions/runs/36245686313 . Interactive use, platform keyring sign-in and inference remain unverified on those hosts.
