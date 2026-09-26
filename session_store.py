@@ -43,10 +43,13 @@ def decode_tasks(raw):
             raise ValueError('Invalid chat activity')
         if not isinstance(task.get('draft', ''), str):
             raise ValueError('Invalid chat draft')
+        if task.get('kind', 'code') not in ('chat', 'code'):
+            raise ValueError('Invalid conversation kind')
         for field in ('messages', 'changes'):
             task.setdefault(field, [])
         task.setdefault('pinned', False)
         task.setdefault('archived', False)
+        task.setdefault('kind', 'code')
     return tasks
 
 

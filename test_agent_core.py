@@ -6,11 +6,44 @@ import unittest
 from unittest.mock import patch
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from agent_core import ProjectTools, restore_checkpoint, run_agent, stream_chat, context_window, image_for_model, set_active_remote, set_agent_preferences, load_project_instructions
+from agent_core import ProjectTools, restore_checkpoint, run_agent, stream_chat, context_window, image_for_model, set_active_remote, set_agent_preferences, load_project_instructions, provider_messages
 from ssh_tools import SSHProfile, SSHSession
 from routing import choose_route
 
 class CoreTests(unittest.TestCase):
+    def test_provider_tool_results_follow_call_ids(self):
+        history=[{'role':'assistant','content':'','tool_calls':[
+            {'id':'call_a','function':{'name':'read_file','arguments':{'path':'a.py'}}},
+            {'id':'call_b','function':{'name':'read_file','arguments':{'path':'b.py'}}}]},
+            {'role':'tool','tool_name':'read_file','tool_call_id':'call_b','content':'B'},
+            {'role':'tool','tool_name':'read_file','tool_call_id':'call_a','content':'A'}]
+        converted=provider_messages(history)
+        self.assertEqual([(m['content'],m['tool_call_id']) for m in converted[1:]],
+                         [('B','call_b'),('A','call_a')])
+
+    def test_failed_check_does_not_satisfy_post_edit_verification(self):
+        import agent_core
+        payloads=[];events=[]
+        def stream(_url,payload,_cancel):
+            payloads.append(payload)
+            if len(payloads)==1:
+                message={'tool_calls':[{'function':{'name':'write_file','arguments':{'path':'x.py','content':'x=1\n'}}}]}
+            elif len(payloads)==2:
+                message={'tool_calls':[{'function':{'name':'run_checks','arguments':{}}}]}
+            else:
+                message={'content':'The check failed; more work is needed.'}
+            return iter([{'message':message,'done':True}])
+        original=ProjectTools.execute
+        def execute(tools,name,args):
+            if name=='run_checks':return 'Exit 1\nfailed'
+            return original(tools,name,args)
+        with tempfile.TemporaryDirectory() as folder,patch.object(agent_core,'stream_chat',side_effect=stream),patch.object(agent_core,'model_supports_vision',return_value=False),patch.object(ProjectTools,'execute',execute):
+            run_agent('http://fixture','fixture',[{'role':'user','content':'Create and check x.py'}],folder,True,threading.Event(),lambda *event:events.append(event))
+            self.assertEqual((Path(folder)/'x.py').read_text(),'x=1\n')
+        self.assertEqual(len(payloads),4)
+        self.assertTrue(any(event[0]=='verification' and event[1]['status']=='failed' for event in events))
+        self.assertIn('Before finishing',payloads[3]['messages'][-1]['content'])
+
     def test_workspace_agents_instructions_are_loaded_and_bounded(self):
         with tempfile.TemporaryDirectory() as folder:
             p=Path(folder)/'AGENTS.md';p.write_text('# Game rules\nRun the Godot import check after edits.\n',encoding='utf-8')

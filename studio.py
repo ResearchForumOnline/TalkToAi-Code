@@ -28,6 +28,9 @@ from task_starters import STARTERS
 from process_jobs import ProcessJobs
 from workspace_outputs import register_output
 from updates import is_store_package
+from amd_runtime import ensure_amd_tunnel
+from mail_connectors import gmail_connect, gmail_status, zmail_connect, zmail_status
+from skynet_mode import run_improvement
 
 SOURCE = Path(__file__).resolve().parent
 HOME = Path(os.environ.get('TALKTOAI_CODE_HOME', str(Path(sys.executable).parent if getattr(sys, 'frozen', False) else SOURCE)))
@@ -39,39 +42,41 @@ CONNECTIONS = STATE / 'connections.json'
 PROVIDERS = STATE / 'providers.json'
 
 STYLE = '''
-QWidget { background:#191919; color:#e7e7e7; font-family:'Segoe UI'; font-size:13px; }
-QWidget#sidebar { background:#121212; border-right:1px solid #2b2b2b; }
-QLabel#brand { font-size:17px; font-weight:600; padding:14px 4px; }
-QLabel#muted { color:#969696; font-size:12px; }
+QWidget { background:#111923; color:#e8edf3; font-family:'Segoe UI'; font-size:13px; }
+QWidget#sidebar { background:#0c1420; border-right:1px solid #29384a; }
+QLabel#brand { font-size:18px; font-weight:700; color:#edf7ff; padding:14px 4px; }
+QLabel#muted { color:#9cadbf; font-size:12px; }
 QLabel#hero { font-size:30px; font-weight:600; }
-QPushButton { background:#252525; border:1px solid #363636; border-radius:7px; padding:8px 12px; }
-QPushButton:hover { background:#333333; border-color:#515151; }
-QPushButton:disabled { color:#666; }
-QPushButton#accent { background:#ededed; color:#151515; font-weight:600; }
-QComboBox { background:#242424; border:1px solid #383838; border-radius:6px; padding:6px 10px; }
-QLineEdit { background:#202020; border:1px solid #383838; border-radius:6px; padding:7px; selection-background-color:#435266; }
+QPushButton { background:#1c2a39; border:1px solid #33485c; border-radius:8px; padding:9px 12px; }
+QPushButton:hover { background:#294056; border-color:#6b9ba9; }
+QPushButton:disabled { color:#728496; }
+QPushButton#accent { background:#8ce5cd; color:#10202b; font-weight:700; border-color:#8ce5cd; }
+QPushButton#workspace { text-align:left; font-size:14px; font-weight:600; padding:11px 13px; }
+QPushButton#workspace:checked { background:#214a54; border-color:#8ce5cd; color:#eafff8; }
+QComboBox { background:#1a2837; border:1px solid #34495b; border-radius:6px; padding:6px 10px; }
+QLineEdit { background:#162331; border:1px solid #34495b; border-radius:6px; padding:7px; selection-background-color:#435f70; }
 QCheckBox { spacing:8px; }
 QCheckBox::indicator { width:15px; height:15px; border:1px solid #777; border-radius:3px; background:#252525; }
 QCheckBox::indicator:checked { background:#8ff0c4; border:2px solid #b8ffe0; }
-QMenu { background:#202020; border:1px solid #414141; padding:5px; }
+QMenu { background:#172534; border:1px solid #466079; padding:5px; }
 QMenu::item { padding:8px 16px; border-radius:4px; }
-QMenu::item:selected { background:#353535; }
+QMenu::item:selected { background:#294354; }
 QListWidget { background:transparent; border:0; outline:0; }
 QListWidget::item { padding:10px; margin:2px 0; border-radius:7px; color:#e7e7e7; }
-QListWidget::item:selected { background:#303030; }
-QListWidget::item:hover { background:#242424; }
+QListWidget::item:selected { background:#244451; border-left:2px solid #8ce5cd; }
+QListWidget::item:hover { background:#1c3442; }
 QTextBrowser { border:0; background:transparent; font-size:15px; padding:14px; }
-QPlainTextEdit { background:#202020; border:1px solid #353535; border-radius:8px; padding:10px; selection-background-color:#435266; }
-QFrame#composer { background:#242424; border:1px solid #454545; border-radius:14px; }
+QPlainTextEdit { background:#172534; border:1px solid #34495b; border-radius:8px; padding:10px; selection-background-color:#435f70; }
+QFrame#composer { background:#192b3a; border:1px solid #5c7884; border-radius:14px; }
 QFrame#composer QPlainTextEdit { background:transparent; border:0; }
 QFrame#composer QWidget { background:transparent; }
-QFrame#composer QPushButton#accent { background:#ededed; color:#151515; }
-QTabWidget::pane { border:1px solid #303030; }
-QTabBar::tab { background:#202020; padding:9px 10px; font-size:12px; color:#aaa; }
-QTabBar::tab:selected { color:white; border-bottom:2px solid #d1d1d1; }
-QSplitter::handle { background:#2c2c2c; width:1px; }
+QFrame#composer QPushButton#accent { background:#8ce5cd; color:#10202b; }
+QTabWidget::pane { border:1px solid #304458; }
+QTabBar::tab { background:#172534; padding:9px 10px; font-size:12px; color:#adc0d0; }
+QTabBar::tab:selected { color:#c4ffed; border-bottom:2px solid #8ce5cd; }
+QSplitter::handle { background:#304458; width:1px; }
 QScrollBar:vertical { background:transparent; width:8px; }
-QScrollBar::handle:vertical { background:#494949; border-radius:4px; min-height:35px; }
+QScrollBar::handle:vertical { background:#597489; border-radius:4px; min-height:35px; }
 '''
 
 class Bus(QObject):
@@ -129,12 +134,16 @@ class Studio(QMainWindow):
             self.config.update(json.loads((STATE/'config.json').read_text(encoding='utf-8')))
         except (OSError, ValueError):
             pass
+        for key,environment in [('gmail_client_id','TALKTOAI_GMAIL_CLIENT_ID'),('zmail_client_id','TALKTOAI_ZMAIL_CLIENT_ID')]:
+            if self.config.get(key) and not os.environ.get(environment):
+                os.environ[environment]=str(self.config[key])
         self.provider_profiles = load_provider_profiles(PROVIDERS)
         self.tasks, recovery_notice = load_tasks(SESSION)
         for task in self.tasks:
             for job in task.get('jobs',[]):
                 if job.get('state')=='running':job['state']='interrupted';job['note']='Previous app session; no current process attached.'
         self.task = None
+        self.workspace = 'code'
         self.build()
         if self.config.get('preferred_route')=='provider' and self.active_provider():self.route.setCurrentIndex(4)
         if self.config.get('approval_policy')=='plan':self.mode.setCurrentText('Plan')
@@ -156,6 +165,8 @@ class Studio(QMainWindow):
         self.draft_timer.timeout.connect(self.autosave_draft)
         self.prompt.textChanged.connect(self.save_draft)
         QTimer.singleShot(500, self.health)
+        QTimer.singleShot(700, self.refresh_mail_status)
+        self.health_timer=QTimer(self);self.health_timer.timeout.connect(self.health);self.health_timer.start(60000)
         self.paint_timer=QTimer(self);self.paint_timer.timeout.connect(self.paint_stream);self.paint_timer.start(120)
         self.clock_timer=QTimer(self);self.clock_timer.timeout.connect(self.tick);self.clock_timer.start(1000)
         self.install_tray()
@@ -208,41 +219,54 @@ class Studio(QMainWindow):
         body = QWidget(); outer = QHBoxLayout(body); outer.setContentsMargins(0,0,0,0); outer.setSpacing(0)
         self.setCentralWidget(body)
         sidebar = QWidget(); sidebar.setObjectName('sidebar'); sidebar.setFixedWidth(248)
-        side = QVBoxLayout(sidebar); side.setContentsMargins(14,12,14,16); side.setSpacing(10)
+        side = QVBoxLayout(sidebar); side.setContentsMargins(14,8,14,8); side.setSpacing(6)
         label = QLabel('◈  TalkToAi Code'); label.setObjectName('brand'); side.addWidget(label)
-        self.new_button = self.button('+  New task', self.new_task, side)
+        spaces=QHBoxLayout()
+        self.chat_space=self.button('◉  Chat',lambda:self.switch_workspace('chat'),spaces)
+        self.code_space=self.button('⌘  Code',lambda:self.switch_workspace('code'),spaces)
+        for button in (self.chat_space,self.code_space):
+            button.setObjectName('workspace');button.setCheckable(True)
+        self.code_space.setChecked(True);side.addLayout(spaces)
+        self.new_button = self.button('+  New code task', self.new_task, side)
         self.project_button = self.button('▱  Open project', self.choose_project, side)
         self.project_label = QLabel(); self.project_label.setWordWrap(True); self.project_label.setObjectName('muted'); side.addWidget(self.project_label)
         self.access_label = QLabel(); self.access_label.setWordWrap(True); self.access_label.setObjectName('muted'); side.addWidget(self.access_label)
-        label = QLabel('TASKS'); label.setObjectName('muted'); side.addWidget(label)
+        self.space_label = QLabel('CODE CONVERSATIONS'); self.space_label.setObjectName('muted'); side.addWidget(self.space_label)
         self.task_search=QLineEdit();self.task_search.setPlaceholderText('Search chats & projects…');self.task_search.setClearButtonEnabled(True);self.task_search.textChanged.connect(self.filter_tasks);side.addWidget(self.task_search)
-        self.task_view=QComboBox();self.task_view.addItems(['Active chats','Archived chats','All chats']);self.task_view.currentIndexChanged.connect(self.change_task_view);side.addWidget(self.task_view)
+        self.task_view=QComboBox();self.task_view.addItems(['Active','Archived','All']);self.task_view.currentIndexChanged.connect(self.change_task_view);side.addWidget(self.task_view)
         self.task_list = QListWidget(); self.task_list.currentRowChanged.connect(self.select_task); side.addWidget(self.task_list,1)
         self.task_list.setContextMenuPolicy(Qt.CustomContextMenu);self.task_list.customContextMenuRequested.connect(self.task_context_menu)
         self.button('⚙  Settings', self.settings, side)
         self.button('About & updates', self.updates_dialog, side)
         self.button('⌁  Connections', self.connections_dialog, side)
+        self.gmail_button = self.button('Connect Gmail', lambda:self.connect_mail('Gmail'), side)
+        self.zmail_button = self.button('Connect Zmail', lambda:self.connect_mail('Zmail'), side)
+        self.mail_status_label = QLabel('Mail: checking connections…');self.mail_status_label.setWordWrap(True);self.mail_status_label.setObjectName('muted');side.addWidget(self.mail_status_label)
         more=QPushButton('More  ·  tools && help');more_menu=QMenu(more)
         for title,callback in [('Actions · Ctrl+K',self.command_palette),('Project memory · Ctrl+Shift+M',self.memory_dialog),('API providers',self.providers_dialog),('Link ZeroThink account',self.link_zerothink),('Model choices and storage',self.models_dialog),('FAQ / How to · F1',self.faq_dialog),('Open app data folder',lambda:QDesktopServices.openUrl(QUrl.fromLocalFile(str(STATE))))]:
             more_menu.addAction(title,callback)
         more.setMenu(more_menu);side.addWidget(more)
         self.connection_label = QLabel('⌁  No SSH connection'); self.connection_label.setObjectName('muted'); side.addWidget(self.connection_label)
         self.health_label = QLabel('○  Checking models'); self.health_label.setObjectName('muted'); side.addWidget(self.health_label)
+        self.button('Reconnect AMD model', self.reconnect_amd, side)
         outer.addWidget(sidebar)
         split = QSplitter(); outer.addWidget(split,1)
         center = QWidget(); chat = QVBoxLayout(center); chat.setContentsMargins(30,18,30,20); chat.setSpacing(12)
         bar = QHBoxLayout(); self.title = QLabel('New task'); self.title.setFont(QFont('Segoe UI',14,QFont.DemiBold)); bar.addWidget(self.title,1)
-        self.button('Chat ···',self.chat_menu,bar)
+        self.button('Conversation ···',self.chat_menu,bar)
         self.button('Workspace  ▥', lambda: self.right.setVisible(not self.right.isVisible()), bar)
         chat.addLayout(bar)
         self.recovery_label=QLabel();self.recovery_label.setWordWrap(True);self.recovery_label.setObjectName('muted');self.recovery_label.hide();chat.addWidget(self.recovery_label)
-        shortcuts=QHBoxLayout()
+        self.code_actions=QWidget();shortcuts=QHBoxLayout(self.code_actions);shortcuts.setContentsMargins(0,0,0,0)
         for title,command in [('Inspect project','inspect project'),('Run tests','run tests'),('Open Desktop','open desktop')]:
             self.button(title,lambda checked=False,c=command:self.quick_command(c),shortcuts)
         starter=QPushButton('Task starters');starter_menu=QMenu(starter)
         for name in STARTERS:starter_menu.addAction(name,lambda checked=False,n=name:self.use_starter(n))
         starter.setMenu(starter_menu);shortcuts.addWidget(starter)
-        chat.addLayout(shortcuts)
+        self.button('Open Cline',self.cline,shortcuts)
+        self.skynet_button=self.button('⚡ Skynet Mode',self.start_skynet,shortcuts)
+        self.skynet_button.setToolTip('Create and check a bounded improvement candidate in a separate copy. Review the diff before applying it.')
+        chat.addWidget(self.code_actions)
         self.transcript = QTextBrowser(); self.transcript.setOpenExternalLinks(False); self.transcript.document().setDefaultStyleSheet('p {line-height:1.6;} pre {background:#242424; padding:12px;} code {font-family:Consolas;} h2 {font-size:17px;}')
         chat.addWidget(self.transcript,1)
         self.status = QLabel('Ready'); self.status.setObjectName('muted'); chat.addWidget(self.status)
@@ -346,6 +370,23 @@ class Studio(QMainWindow):
         if not hasattr(self,'task_list'):return
         self.refresh_tasks()
 
+    def switch_workspace(self, kind):
+        if self.busy or kind not in ('chat','code'):return
+        if self.task:self.task['draft']=self.prompt.toPlainText()
+        self.workspace=kind
+        self.chat_space.setChecked(kind=='chat');self.code_space.setChecked(kind=='code')
+        self.new_button.setText('+  New chat' if kind=='chat' else '+  New code task')
+        self.space_label.setText('CHAT CONVERSATIONS' if kind=='chat' else 'CODE CONVERSATIONS')
+        self.task_search.clear();self.task_view.setCurrentIndex(0)
+        self.refresh_tasks()
+        if self.task_list.count():self.select_task(0)
+        else:self.new_task()
+
+    def new_in_workspace(self, kind):
+        had_tasks=any(t.get('kind','code')==kind and not t.get('archived') for t in self.tasks)
+        self.switch_workspace(kind)
+        if had_tasks:self.new_task()
+
     def find_in_chat(self):
         text,ok=QInputDialog.getText(self,'Find in conversation','Search the visible conversation:')
         if ok and text:
@@ -391,7 +432,7 @@ class Studio(QMainWindow):
 
     def make_chat_menu(self):
         menu=QMenu(self)
-        for title,callback in [('Rename',self.rename_task),('Unpin' if self.task.get('pinned') else 'Pin to top',self.toggle_pin_task),('Branch conversation',self.fork_task),('Restore from archive' if self.task.get('archived') else 'Archive conversation',self.toggle_archive_task),('Copy last reply',self.copy_last_reply),('Find in conversation · Ctrl+F',self.find_in_chat),('Export task report',self.export_task)]:
+        for title,callback in [('Rename',self.rename_task),('Unpin' if self.task.get('pinned') else 'Pin to top',self.toggle_pin_task),('Move to Code' if self.task.get('kind')=='chat' else 'Move to Chat',self.move_task_workspace),('Branch conversation',self.fork_task),('Restore from archive' if self.task.get('archived') else 'Archive conversation',self.toggle_archive_task),('Copy last reply',self.copy_last_reply),('Find in conversation · Ctrl+F',self.find_in_chat),('Export task report',self.export_task)]:
             action=menu.addAction(title,callback)
             if self.busy and callback!=self.find_in_chat:action.setEnabled(False)
         return menu
@@ -430,6 +471,14 @@ class Studio(QMainWindow):
         self.persist(); self.refresh_tasks(); self.select_task_by_id(task_id)
         self.status.setText('Task pinned to the top' if self.task.get('pinned') else 'Task unpinned')
 
+    def move_task_workspace(self):
+        if self.busy or not self.task:return
+        self.save_draft()
+        self.task['kind']='code' if self.task.get('kind')=='chat' else 'chat'
+        target=self.task['kind'];self.persist();self.switch_workspace(target)
+        self.select_task_by_id(self.task['id'])
+        self.status.setText('Conversation moved to '+target.title())
+
     def select_task_by_id(self, task_id):
         for row in range(self.task_list.count()):
             if self.task_list.item(row).data(Qt.UserRole) == task_id:
@@ -450,7 +499,7 @@ class Studio(QMainWindow):
         if self.busy:self.status.setText('Use Steer or Stop while a task is running.');return
         dialog=QDialog(self);dialog.setWindowTitle('Actions');dialog.resize(600,480);layout=QVBoxLayout(dialog)
         query=QLineEdit();query.setPlaceholderText('Find an action…');layout.addWidget(query);items=QListWidget();layout.addWidget(items)
-        actions=[('Open project',self.choose_project),('Open Desktop',lambda:self.quick_command('open desktop')),('Inspect project',lambda:self.quick_command('inspect project')),('Run tests',lambda:self.quick_command('run tests')),('Launch game',lambda:self.quick_command('launch game')),('Capture screenshot',lambda:self.quick_command('take a screenshot')),('Map project',lambda:self.quick_command('map project')),('Rename task',self.rename_task),('Pin or unpin task',self.toggle_pin_task),('Branch conversation',self.fork_task),('Export task report',self.export_task),('Settings',self.settings),('SSH connections',self.connections_dialog),('API providers',self.providers_dialog),('Model choices and storage',self.models_dialog),('Open Cline',self.cline),('FAQ / How to',self.faq_dialog)]
+        actions=[('New chat',lambda:self.new_in_workspace('chat')),('New code task',lambda:self.new_in_workspace('code')),('Open project',self.choose_project),('Open Desktop',lambda:self.quick_command('open desktop')),('Inspect project',lambda:self.quick_command('inspect project')),('Run tests',lambda:self.quick_command('run tests')),('Launch game',lambda:self.quick_command('launch game')),('Capture screenshot',lambda:self.quick_command('take a screenshot')),('Map project',lambda:self.quick_command('map project')),('Rename task',self.rename_task),('Pin or unpin task',self.toggle_pin_task),('Move chat between Chat and Code',self.move_task_workspace),('Branch conversation',self.fork_task),('Export task report',self.export_task),('Settings',self.settings),('SSH connections',self.connections_dialog),('API providers',self.providers_dialog),('Model choices and storage',self.models_dialog),('Open Cline',self.cline),('FAQ / How to',self.faq_dialog)]
         actions += [('Project memory · Ctrl+Shift+M',self.memory_dialog),('About & updates',self.updates_dialog),('Open app data folder',lambda:QDesktopServices.openUrl(QUrl.fromLocalFile(str(STATE)))),('Open project folder',lambda:QDesktopServices.openUrl(QUrl.fromLocalFile(self.task['project'])))]
         actions += [('Archive or restore conversation',self.toggle_archive_task),('Search chats · Ctrl+Shift+F',self.focus_task_search),('Find in conversation · Ctrl+F',self.find_in_chat),('Copy last reply',self.copy_last_reply)]
         actions += [('Starter: '+name,lambda n=name:self.use_starter(n)) for name in STARTERS]
@@ -471,10 +520,11 @@ class Studio(QMainWindow):
         self.task_list.blockSignals(True); self.task_list.clear()
         ordered = sorted(enumerate(self.tasks), key=lambda pair: (not pair[1].get('pinned', False), pair[0]))
         for _, task in ordered:
+            if task.get('kind','code')!=self.workspace:continue
             view=self.task_view.currentIndex()
             if view==0 and task.get('archived'):continue
             if view==1 and not task.get('archived'):continue
-            item = QListWidgetItem(('▣  ' if task.get('archived') else '📌  ' if task.get('pinned') else '') + task.get('title', 'Untitled task'))
+            item = QListWidgetItem(('▣  ' if task.get('archived') else '★  ' if task.get('pinned') else '') + task.get('title', 'Untitled task'))
             item.setData(Qt.UserRole, task.get('id'))
             item.setToolTip(task.get('project', ''))
             self.task_list.addItem(item)
@@ -486,7 +536,7 @@ class Studio(QMainWindow):
     def new_task(self):
         if self.busy: return
         self.task_search.clear();self.task_view.setCurrentIndex(0)
-        task={'id':uuid.uuid4().hex,'title':'New task','project':self.task['project'] if self.task else self.config['project'],'messages':[],'changes':[],'pinned':False,'archived':False}
+        task={'id':uuid.uuid4().hex,'title':'New task','project':self.task['project'] if self.task else self.config['project'],'messages':[],'changes':[],'pinned':False,'archived':False,'kind':self.workspace}
         self.tasks.insert(0,task); self.refresh_tasks(); self.select_task_by_id(task['id']); self.persist()
 
     def select_task(self,row):
@@ -496,6 +546,11 @@ class Studio(QMainWindow):
         task_id=item.data(Qt.UserRole) if item else None
         self.task=next((task for task in self.tasks if task.get('id')==task_id), None)
         if not self.task:return
+        kind=self.task.get('kind','code')
+        self.mode.setCurrentText('Plan' if kind=='chat' or self.config.get('approval_policy')=='plan' else 'Act')
+        self.prompt.setPlaceholderText('Ask a question or work through an idea…' if kind=='chat' else 'Describe what to build or fix…')
+        self.right.setVisible(kind=='code')
+        self.code_actions.setVisible(kind=='code')
         self.partial=''; self.current_file=None; self.editor.clear(); self.output.clear()
         self.prompt.setPlainText(self.task.get('draft',''))
         self.task.setdefault('artifacts',[]);self.task.setdefault('activity',[]);self.refresh_artifacts()
@@ -510,7 +565,11 @@ class Studio(QMainWindow):
             if m['role']=='tool': continue
             if m.get('content'): parts.append(('## You' if m['role']=='user' else '## TalkToAi Code')+'\n\n'+m['content'])
         if self.partial: parts.append('## TalkToAi Code\n\n'+self.partial)
-        if not parts: parts=['# What will you build?\n\nDescribe the outcome. Your agent can inspect the project, edit files, use the desktop tools, run tests, launch Godot, use Blender scripts, connect to configured SSH hosts, and capture screenshots.\n\n**Quick start**\n\n1. Type **“open score arena”** for the included game, or **“open desktop”** for your Desktop folder.\n2. Use **Auto** for the tested route and **Act** when you want changes.\n3. Type **“check my desktop for server logins”** for non-secret SSH metadata.\n4. Open **FAQ / How to** for examples.\n\nTry: **“Inspect this game and add a useful feature. Run the import check.”**\n\nYou can say **“use AMD”**, **“use local”**, **“switch to plan mode”**, or steer a running task with the composer.']
+        if not parts:
+            if self.task.get('kind','code')=='chat':
+                parts=['# Start a conversation\n\nAsk a question, explore an idea, or plan your next move. Chat starts in **Plan** mode so it can read relevant files without changing them. Switch to **Act** if you want it to take action.\n\nPinned chats stay at the top of this space. Use the conversation menu to rename, branch, archive, or move a chat into Code.']
+            else:
+                parts=['# Build something useful\n\nOpen a project, describe the result you want, and let the agent inspect and edit files. Use **Plan** for a read-only pass or **Act** to make changes.\n\nTry: **“Inspect this game, add a pause menu, and run the import check.”**\n\nThe right workspace keeps files, changes, tools, evidence, steps, and jobs beside the conversation. **Open Cline** launches the separately installed coding tool.']
         scroll=self.transcript.verticalScrollBar();follow=scroll.value()>=scroll.maximum()-40;position=scroll.value()
         self.transcript.setMarkdown('\n\n---\n\n'.join(parts))
         if follow:self.transcript.moveCursor(QTextCursor.End)
@@ -713,12 +772,18 @@ class Studio(QMainWindow):
                     if preference in ('local','local_large'):
                         requested_model=self.config['local_model'] if preference=='local' else self.config.get('local_large_model', self.config['local_model'])
                         ensure_local_model(requested_model, self.bus.event.emit)
+                    if preference in ('auto','server'):
+                        ready,detail=ensure_amd_tunnel(self.config)
+                        if not ready and preference=='server':
+                            raise ConnectionError(detail)
+                        if not ready:
+                            self.bus.event.emit('status',detail+' Checking local fallback…')
                     selected=choose_route(self.config,preference,benchmarks)
                 if self.cancel.is_set():return
                 self.bus.event.emit('route',selected)
                 def job_event(kind,data):self.bus.event.emit(kind,dict(data,task_id=task_id))
                 self.job_manager=ProcessJobs(project,self.cancel,job_event)
-                run_agent(selected['url'],selected['model'],history,project,act,self.cancel,self.bus.event.emit,jobs=self.job_manager)
+                run_agent(selected['url'],selected['model'],history,project,act,self.cancel,self.bus.event.emit,jobs=self.job_manager,task_kind=self.task.get('kind','code'))
             except Exception as exc:self.bus.event.emit('error',str(exc))
             finally:
                 set_active_remote(None)
@@ -727,9 +792,49 @@ class Studio(QMainWindow):
                 self.bus.event.emit('finished',None)
         threading.Thread(target=work,daemon=True).start()
 
+    def start_skynet(self):
+        if self.busy or not self.task or self.task.get('kind','code')!='code':return
+        goal=self.prompt.toPlainText().strip()
+        if not goal:
+            goal,ok=QInputDialog.getMultiLineText(self,'Skynet Mode','What should this project improve?')
+            if not ok:return
+            goal=goal.strip()
+        if not goal or len(goal)>4000:
+            self.status.setText('Give Skynet Mode a focused goal of 1–4,000 characters.');return
+        try:ProjectTools(self.task['project'])
+        except Exception as exc:self.error(exc);return
+        self.task['messages'].append({'role':'user','content':'Skynet Mode candidate: '+goal})
+        self.prompt.clear();self.task['draft']='';self.partial='';self.render();self.persist()
+        self.cancel=threading.Event();self.set_busy(True);self.skynet_button.setEnabled(False)
+        self.started_at=time.monotonic();self.route_description='Selecting Skynet Mode runtime'
+        self.status.setText('Skynet Mode: preparing a separate candidate…')
+        project=self.task['project'];preference=('auto','local','server','local_large','provider')[self.route.currentIndex()]
+        def work():
+            try:
+                if preference=='provider':
+                    profile=self.active_provider()
+                    if not profile:raise ValueError('Configure an API provider first.')
+                    selected={'route':'provider','url':profile.base_url,'model':profile.model,'reason':'explicit API selection; provider billing applies'}
+                    set_active_provider(profile)
+                else:
+                    if preference in ('local','local_large'):
+                        model=self.config['local_model'] if preference=='local' else self.config.get('local_large_model',self.config['local_model'])
+                        ensure_local_model(model,self.bus.event.emit)
+                    if preference in ('auto','server'):
+                        ready,detail=ensure_amd_tunnel(self.config)
+                        if not ready and preference=='server':raise ConnectionError(detail)
+                    selected=choose_route(self.config,preference,{})
+                self.bus.event.emit('route',selected)
+                run_improvement(selected['url'],selected['model'],project,goal,self.cancel,self.bus.event.emit,max_iterations=2)
+            except Exception as exc:self.bus.event.emit('error',str(exc))
+            finally:
+                set_active_provider(None)
+                self.bus.event.emit('finished',None)
+        threading.Thread(target=work,daemon=True).start()
+
     def set_busy(self,busy):
         self.busy=busy
-        for w in (self.new_button,self.project_button,self.task_list,self.task_view,self.route,self.mode):w.setEnabled(not busy)
+        for w in (self.new_button,self.project_button,self.task_list,self.task_view,self.route,self.mode,self.chat_space,self.code_space,self.skynet_button):w.setEnabled(not busy)
         self.prompt.setEnabled(True);self.send_button.setEnabled(True);self.send_button.setText('✦  Steer' if busy else '↑  Send')
         self.stop.setEnabled(busy)
         if self.tray:self.tray.setToolTip('TalkToAi Code — '+('working in background' if busy else 'ready'))
@@ -771,6 +876,14 @@ class Studio(QMainWindow):
                 if existing is not None:existing.update(data)
                 else:artifacts.append(data)
                 self.refresh_artifacts();self.persist()
+        elif kind=='skynet_report':
+            summary=('Skynet Mode candidate ready: '+str(len(data.get('changed_files',[])))+' changed files.\n\n'
+                     'Candidate: '+data['candidate_dir']+'\nDiff: '+data['diff_path']+'\nReport: '+data['report_path']+
+                     '\n\nReview the diff and checks before manually applying any changes to the original project.')
+            self.task['messages'].append({'role':'assistant','content':summary})
+            self.task.setdefault('artifacts',[]).append({'artifact':data['report_path'],'type':'report'})
+            self.task.setdefault('artifacts',[]).append({'artifact':data['diff_path'],'type':'diff'})
+            self.refresh_artifacts();self.persist();self.render();self.right.setCurrentIndex(4)
         elif kind=='route':
             label='AMD' if data['route']=='server' else 'API' if data['route']=='provider' else 'PC'
             self.route_description=label+' · '+data['model'];self.status.setText(self.route_description+' · '+data['reason'])
@@ -786,6 +899,11 @@ class Studio(QMainWindow):
         elif kind=='change':self.task['changes'].append(data);self.persist();self.refresh_changes()
         elif kind=='status':self.status.setText(data)
         elif kind=='health':self.health_label.setText(data)
+        elif kind=='mail_status':self.mail_status_label.setText(data)
+        elif kind=='mail_connect_done':
+            self.gmail_button.setEnabled(True);self.zmail_button.setEnabled(True)
+            self.status.setText(data)
+            self.refresh_mail_status()
         elif kind=='error':
             self.status.setText('Request failed');self.output.appendPlainText(str(data));self.right.setCurrentIndex(2)
             self.task['messages'].append({'role':'assistant','content':'Task error: '+str(data)});self.persist();self.render()
@@ -825,9 +943,56 @@ class Studio(QMainWindow):
                 try:
                     with urllib.request.urlopen(f'http://127.0.0.1:{port}/api/tags',timeout=3) as r:json.load(r)
                     labels.append(name+' online')
-                except Exception:labels.append(name+' offline')
+                except Exception:
+                    if name=='AMD' and self.config.get('active_ssh_alias'):
+                        ready,_=ensure_amd_tunnel(self.config)
+                        labels.append('AMD online' if ready else 'AMD offline · Reconnect AMD')
+                    else:
+                        labels.append(name+' offline')
             self.bus.event.emit('health',' · '.join(labels))
         threading.Thread(target=check,daemon=True).start()
+
+    def reconnect_amd(self):
+        self.status.setText('Checking AMD model and SSH tunnel…')
+        def work():
+            ready,detail=ensure_amd_tunnel(self.config)
+            self.bus.event.emit('status',detail)
+            self.health()
+        threading.Thread(target=work,daemon=True).start()
+
+    def refresh_mail_status(self):
+        def work():
+            labels=[]
+            for name,status_fn in [('Gmail',gmail_status),('Zmail',zmail_status)]:
+                try:
+                    state=status_fn()
+                    state_text='connected' if state['connected'] else 'setup needed' if not state['configured'] else 'not connected'
+                except Exception:
+                    state_text='status unavailable'
+                labels.append(name+': '+state_text)
+            self.bus.event.emit('mail_status',' · '.join(labels))
+        threading.Thread(target=work,daemon=True).start()
+
+    def connect_mail(self, name):
+        key,environment=(('gmail_client_id','TALKTOAI_GMAIL_CLIENT_ID') if name=='Gmail' else ('zmail_client_id','TALKTOAI_ZMAIL_CLIENT_ID'))
+        if not os.environ.get(environment):
+            explanation=('Google Desktop OAuth client ID' if name=='Gmail' else 'registered Zmail public OAuth client ID')
+            client_id,accepted=QInputDialog.getText(self,'Connect '+name,'Enter your '+explanation+':')
+            if not accepted:return
+            client_id=client_id.strip()
+            if not client_id or len(client_id)>500:
+                self.status.setText(name+' needs a valid public OAuth client ID.');return
+            self.config[key]=client_id;self.write_config();os.environ[environment]=client_id
+        self.gmail_button.setEnabled(False);self.zmail_button.setEnabled(False)
+        self.status.setText('Opening '+name+' sign-in in your browser…')
+        def work():
+            try:
+                (gmail_connect if name=='Gmail' else zmail_connect)(timeout=120)
+                result=name+' connected with read-only mail access.'
+            except Exception as exc:
+                result=name+' connection failed: '+str(exc)
+            self.bus.event.emit('mail_connect_done',result)
+        threading.Thread(target=work,daemon=True).start()
 
     def active_remote(self):
         alias=self.config.get('active_ssh_alias','').strip()
