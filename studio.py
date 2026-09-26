@@ -33,7 +33,7 @@ from amd_runtime import ensure_amd_tunnel
 from mail_connectors import gmail_connect, gmail_status, zmail_connect, zmail_status
 from skynet_mode import run_improvement
 from platform_paths import state_dir
-from project_context import resolve_project_target, requested_runtime
+from project_context import resolve_project_target, requested_runtime, explicit_project_directory
 
 SOURCE = Path(__file__).resolve().parent
 HOME = Path(os.environ.get('TALKTOAI_CODE_HOME', str(Path(sys.executable).parent if getattr(sys, 'frozen', False) else SOURCE)))
@@ -121,6 +121,7 @@ class Studio(QMainWindow):
             'approval_policy': 'ask_remote',
             'auto_context': True,
             'num_ctx': 8192,
+            'keep_going': False,
             'show_tool_activity': True,
             'remote_enabled': True,
             'remote_pilot': True,
@@ -285,6 +286,7 @@ class Studio(QMainWindow):
         self.step_budget=QComboBox()
         for steps in (16,32,64):self.step_budget.addItem(f'{steps} steps',steps)
         self.step_budget.setCurrentIndex(1);self.step_budget.setToolTip('Maximum model/tool cycles per code request. Stop or steer at any time. Larger budgets can use more time and provider tokens.');options.addWidget(self.step_budget)
+        self.keep_going=QCheckBox('Keep going');self.keep_going.setToolTip('Opt in for this code conversation: continue unfinished work for up to 3 passes of the selected step budget, at most 192 steps. Stop or steer at any time. Each pass uses more inference.');self.keep_going.toggled.connect(self.save_keep_going);options.addWidget(self.keep_going)
         options.addStretch()
         self.stop = self.button('Stop', self.stop_task, options); self.stop.setEnabled(False)
         self.send_button = self.button('↑  Send', self.send, options, True)
@@ -459,7 +461,9 @@ class Studio(QMainWindow):
         labels={'pending':'To do','in_progress':'Working','completed':'Done (reported)','blocked':'Blocked'}
         for step in plan.get('steps',[]):
             item=QListWidgetItem(labels[step['status']]+' · '+step['step']);item.setToolTip(step['step']);self.plan_list.addItem(item)
-        self.plan_summary.setText((plan.get('explanation')+'\n\n' if plan.get('explanation') else '')+'Checklist status is agent-reported, not independent proof. Inspect checks and evidence before relying on it.')
+        checkpoint=self.task.get('goal_checkpoint') or {}
+        progress=(f"Work pass {checkpoint.get('pass',1)}/{checkpoint.get('total_passes',1)} · {checkpoint.get('steps',0)} steps · {checkpoint.get('state','')}\n\n" if checkpoint else '')
+        self.plan_summary.setText(progress+(plan.get('explanation')+'\n\n' if plan.get('explanation') else '')+'Checklist status is agent-reported, not independent proof. Inspect checks and evidence before relying on it.')
         context=self.task.get('project_context',{})
         checks=context.get('checks',{}) if isinstance(context,dict) else {}
         self.context_summary.setText(('Project: '+str(context.get('engine','General'))+'\nDetected check commands: '+str(len(checks.get('commands',[])))) if context else 'Project overview appears when an agent task starts.')
@@ -578,7 +582,7 @@ class Studio(QMainWindow):
     def new_task(self):
         if self.busy: return
         self.task_search.clear();self.task_view.setCurrentIndex(0)
-        task={'id':uuid.uuid4().hex,'title':'New task','project':self.task['project'] if self.task else self.config['project'],'messages':[],'changes':[],'pinned':False,'archived':False,'kind':self.workspace}
+        task={'id':uuid.uuid4().hex,'title':'New task','project':self.task['project'] if self.task else self.config['project'],'messages':[],'changes':[],'pinned':False,'archived':False,'kind':self.workspace,'keep_going':bool(self.config.get('keep_going',False))}
         self.tasks.insert(0,task); self.refresh_tasks(); self.select_task_by_id(task['id']); self.persist()
 
     def select_task(self,row):
@@ -589,6 +593,7 @@ class Studio(QMainWindow):
         self.task=next((task for task in self.tasks if task.get('id')==task_id), None)
         if not self.task:return
         kind=self.task.get('kind','code')
+        self.keep_going.blockSignals(True);self.keep_going.setChecked(bool(self.task.setdefault('keep_going',self.config.get('keep_going',False))));self.keep_going.blockSignals(False);self.keep_going.setVisible(kind=='code')
         self.mode.setCurrentText('Plan' if kind=='chat' or self.config.get('approval_policy')=='plan' else 'Act')
         self.prompt.setPlaceholderText('Ask a question or work through an idea…' if kind=='chat' else 'Describe what to build or fix…')
         self.right.setVisible(kind=='code')
@@ -793,6 +798,7 @@ class Studio(QMainWindow):
         project=self.task['project']; history=list(self.task['messages']); act=self.mode.currentText()=='Act';task_id=self.task['id']
         task_kind=self.task.get('kind','code');rounds=self.step_budget.currentData() if task_kind=='code' else 16
         performance=self.model_performance()
+        keep_going=bool(self.keep_going.isChecked()) and task_kind=='code'
         active_remote=self.active_remote()
         requested_ssh=act and bool(re.search(r'\b(ssh|log ?in|connect)\b',text,re.I)) and bool(re.search(r'\b(server|host|ssh)\b|\.[a-z]{2,}',text,re.I))
         set_active_remote(active_remote if self.config.get('remote_enabled') and self.config.get('remote_pilot',True) else None)
@@ -833,7 +839,7 @@ class Studio(QMainWindow):
                 self.bus.event.emit('route',selected)
                 def job_event(kind,data):self.bus.event.emit(kind,dict(data,task_id=task_id))
                 self.job_manager=ProcessJobs(project,self.cancel,job_event)
-                run_agent(selected['url'],selected['model'],history,project,act,self.cancel,self.bus.event.emit,rounds=rounds,performance=performance,jobs=self.job_manager,task_kind=task_kind)
+                run_agent(selected['url'],selected['model'],history,project,act,self.cancel,self.bus.event.emit,rounds=rounds,performance=performance,jobs=self.job_manager,task_kind=task_kind,keep_going=keep_going)
             except Exception as exc:self.bus.event.emit('error',str(exc))
             finally:
                 set_active_remote(None)
@@ -842,7 +848,17 @@ class Studio(QMainWindow):
                 self.bus.event.emit('finished',None)
         threading.Thread(target=work,daemon=True).start()
 
+    def save_keep_going(self,enabled):
+        if self.task and not self.busy:
+            self.task['keep_going']=bool(enabled);self.persist()
+
     def prepare_task_target(self,text):
+        resume=re.fullmatch(r'(?:please\s+)?(?:continue|keep going|resume|carry on|continue unfinished work)[.!\s]*',text,re.I)
+        if resume or text==STARTERS['Continue unfinished work']:
+            for message in reversed(self.task.get('messages',[])):
+                previous=message.get('content','') or ''
+                if message.get('role')=='user' and (re.search(r'\b(?:game|project|app)\s*:',previous,re.I) or explicit_project_directory(previous)):
+                    text=previous;break
         if requested_runtime(text,self.server_name())=='server':
             self.route.setCurrentIndex(2)
             if re.search(r'\balways\b',text,re.I):
@@ -909,7 +925,7 @@ class Studio(QMainWindow):
 
     def set_busy(self,busy):
         self.busy=busy
-        for w in (self.new_button,self.project_button,self.task_list,self.task_view,self.route,self.mode,self.step_budget,self.chat_space,self.code_space,self.skynet_button):w.setEnabled(not busy)
+        for w in (self.new_button,self.project_button,self.task_list,self.task_view,self.route,self.mode,self.step_budget,self.keep_going,self.chat_space,self.code_space,self.skynet_button):w.setEnabled(not busy)
         self.prompt.setEnabled(True);self.send_button.setEnabled(True);self.send_button.setText('✦  Steer' if busy else '↑  Send')
         self.stop.setEnabled(busy)
         if self.tray:self.tray.setToolTip('TalkToAi Code — '+('working in background' if busy else 'ready'))
@@ -932,6 +948,9 @@ class Studio(QMainWindow):
             if state_changed:self.persist()
         elif kind=='project_context':
             self.task['project_context']=data;self.refresh_plan();self.persist()
+        elif kind=='goal_checkpoint':
+            self.task['goal_checkpoint']=data;self.refresh_plan();self.persist()
+            self.status.setText(f"Work pass {data.get('pass',1)}/{data.get('total_passes',1)} · {data.get('steps',0)} steps · {data.get('state','')}")
         elif kind=='plan':
             self.task['plan']=data;self.refresh_plan();self.persist()
         elif kind=='verification':

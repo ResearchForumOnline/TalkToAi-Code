@@ -112,6 +112,10 @@ JOB_TOOLS = [
     schema('cancel_process', 'Cancel only the selected job owned by this turn. Inspect returned state; cancellation is not success.', {'job_id':'Returned job id'}),
 ]
 OUTPUT_TOOLS = [schema('register_output', 'Add an existing project output/report/build file to the Evidence panel with size and SHA-256. This does not upload or execute it and does not verify quality.', {'path':'Project-relative file path','title':'Short human-readable output label'})]
+RESEARCH_TOOLS = [
+    schema('read_experiments','Read the recent project experiment journal. Entries are reported hypotheses/results, not independent proof.',{'limit':'1-20 recent entries, usually 5'}),
+    schema('record_experiment','Record an experiment after inspecting its actual evidence. Does not run commands. Result and metrics remain reported claims; referenced local evidence files are independently hashed. Never invent measurements.',{'hypothesis':'Specific hypothesis tested','command':'Exact command attempted, or empty if none','result':'Observed result, including failures and uncertainty','metrics':'JSON object of finite numeric measurements, or {}','evidence_paths':'JSON array of existing project-relative evidence files, or []','next_step':'Next bounded experiment or unresolved question'}),
+]
 GAME_TOOLS = [
     schema('run_checks', 'Detect and run existing project checks: Godot import, pytest/unittest, npm/pnpm/yarn scripts, Rust or .NET tests. Stops on failure; does not install dependencies. Returns actual output.', {}),
     schema('launch_game', 'Launch the selected Godot project in a native game window.', {}),
@@ -493,6 +497,14 @@ class ProjectTools:
     def execute(self, name, args):
         if self.cancel.is_set():
             raise InterruptedError('Task stopped.')
+        if name=='read_experiments':
+            from research_journal import read_experiments
+            return read_experiments(self.root,args.get('limit','5'))
+        if name=='record_experiment':
+            if not self.act:raise PermissionError('Recording experiments requires Act mode.')
+            from research_journal import record_experiment
+            return record_experiment(self.root,args.get('hypothesis',''),args.get('command',''),args.get('result',''),
+                                     args.get('metrics','{}'),args.get('evidence_paths','[]'),args.get('next_step',''))
         if name in {tool['function']['name'] for tool in MAIL_TOOLS}:
             from mail_connectors import (gmail_status, gmail_search, gmail_get_message,
                                          zmail_status, ZmailReadConnector)
@@ -704,11 +716,11 @@ def restore_checkpoint(folder):
     else:
         p.unlink()
 
-def run_agent(url, model, history, project, act, cancel, emit, rounds=16, performance=None, jobs=None, task_kind='code'):
+def run_agent(url, model, history, project, act, cancel, emit, rounds=16, performance=None, jobs=None, task_kind='code', keep_going=False):
     tools = ProjectTools(project, act, cancel)
     tools.jobs = jobs or ProcessJobs(project, cancel, emit)
     try:
-        return _run_agent(url,model,history,project,act,cancel,emit,rounds,performance,tools,task_kind=task_kind)
+        return _run_agent(url,model,history,project,act,cancel,emit,rounds,performance,tools,task_kind=task_kind,keep_going=keep_going)
     finally:
         try:tools.jobs.close()
         finally:
@@ -741,7 +753,7 @@ def run_subagent(url, model, project, task, role, cancel, emit, performance=None
                        'report':replies[-1][:10000] if replies else 'Worker reached its limit without a final report. No completion claimed.'})
 
 
-def _run_agent(url, model, history, project, act, cancel, emit, rounds, performance, tools, worker_mode=False, task_kind='code', improvement_mode=False):
+def _run_agent(url, model, history, project, act, cancel, emit, rounds, performance, tools, worker_mode=False, task_kind='code', improvement_mode=False, keep_going=False):
     vision_enabled=ACTIVE_PROVIDER is None and model_supports_vision(url,model)
     project_instructions = load_project_instructions(project)
     prompt = ('You are TalkToAi Code, a coding agent. Use tools to inspect the project and complete the user task. '
@@ -813,7 +825,8 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
     if not act:active_tools=[t for t in active_tools if t['function']['name'] in ('browser','list_files','read_file','read_project_files','file_fingerprint','project_info','search_code','project_map','git_changes','review_changes','triage_failures','desktop_server_inventory','desktop_list','desktop_read_file','remote_status','remote_project_info') or t['function']['name'] in {mail['function']['name'] for mail in MAIL_TOOLS}]
     catalog=None
     if not worker_mode:
-        packs={'context':CONTEXT_TOOLS,'discovery':DISCOVERY_TOOLS,'browser':BROWSER_TOOLS}
+        packs={'context':CONTEXT_TOOLS,'discovery':DISCOVERY_TOOLS,'browser':BROWSER_TOOLS,
+               'research':RESEARCH_TOOLS if act else RESEARCH_TOOLS[:1]}
         blocked={}
         if mail_requested:packs['mail']=MAIL_TOOLS
         else:blocked['mail']='Mailbox tools require a direct user request about mail in this task.'
@@ -856,13 +869,37 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
     discovery_guard=DiscoveryProgressGuard(tools.root)
     verification=None
     last_compacted_count=0
-    for step in range(rounds):
+    rounds=max(1,min(64,int(rounds)))
+    total_passes=3 if keep_going and not worker_mode and not improvement_mode else 1
+    max_steps=rounds*total_passes
+    progress_seen=set();pass_progress=0;pass_errors=False;pass_recovered_errors=False
+    def goal_checkpoint(state,steps):
+        if keep_going and not worker_mode and not improvement_mode:
+            emit('goal_checkpoint',{'pass':max(1,min(total_passes,(max(1,steps)-1)//rounds+1)),
+                 'total_passes':total_passes,'steps':steps,'changes':len(tools.changes),
+                 'verification':verification,'state':state,'progress_observations':pass_progress})
+    for step in range(max_steps):
         if cancel.is_set():
+            goal_checkpoint('stopped',step)
             emit('status', 'Stopped')
             return
+        if step and step%rounds==0:
+            if not pass_progress or pass_errors or discovery_guard.paused:
+                goal_checkpoint('paused',step)
+                emit('status','Keep going paused: the last pass had no new verified tool observations or had unresolved tool errors. The task remains unfinished.')
+                return
+            goal_checkpoint('continuing',step)
+            messages.append({'role':'user','_automation_nudge':True,'content':
+                'Continue the same authorized task from the saved observations and checklist. Another bounded pass is available because the last pass produced new tool evidence. '+
+                'Do not repeat completed work or expand the scope. Verify remaining outcomes; finish as soon as the requested task is done. Report genuine blockers.'})
+            emit('status',f'Keep going: continuing pass {step//rounds+1}/{total_passes} with saved progress.')
+            pass_progress=0;pass_errors=False;pass_recovered_errors=False
         emit('status', f'Working Â· step {step + 1}')
         num_ctx=performance.get('num_ctx',8192)
-        window=context_window(messages,context_budget(num_ctx,messages[0],active_tools))
+        try:window=context_window(messages,context_budget(num_ctx,messages[0],active_tools))
+        except (ValueError,TypeError):
+            goal_checkpoint('paused',step)
+            raise
         compacted=any(m.get('content','').startswith('Earlier history checkpoint (') for m in window if isinstance(m.get('content'),str))
         if compacted and len(messages)>last_compacted_count:
             emit('status','Continuing with a compact checkpoint; full conversation and tool results remain saved.')
@@ -875,6 +912,7 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
         try:
             for data in stream_chat(url,payload,cancel):
                 if cancel.is_set():
+                    goal_checkpoint('stopped',step)
                     emit('status', 'Stopped')
                     return
                 if data.get('error'):
@@ -888,7 +926,11 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
                 calls.extend(message.get('tool_calls', []))
                 if data.get('done'):stats=data
         except InterruptedError:
+            goal_checkpoint('stopped',step)
             emit('status','Stopped');return
+        except Exception:
+            goal_checkpoint('paused',step)
+            raise
         # Images are for the immediately following vision turn only. The textual
         # tool result stays in history, without repeatedly shipping screenshot bytes.
         for message in messages:message.pop('images',None)
@@ -902,6 +944,7 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
             content+='\n\n[Incomplete tool batch was not executed.]'
         try:calls=validate_calls(calls)
         except (ValueError,TypeError) as exc:
+            pass_errors=True
             malformed_retries+=1
             if malformed_retries>2:raise RuntimeError('Model repeatedly produced invalid structured tool calls. No actions from those batches were executed.') from exc
             messages.append({'role':'user','_automation_nudge':True,'content':'Your previous structured tool batch was invalid and none of it was executed. Return function names and JSON-object arguments for available tools. Error: '+str(exc)[:200]})
@@ -913,17 +956,18 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
         messages.append(assistant)
         emit('message', assistant)
         if not calls:
-            if tools.jobs and tools.jobs.running() and not job_review_requested and step+1<rounds:
+            if tools.jobs and tools.jobs.running() and not job_review_requested and step+1<max_steps:
                 job_review_requested=True
                 messages.append({'role':'user','_automation_nudge':True,'content':'Owned processes are still running: '+', '.join(tools.jobs.running())+'. Poll their output/exit status and complete the requested checks, or cancel them and report what remains. Do not claim they passed. They will be stopped when this turn ends.'})
                 emit('status','Checking running jobs before finishing')
                 continue
             if truncated:
-                if continuations<2 and step+1<rounds:
+                if continuations<2 and step+1<max_steps:
                     continuations+=1
                     messages.append({'role':'user','_automation_nudge':True,'content':'Continue the unfinished response/task from the saved state. Do not repeat actions already executed. Any incomplete tool batch in the last response was NOT executed; inspect current state before retrying. Stay within the original request.'})
                     emit('status',f'Continuing automatically after output limit Â· {continuations}/2')
                     continue
+                goal_checkpoint('paused',step+1)
                 emit('status','Paused at the output limit Â· progress is saved; send Continue when ready')
                 return
             if '<function=' in content or '<tool_call>' in content or '</tool_call>' in content:
@@ -933,24 +977,28 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
                 messages.append({'role':'user','_automation_nudge':True,'content':'The previous response contained tool markup as ordinary text. It was NOT executed. Use the native structured tool_calls interface with a function name and JSON arguments, not XML in content. Continue the original task and verify the result.'})
                 emit('status','Retrying malformed tool response Â· no action executed')
                 continue
-            if act and len(tools.changes)>checked_changes and verification_requested_at!=len(tools.changes) and step+1<rounds:
+            if act and len(tools.changes)>checked_changes and verification_requested_at!=len(tools.changes) and step+1<max_steps:
                 verification_requested_at=len(tools.changes)
                 messages.append({'role':'user','_automation_nudge':True,'content':'Before finishing: you changed project files after the last check. Inspect the project type if needed and run the relevant test/build/import check now. Fix task-related failures if practical. If no suitable check exists, explicitly report that verification was not run. Do not claim checks passed without their output.'})
                 emit('status','Verifying changes before finishing')
                 continue
             unfinished=[s for s in (plan or {}).get('steps',[]) if s['status'] in ('pending','in_progress')]
-            if unfinished and not plan_review_requested and step+1<rounds:
+            if unfinished and not plan_review_requested and step+1<max_steps:
                 plan_review_requested=True
                 messages.append({'role':'user','_automation_nudge':True,'content':'Before finishing, your checklist still has unfinished items. Continue the agreed work if possible; otherwise mark real blockers and explain what remains. Do not mark steps complete without evidence. Revise the plan if the user changed the scope.'})
                 emit('status','Reviewing unfinished task steps')
                 continue
             if unfinished:
+                goal_checkpoint('paused',step+1)
                 emit('status',f'Response finished Â· {len(unfinished)} task steps remain unresolved')
                 return
+            goal_checkpoint('completed' if not verification or verification['status']=='passed' else 'paused',step+1)
             emit('status', 'Ready' if not verification or verification['status']=='passed' else 'Response finished Â· checks '+verification['status'])
             return
         for call in calls:
             if cancel.is_set():
+                goal_checkpoint('stopped',step)
+                emit('status','Stopped')
                 return
             name = call['function']['name']
             args = call['function']['arguments']
@@ -985,6 +1033,7 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
                     result=run_subagent(url,model,project,args.get('task',''),args.get('role','reviewer'),cancel,emit,performance)
                 else:
                     result = tools.execute(name, args)
+                observed_result=result
                 if guard_result is None:
                     guidance=discovery_guard.observe(name,args,result)
                     if guidance:
@@ -994,16 +1043,29 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
                     discovery_guard.reset()
                 # A successful inspection command is not a test/build result.
                 command_failed=name in ('run_checks','run_command','desktop_run_command','remote_run_command') and any(int(code)!=0 for code in re.findall(r'^Exit (-?\d+)\s*$',result,re.M))
+                if command_failed or (name=='run_checks' and check_evidence(result)['status']!='passed'):
+                    pass_errors=True
+                elif guard_result is None and name not in ('enable_tools','update_plan','record_experiment'):
+                    observed=hashlib.sha256(json.dumps([name,args,observed_result],sort_keys=True,ensure_ascii=False).encode()).hexdigest()
+                    if observed not in progress_seen:
+                        progress_seen.add(observed);pass_progress+=1
                 retries=failed_calls.get(signature,0)+1
                 failed_calls.clear()
                 if command_failed:failed_calls[signature]=retries
             except Exception as exc:
+                pass_errors=True
                 result = f'{type(exc).__name__}: {exc}'
                 retries=failed_calls.get(signature,0)+1;failed_calls.clear();failed_calls[signature]=retries
             if name=='run_checks':
                 verification=check_evidence(result);emit('verification',verification)
-                if verification['status']=='passed':checked_changes=len(tools.changes)
+                if verification['status']=='passed':
+                    checked_changes=len(tools.changes)
+                    # A successful check of the current files is an explicit
+                    # recovery signal; unrelated reads cannot clear failures.
+                    pass_recovered_errors=pass_recovered_errors or pass_errors
+                    pass_errors=False
             if len(tools.changes) > count:
+                if pass_recovered_errors:pass_errors=True
                 emit('change', tools.changes[-1])
                 verification={'status':'stale','summary':'Files changed after the last check; run relevant checks again.'}
                 emit('verification',verification)
@@ -1024,6 +1086,8 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
             emit('result', result)
             if artifact:emit('artifact',artifact)
         if discovery_guard.paused:
+            goal_checkpoint('paused',step+1)
             emit('status','Paused: the model repeated unchanged discovery after recovery guidance. Progress is saved; the task remains unfinished.')
             return
-    emit('status', f'Paused after {rounds} steps. Send a follow-up to continue.')
+    goal_checkpoint('paused',max_steps)
+    emit('status', f'Paused after {max_steps} steps. Send a follow-up to continue.')

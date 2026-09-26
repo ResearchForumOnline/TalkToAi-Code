@@ -46,3 +46,21 @@ class ComputerTests(unittest.TestCase):
         self.engine.execute('inspect','123');self.engine.execute('select','0','Windowed')
         self.control.select.assert_called_once_with('Windowed')
         self.assertIn('Waited',self.engine.execute('wait','','0'))
+
+    def test_click_prefers_accessibility_invoke(self):
+        self.engine.execute('inspect','123');self.engine.execute('click','0')
+        self.control.invoke.assert_called_once_with()
+        self.control.click_input.assert_not_called()
+
+    def test_click_only_falls_back_for_missing_invoke_pattern(self):
+        from pywinauto.uia_defines import NoPatternInterfaceError
+        self.control.invoke.side_effect=NoPatternInterfaceError()
+        self.engine.execute('inspect','123');self.engine.execute('click','0')
+        self.window.set_focus.assert_called_once_with()
+        self.control.click_input.assert_called_once_with()
+
+    def test_unknown_invoke_failure_never_repeats_input(self):
+        self.control.invoke.side_effect=RuntimeError('Provider failed after an uncertain action')
+        self.engine.execute('inspect','123')
+        with self.assertRaises(RuntimeError):self.engine.execute('click','0')
+        self.control.click_input.assert_not_called()

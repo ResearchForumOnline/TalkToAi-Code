@@ -120,6 +120,45 @@ class WorkspaceUITests(unittest.TestCase):
         w.stop_task();self.assertTrue(w.cancel.is_set());self.assertEqual(w.route.currentIndex(),1)
         w.set_busy(False)
 
+    def test_keep_going_is_opt_in_and_persisted_per_conversation(self):
+        w=self.window;first=w.task['id']
+        self.assertFalse(w.keep_going.isChecked())
+        w.keep_going.setChecked(True)
+        saved=next(task for task in load_tasks(studio.SESSION)[0] if task['id']==first)
+        self.assertTrue(saved['keep_going'])
+        w.new_task();self.assertFalse(w.keep_going.isChecked())
+        w.select_task_by_id(first);self.assertTrue(w.keep_going.isChecked())
+        w.config['keep_going']=True;w.new_task();self.assertTrue(w.keep_going.isChecked())
+
+    def test_keep_going_flag_and_budget_reach_agent(self):
+        w=self.window;w.task['project']=str(self.root);w.route.setCurrentIndex(1)
+        w.keep_going.setChecked(True);w.step_budget.setCurrentIndex(2)
+        w.prompt.setPlainText('Improve this project')
+        selected={'route':'local','url':'http://127.0.0.1:11434','model':'fixture','reason':'test'}
+        with patch('studio.threading.Thread') as worker,patch('studio.ensure_local_model'),patch('studio.choose_route',return_value=selected),patch('studio.run_agent') as run:
+            w.send();worker.call_args.kwargs['target']()
+            self.assertTrue(run.call_args.kwargs['keep_going'])
+            self.assertEqual(run.call_args.kwargs['rounds'],64)
+
+    def test_goal_checkpoint_persists_progress_in_steps(self):
+        w=self.window;data={'pass':2,'total_passes':3,'steps':32,'changes':4,'state':'continuing'}
+        w.handle_event('goal_checkpoint',data)
+        self.assertEqual(w.task['goal_checkpoint'],data)
+        self.assertIn('Work pass 2/3',w.plan_summary.text())
+        self.assertIn('32 steps',w.status.text())
+        self.assertEqual(load_tasks(studio.SESSION)[0][0]['goal_checkpoint'],data)
+
+    def test_continue_recovers_original_explicit_project_from_user_history(self):
+        w=self.window
+        wrong=self.root/'airr';wrong.mkdir();w.task['project']=str(wrong)
+        native=self.root/'blacksite_nightfall'/'native';native.mkdir(parents=True)
+        (native/'project.godot').write_text('[application]\nconfig/name="NIGHTFALL"\n')
+        w.task['messages']=[{'role':'user','content':f'{self.root} game: NIGHTFALL. Improve the game.'},
+                            {'role':'assistant','content':'I found AIRR cloud'},
+                            {'role':'user','content':'continue'}]
+        self.assertTrue(w.prepare_task_target('keep going'))
+        self.assertEqual(Path(w.task['project']),native.resolve())
+
     def test_invalid_context_setting_falls_back_to_8k(self):
         self.window.config['num_ctx']='999999'
         self.assertEqual(self.window.model_performance(),{'num_ctx':8192})

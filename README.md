@@ -191,3 +191,9 @@ Settings lets you prefer Edge, Chrome, Firefox or Playwright Chromium, with a br
 ### Linux and macOS source install in 0.6.0
 
 The source installers copy only runtime modules and the public sample, avoiding build output and local configuration. They install dependencies for their host OS and download Playwright Chromium when possible. Use `bash install-linux.sh` or `bash install-macos.sh` from an extracted release source folder. Linux requires a graphical desktop and a working Secret Service keyring for remembered credentials; macOS uses Keychain. On Ubuntu/Debian, install Qt runtime libraries with `sudo apt-get install libegl1 libgl1 libxcb-cursor0 libxkbcommon-x11-0 libxcb-xinerama0` if they are missing. On both platforms, the bundled Windows update installer is disabled; download a newer source release and rerun the appropriate script. Native signed Linux/macOS packages and interactive GUI validation are still outstanding. The source installer and offscreen GUI launch passed on Ubuntu and macOS GitHub runners.
+
+### Keep going and research experiments
+
+Enable **Keep going** in Code for up to three passes of the selected step budget (maximum 192 steps). Progress checkpoints remain visible; Stop interrupts the task. Unresolved errors or repeated unchanged exploration pause the work. A repaired failure can continue after checks pass on the latest files. This does not run unattended after the app closes.
+
+Use **Research an experiment** to maintain a bounded project journal with hypotheses, reported metrics, next steps, and hashes of evidence files. See [research experiments](docs/RESEARCH-EXPERIMENTS.md) and the [measured model comparison](docs/MODEL-COMPARISON-0.6.0.md). Windows native controls use accessibility actions where available; acceptance testing fills and activates an isolated real Windows form.

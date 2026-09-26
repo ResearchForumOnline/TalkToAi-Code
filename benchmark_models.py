@@ -56,7 +56,8 @@ def compare_routes(config, cancel, emit=lambda *_: None, timeout_seconds=240):
             entry['error'] = 'Configured model is not installed/reachable; no download attempted.'
             continue
         request_cancel = threading.Event()
-        deadline = time.monotonic() + timeout_seconds
+        route_started = time.monotonic()
+        deadline = route_started + timeout_seconds
         done = threading.Event()
         def watch():
             while not done.wait(.1):
@@ -104,7 +105,9 @@ def compare_routes(config, cancel, emit=lambda *_: None, timeout_seconds=240):
             entry['quality_pass'] = all(f['passed'] for f in entry['fixtures'])
             entry['elapsed_seconds'] = round(sum(f['elapsed_seconds'] for f in entry['fixtures']), 3)
         except Exception as exc:
-            entry['error'] = f'{type(exc).__name__}: {exc}'[:500]
+            entry['error'] = (f'Time limit exceeded ({timeout_seconds} seconds); benchmark incomplete.'
+                              if request_cancel.is_set() and not cancel.is_set() else f'{type(exc).__name__}: {exc}'[:500])
+            entry['elapsed_seconds'] = round(time.monotonic() - route_started, 3)
         finally:
             done.set(); watcher.join(timeout=1)
     return {'schema': 'talktoai.model-comparison.v1', 'measured_at': datetime.now(timezone.utc).isoformat(),

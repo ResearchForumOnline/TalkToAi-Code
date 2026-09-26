@@ -18,14 +18,20 @@ This release repairs project targeting and long-task context failures reported d
 - Remove a duplicated legacy installer block on Linux.
 - Display the app version in its window title and keep source/staging installations from intercepting the installed application's launch.
 
+- Opt-in Keep going continues useful unfinished work for up to three bounded passes, with saved progress checkpoints and recovery after verified repairs.
+- Research experiment journal records hypotheses, reported results, evidence hashes and next steps using bounded atomic storage.
+- Fix native Windows button activation using UI Automation; verified against an isolated real Windows form.
+
 ## Verification
 
-- 192 automated regression checks passed on Windows.
+- 221 automated regression checks passed on Windows.
 - Packaged Windows app: browser interaction/screenshot, managed process execution, batch reads, output registration, bundled example and image attachment checks passed; GUI launch exited successfully.
 - Ubuntu and macOS source installation, offscreen GUI startup and portable agent regressions passed: https://github.com/ResearchForumOnline/TalkToAi-Code/actions/runs/36273569304
 - The reported NIGHTFALL request resolves to the intended native Godot project using directory/manifest metadata.
 
 - Real server-model coding trial: [fixture, checks, timings and limitations](AMD-ACCEPTANCE-0.6.0.md). Both implementation bugs were repaired and all four frozen checks passed.
+
+- Installed 30B server versus 27B local comparison: [measurements and limits](MODEL-COMPARISON-0.6.0.md).
 
 ## Scope
 
@@ -36,5 +42,6 @@ These checks do not establish complete game quality, interactive Linux/macOS beh
 - https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents
 - https://aider.chat/2023/10/22/repomap.html
 - https://aider.chat/docs/usage/conventions.html
+- https://www.anthropic.com/research/yes-claude-can-do-nine-loops
 
 The implementation remains native to TalkToAi Code. These are design references, not bundled app dependencies.

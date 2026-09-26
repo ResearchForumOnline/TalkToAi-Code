@@ -64,7 +64,17 @@ class ComputerTools:
         if action in ('click','fill','select','focus') and control is None:raise ValueError('Use a control id from the latest inspect result.')
         self.observed=0
         if self.cancel.is_set():raise InterruptedError('Computer control stopped.')
-        if action=='click':control.click_input()
+        if action=='click':
+            # Invoke the observed accessibility control directly when supported.
+            # This avoids DPI/occlusion problems with physical coordinates.
+            from pywinauto.uia_defines import NoPatternInterfaceError
+            invoke=getattr(control,'invoke',None)
+            if callable(invoke):
+                try:invoke()
+                except NoPatternInterfaceError:
+                    self.window.set_focus();control.click_input()
+            else:
+                self.window.set_focus();control.click_input()
         elif action=='fill':control.set_edit_text(value)
         elif action=='select':control.select(value)
         elif action=='focus':control.set_focus()
