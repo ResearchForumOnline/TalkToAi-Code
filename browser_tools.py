@@ -2,7 +2,7 @@
 import json
 import uuid
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, quote_plus
 
 
 class BrowserTools:
@@ -26,7 +26,11 @@ class BrowserTools:
     def execute(self, action, target='', value=''):
         if self.cancel.is_set():raise InterruptedError('Task stopped.')
         self.start()
-        if action=='open':
+        if action=='search':
+            query=str(target).strip()[:1000]
+            if not query:raise ValueError('Enter a web search query.')
+            self.page.goto('https://www.bing.com/search?q='+quote_plus(query),wait_until='domcontentloaded',timeout=25000)
+        elif action=='open':
             parsed=urlsplit(target)
             if parsed.scheme not in ('http','https') or parsed.username or parsed.password:
                 raise ValueError('Open an http(s) page URL without credentials.')
@@ -39,9 +43,10 @@ class BrowserTools:
             path=folder/('browser-'+uuid.uuid4().hex+'.png')
             self.page.screenshot(path=str(path))
             return json.dumps({'artifact':str(path),'type':'image','url':self.page.url})
-        elif action!='inspect':raise ValueError('Use open, inspect, click, fill, press or screenshot.')
+        elif action!='inspect':raise ValueError('Use search, open, inspect, click, fill, press or screenshot.')
         snapshot=self.page.locator('body').aria_snapshot()
-        return json.dumps({'url':self.page.url,'title':self.page.title(),'page':snapshot[:15000],'errors':self.errors[-8:]})
+        links=self.page.locator('a[href]').evaluate_all("nodes => nodes.filter(a => a.innerText.trim() && /^https?:/.test(a.href)).slice(0,80).map(a => ({title:a.innerText.trim().slice(0,200),url:a.href}))")
+        return json.dumps({'links':links,'url':self.page.url,'title':self.page.title(),'page':snapshot[:15000],'errors':self.errors[-8:]})
 
     def close(self):
         if self.browser:

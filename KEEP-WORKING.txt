@@ -45,3 +45,12 @@ read/search mail; they do not send messages. No shared credentials are supplied.
 USEFUL REQUEST
 Inspect this project, propose the smallest useful improvement, then implement
 the agreed change. Run the relevant check and explain what remains unfinished.
+
+RESEARCH AND COMPUTER CONTROL
+For research, ask: Web search for [topic], open original sources and cite direct links.
+Plan mode permits browser search, page opening and reading. Search uses Bing and needs internet/Edge.
+For desktop operation, choose Act with Desktop/user access and PC Pilot enabled in Settings.
+Ask for the specific app and task. The agent can inspect controls, click, type and observe results.
+Use Stop to interrupt. Handle logins and two-factor authentication yourself.
+Task starters includes Research with sources and Operate a Windows app.
+Search engines and sites may block automated access; models can misinterpret pages or controls.
