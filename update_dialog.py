@@ -16,7 +16,7 @@ class UpdateDialog(QDialog):
         self.setWindowTitle('About & updates — TalkToAi Code'); self.resize(640,480)
         self.signals=UpdateSignals(self); self.signals.result.connect(self.completed)
         layout=QVBoxLayout(self)
-        layout.addWidget(QLabel(f'TalkToAi Code {VERSION} · Windows desktop preview'))
+        layout.addWidget(QLabel(f'TalkToAi Code {VERSION} · Windows desktop'))
         self.status=QLabel('Microsoft Store manages updates for this installation.' if self.store_package else 'Updates are checked only when you ask. No AI tokens are used.'); self.status.setWordWrap(True); layout.addWidget(self.status)
         self.notes=QTextBrowser(); layout.addWidget(self.notes)
         self.check=QPushButton('Check GitHub for updates'); self.check.setEnabled(not self.store_package); self.check.clicked.connect(lambda:self.work(check_release)); layout.addWidget(self.check)

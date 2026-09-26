@@ -263,7 +263,7 @@ class Studio(QMainWindow):
         starter=QPushButton('Task starters');starter_menu=QMenu(starter)
         for name in STARTERS:starter_menu.addAction(name,lambda checked=False,n=name:self.use_starter(n))
         starter.setMenu(starter_menu);shortcuts.addWidget(starter)
-        self.button('Open Cline',self.cline,shortcuts)
+        self.button('Models & APIs',self.providers_dialog,shortcuts)
         self.skynet_button=self.button('⚡ Skynet Mode',self.start_skynet,shortcuts)
         self.skynet_button.setToolTip('Create and check a bounded improvement candidate in a separate copy. Review the diff before applying it.')
         chat.addWidget(self.code_actions)
@@ -499,7 +499,7 @@ class Studio(QMainWindow):
         if self.busy:self.status.setText('Use Steer or Stop while a task is running.');return
         dialog=QDialog(self);dialog.setWindowTitle('Actions');dialog.resize(600,480);layout=QVBoxLayout(dialog)
         query=QLineEdit();query.setPlaceholderText('Find an action…');layout.addWidget(query);items=QListWidget();layout.addWidget(items)
-        actions=[('New chat',lambda:self.new_in_workspace('chat')),('New code task',lambda:self.new_in_workspace('code')),('Open project',self.choose_project),('Open Desktop',lambda:self.quick_command('open desktop')),('Inspect project',lambda:self.quick_command('inspect project')),('Run tests',lambda:self.quick_command('run tests')),('Launch game',lambda:self.quick_command('launch game')),('Capture screenshot',lambda:self.quick_command('take a screenshot')),('Map project',lambda:self.quick_command('map project')),('Rename task',self.rename_task),('Pin or unpin task',self.toggle_pin_task),('Move chat between Chat and Code',self.move_task_workspace),('Branch conversation',self.fork_task),('Export task report',self.export_task),('Settings',self.settings),('SSH connections',self.connections_dialog),('API providers',self.providers_dialog),('Model choices and storage',self.models_dialog),('Open Cline',self.cline),('FAQ / How to',self.faq_dialog)]
+        actions=[('New chat',lambda:self.new_in_workspace('chat')),('New code task',lambda:self.new_in_workspace('code')),('Open project',self.choose_project),('Open Desktop',lambda:self.quick_command('open desktop')),('Inspect project',lambda:self.quick_command('inspect project')),('Run tests',lambda:self.quick_command('run tests')),('Launch game',lambda:self.quick_command('launch game')),('Capture screenshot',lambda:self.quick_command('take a screenshot')),('Map project',lambda:self.quick_command('map project')),('Rename task',self.rename_task),('Pin or unpin task',self.toggle_pin_task),('Move chat between Chat and Code',self.move_task_workspace),('Branch conversation',self.fork_task),('Export task report',self.export_task),('Settings',self.settings),('SSH connections',self.connections_dialog),('API providers',self.providers_dialog),('Model choices and storage',self.models_dialog),('FAQ / How to',self.faq_dialog)]
         actions += [('Project memory · Ctrl+Shift+M',self.memory_dialog),('About & updates',self.updates_dialog),('Open app data folder',lambda:QDesktopServices.openUrl(QUrl.fromLocalFile(str(STATE)))),('Open project folder',lambda:QDesktopServices.openUrl(QUrl.fromLocalFile(self.task['project'])))]
         actions += [('Archive or restore conversation',self.toggle_archive_task),('Search chats · Ctrl+Shift+F',self.focus_task_search),('Find in conversation · Ctrl+F',self.find_in_chat),('Copy last reply',self.copy_last_reply)]
         actions += [('Starter: '+name,lambda n=name:self.use_starter(n)) for name in STARTERS]
@@ -569,7 +569,7 @@ class Studio(QMainWindow):
             if self.task.get('kind','code')=='chat':
                 parts=['# Start a conversation\n\nAsk a question, explore an idea, or plan your next move. Chat starts in **Plan** mode so it can read relevant files without changing them. Switch to **Act** if you want it to take action.\n\nPinned chats stay at the top of this space. Use the conversation menu to rename, branch, archive, or move a chat into Code.']
             else:
-                parts=['# Build something useful\n\nOpen a project, describe the result you want, and let the agent inspect and edit files. Use **Plan** for a read-only pass or **Act** to make changes.\n\nTry: **“Inspect this game, add a pause menu, and run the import check.”**\n\nThe right workspace keeps files, changes, tools, evidence, steps, and jobs beside the conversation. **Open Cline** launches the separately installed coding tool.']
+                parts=['# Build something useful\n\nOpen a project, describe the result you want, and let the agent inspect and edit files. Use **Plan** for a read-only pass or **Act** to make changes.\n\nTry: **“Inspect this game, add a pause menu, and run the import check.”**\n\nThe right workspace keeps files, changes, tools, evidence, steps, and jobs beside the conversation. **Models & APIs** connects your preferred model directly to this workspace.']
         scroll=self.transcript.verticalScrollBar();follow=scroll.value()>=scroll.maximum()-40;position=scroll.value()
         self.transcript.setMarkdown('\n\n---\n\n'.join(parts))
         if follow:self.transcript.moveCursor(QTextCursor.End)
@@ -1307,11 +1307,6 @@ The compact model is intentionally kept as the weak-CPU fallback. TalkToAi Code 
         for item in self.task.get('activity',[]):lines+=['```text',item.replace('```','` ` `'),'```','']
         path.write_text('\n'.join(lines),encoding='utf-8');self.status.setText('Saved task report: '+str(path))
         self.task.setdefault('artifacts',[]).append({'artifact':str(path),'type':'report'});self.refresh_artifacts();self.persist()
-
-    def cline(self):
-        path=Path(os.environ.get('LOCALAPPDATA',''))/'Cline'/'cline-app.exe'
-        if path.exists():os.startfile(path)
-        else:self.error('Cline is not installed at the expected path.')
 
     def game_command(self,smoke):
         if self.busy:return

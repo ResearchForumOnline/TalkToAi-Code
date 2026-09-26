@@ -1,18 +1,18 @@
 # TalkToAi Code — Your projects. Your AI. Your workspace.
 
-> **Latest release: 0.4.0 preview** — [Download the Windows installer](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v0.4.0-preview/TalkToAi-Code-0.4.0-Windows-Setup.exe) · [View release notes and checksums](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/tag/v0.4.0-preview)
+> **Latest release: 0.4.1** — [Download the Windows installer](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v0.4.1/TalkToAi-Code-0.4.1-Windows-Setup.exe) · [View release notes and checksums](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/tag/v0.4.1)
 
-**Microsoft Store:** The separate MSIX edition was submitted for certification on 23 September 2026 with a manual publication hold at the last recorded check. See [submission status](docs/MICROSOFT-STORE-STATUS.md) and verify the current Store state separately. The installer above is the GitHub preview.
+**Microsoft Store:** The separate MSIX edition was submitted for certification on 23 September 2026 with a manual publication hold at the last recorded check. See [submission status](docs/MICROSOFT-STORE-STATUS.md) and verify the current Store state separately. The installer above is the GitHub release.
 
 ![TalkToAi Code connects a coding workspace to a game world](assets/talktoai-code-hero.png)
 
 ## Product tour
 
-![TalkToAi Code 0.4.0 with Chat and Code spaces](assets/screens/studio-chat-code-040.png)
+![TalkToAi Code 0.4.1 with Chat and Code spaces](assets/screens/studio-chat-code-041.png)
 
 The workspace above is rendered from the actual app with a disposable profile; it is not a model-performance result. Earlier Windows screenshots below show real user conversations.
 
-The preview is built around a simple loop: describe the outcome, let the agent inspect and act, steer it when needed, then review evidence.
+The app is built around a simple loop: describe the outcome, let the agent inspect and act, steer it when needed, then review evidence.
 
 | Ask and edit | Steer a running task |
 | --- | --- |
@@ -22,11 +22,11 @@ The preview is built around a simple loop: describe the outcome, let the agent i
 | --- | --- |
 | ![TalkToAi Code completed coding response](assets/screens/studio-evidence.png) | ![TalkToAi Code Game Lab with Godot and Blender tools](assets/screens/studio-game-lab.png) |
 
-The screenshots are from the Windows preview. They show the conversation workspace, automatic tested coding route, task steering, evidence-oriented responses, and Game Lab controls for Godot, Blender and capture workflows.
+The screenshots are from the Windows app. They show the conversation workspace, automatic tested coding route, task steering, evidence-oriented responses, and Game Lab controls for Godot, Blender and capture workflows.
 
-TalkToAi Code is a native Windows coding workspace for people who want to build software and games with local or self-hosted AI. The preview is designed around one clear request: describe the outcome, let the agent inspect and act, then review the evidence.
+TalkToAi Code is a native Windows coding workspace for people who want to build software and games with local or self-hosted AI. The app is designed around one clear request: describe the outcome, let the agent inspect and act, then review the evidence.
 
-An independent native desktop AI assistant from TalkToAI for coding, games and general project work. Use your local Ollama models, your own SSH-connected Ollama server, or an optional API provider. This is a preview, not an OpenAI product, and no model or subscription is included.
+An independent native desktop AI assistant from TalkToAI for coding, games and general project work. Use your local Ollama models, your own SSH-connected Ollama server, or an optional API provider. This is an independent product; no model or subscription is included.
 
 ## Install
 
@@ -36,7 +36,7 @@ An independent native desktop AI assistant from TalkToAI for coding, games and g
 
 ### New in 0.4.0 preview: Chat, Code, connectors and Skynet Mode
 
-Separate **Chat** and **Code** spaces retain their conversations across restarts. Chat starts in read-only Plan mode; select Act when you want authorized tools to take action. Pin, archive, branch or move conversations between spaces. The refreshed Windows interface places the Open Cline companion and Skynet Mode within the Code workspace.
+Separate **Chat** and **Code** spaces retain their conversations across restarts. Chat starts in read-only Plan mode; select Act when you want authorized tools to take action. Pin, archive, branch or move conversations between spaces. The refreshed Windows interface places the native model selection and Skynet Mode within the Code workspace.
 
 **Skynet Mode** is an opt-in, bounded candidate improvement workflow. It copies eligible project source to a separate temporary folder, makes up to two focused improvement passes with the selected model, runs detected checks and records a diff and JSON report. It never replaces the original project or installs an update automatically. Project checks still run with the signed-in user's permissions; review the report, changed tests and source before applying anything.
 
@@ -74,7 +74,7 @@ provider retention. Implementation references:
 [function calling](https://developers.openai.com/api/docs/guides/function-calling),
 [model listing](https://developers.openai.com/api/reference/resources/models/methods/list).
 
-This unsigned GitHub preview is separate from the Microsoft Store package. See the [last recorded Store submission status](docs/MICROSOFT-STORE-STATUS.md), [0.3.0 release notes](RELEASE-0.3.0.md) and the
+This unsigned GitHub release is separate from the Microsoft Store package. See the [last recorded Store submission status](docs/MICROSOFT-STORE-STATUS.md), [0.3.0 release notes](RELEASE-0.3.0.md) and the
 [DevSpace ideas/licence review](docs/DEVSPACE-IDEAS-REVIEW.md). No DevSpace
 product code was copied into this implementation.
 
@@ -118,12 +118,12 @@ In Act mode, try: **“Connect to my website server using my existing SSH config
 
 1. Install Python 3.12 for Windows from https://www.python.org/downloads/windows/ (include the Python launcher).
 2. Download and extract the Windows setup ZIP into a permanent user-writable folder.
-3. Double-click `Install.cmd`. It creates a local virtual environment, installs the pinned dependencies from PyPI, and creates a **TalkToAi Code Preview** desktop shortcut. Internet and sufficient disk space for the dependencies are required. Setup does not download an AI model.
+3. Double-click `Install.cmd`. It creates a local virtual environment, installs the pinned dependencies from PyPI, and creates a **TalkToAi Code** desktop shortcut. Internet and sufficient disk space for the dependencies are required. Setup does not download an AI model.
 4. Open the shortcut, select your project, and choose a runtime. Local Ollama defaults to `qwen3.5:4b`; install a suitable model separately or change it in Model choices. A remote runtime needs your own SSH tunnel to localhost port 11435 and model settings. No private TalkToAI server is included.
 
 ### Platform installers
 
-- **Windows:** use the [0.4.0 Windows installer](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v0.4.0-preview/TalkToAi-Code-0.4.0-Windows-Setup.exe). This is an unsigned preview, not a Microsoft Store package. The standard per-user installer creates Start Menu/Desktop shortcuts and an uninstaller, and preserves local task data during upgrades.
+- **Windows:** use the [0.4.1 Windows installer](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v0.4.1/TalkToAi-Code-0.4.1-Windows-Setup.exe). This is an unsigned desktop installer, not a Microsoft Store package. The standard per-user installer creates Start Menu/Desktop shortcuts and an uninstaller, and preserves local task data during upgrades.
 - **Portable Windows:** use the [0.1.3 portable ZIP](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v0.1.3-preview/TalkToAi-Code-0.1.3-Windows-Portable.zip) when you do not want an installer.
 - **Linux:** install Python 3, extract the source ZIP, and run `bash install-linux.sh`. This creates a virtual environment, a `talktoai-code` launcher, and a desktop entry.
 - **macOS:** install Python 3, extract the source ZIP, and run `bash install-macos.sh`. This creates a local virtual environment and a `talktoai-code` launcher.
@@ -160,3 +160,7 @@ Original application source: MIT, see LICENSE. Dependencies retain their own lic
 
 Website: https://talktoai.org/TALKTOAIcode/
 Source/releases: https://github.com/ResearchForumOnline/TalkToAi-Code
+
+### 0.4.1: your models, one workspace
+
+Groq now has its own API preset. Open **Models & APIs**, choose **Groq API**, enter your own key (or set `GROQ_API_KEY`), fetch models, select a tool-capable model and save/use the profile. Provider account limits apply. Coding stays inside TalkToAi Code; the Cline launcher has been removed. The updater now discovers published Windows preview releases as well as stable releases.

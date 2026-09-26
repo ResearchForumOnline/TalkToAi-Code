@@ -7,9 +7,9 @@ import ctypes
 import sys
 from pathlib import Path
 
-VERSION = '0.4.0'
+VERSION = '0.4.1'
 REPO = 'https://github.com/ResearchForumOnline/TalkToAi-Code'
-API = 'https://api.github.com/repos/ResearchForumOnline/TalkToAi-Code/releases/latest'
+API = 'https://api.github.com/repos/ResearchForumOnline/TalkToAi-Code/releases?per_page=100'
 
 def is_store_package():
     """True only when Windows actually launched this process with package identity."""
@@ -47,7 +47,20 @@ def select_release(data):
 def check_release():
     request = urllib.request.Request(API, headers={'User-Agent':'TalkToAi-Code/'+VERSION})
     with urllib.request.urlopen(request, timeout=20) as response:
-        return select_release(json.load(response))
+        data = json.load(response)
+    if not isinstance(data, list):
+        raise ValueError('Unexpected release listing')
+    releases = []
+    for item in data:
+        if not isinstance(item, dict) or item.get('draft'):
+            continue
+        try:
+            releases.append(select_release(item))
+        except (ValueError, KeyError, TypeError):
+            continue
+    if not releases:
+        raise ValueError('No published Windows installer is available yet')
+    return max(releases, key=lambda release: version_tuple(release['version']))
 
 def download_release(release, folder):
     digest = release.get('digest') or ''

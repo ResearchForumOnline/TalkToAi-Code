@@ -33,9 +33,14 @@ class ProviderProfile:
         if not 256<=self.max_output_tokens<=8192:raise ValueError('Output-token limit must be between 256 and 8192.')
         if parsed.hostname=='api.openai.com' and self.base_url!='https://api.openai.com/v1':
             raise ValueError('Use https://api.openai.com/v1 for the direct OpenAI API.')
+        if parsed.hostname=='api.groq.com' and self.base_url!='https://api.groq.com/openai/v1':
+            raise ValueError('Use https://api.groq.com/openai/v1 for the direct Groq API.')
 
     @property
     def is_openai(self):return self.kind=='compatible' and self.base_url=='https://api.openai.com/v1'
+
+    @property
+    def is_groq(self):return self.kind=='compatible' and self.base_url=='https://api.groq.com/openai/v1'
 
     def as_dict(self):
         return {"label": self.label, "base_url": self.base_url, "model": self.model, "api_key_env": self.api_key_env, 'kind':self.kind,'engine':self.engine,'max_output_tokens':self.max_output_tokens}
@@ -98,6 +103,8 @@ def api_key(profile):
         except Exception:raise ValueError('Saved provider key could not be decrypted. Enter it again in API providers.') from None
     if profile.is_openai and not key:
         raise ValueError('OpenAI API key is missing. Enter one in API providers or set OPENAI_API_KEY, then restart the app.')
+    if profile.is_groq and not key:
+        raise ValueError('Groq API key is missing. Enter one in API providers or set GROQ_API_KEY, then restart the app.')
     if key and urlsplit(profile.base_url).scheme!='https' and urlsplit(profile.base_url).hostname not in ('localhost','127.0.0.1','::1'):
         raise ValueError('API keys require HTTPS for remote providers.')
     return key
@@ -131,6 +138,9 @@ def configure_request(profile, request, options):
         request['store']=False
         request['stream_options']={'include_usage':True}
         # Leave sampling defaults alone: some reasoning models reject temperature.
+    elif profile.is_groq:
+        request['max_completion_tokens']=profile.max_output_tokens
+        request['temperature']=options.get('temperature',.1)
     else:
         request['max_tokens']=profile.max_output_tokens
         request['temperature']=options.get('temperature',.1)

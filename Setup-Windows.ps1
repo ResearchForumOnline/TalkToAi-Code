@@ -14,11 +14,11 @@ if (-not (Test-Path -LiteralPath $appConfig)) {
     @{project=$projectRoot;local_model='qwen3.5:4b';local_large_model='qwen3:4b';server_model='qwen3-coder:30b';approval_policy='ask_remote';remote_enabled=$false;remote_pilot=$false;pc_pilot=$true;access_mode='project';auto_context=$true;show_tool_activity=$true} | ConvertTo-Json | Set-Content -LiteralPath $appConfig -Encoding UTF8
 }
 $shortcutShell=New-Object -ComObject WScript.Shell
-$shortcutPath=Join-Path ([Environment]::GetFolderPath('Desktop')) 'TalkToAi Code Preview.lnk'
+$shortcutPath=Join-Path ([Environment]::GetFolderPath('Desktop')) 'TalkToAi Code.lnk'
 $appShortcut=$shortcutShell.CreateShortcut($shortcutPath)
 $appShortcut.TargetPath=Join-Path $appRoot '.venv\Scripts\pythonw.exe'
 $appShortcut.Arguments='"'+(Join-Path $appRoot 'studio.py')+'"'
 $appShortcut.WorkingDirectory=$appRoot
-$appShortcut.Description='TalkToAi Code native desktop preview'
+$appShortcut.Description='TalkToAi Code native desktop assistant'
 $appShortcut.Save()
-Write-Host 'Installed. Open TalkToAi Code Preview from your desktop. Choose a project and local model, or link ZeroThink.'
+Write-Host 'Installed. Open TalkToAi Code from your desktop. Choose a project and local model, or link ZeroThink.'

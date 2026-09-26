@@ -15,9 +15,9 @@ class ProviderDialog(QDialog):
         self.owner=owner;self.profiles_path=profiles_path;self.original=None;self.probing=False
         self.setWindowTitle('Models & API providers');self.resize(880,min(780,owner.screen().availableGeometry().height()-80))
         layout=QVBoxLayout(self)
-        intro=QLabel('Local/open-weight models remain the default. OpenAI is optional and billed by OpenAI; it is not included with this app. API tasks send their conversation, project context and tool results to the selected provider. Auto never falls back to a paid API.')
+        intro=QLabel('Use local models or connect your own Groq, OpenAI or compatible API directly inside TalkToAi Code. API tasks send their conversation, project context and tool results to the selected provider; that provider’s charges and limits apply. Auto never falls back to a paid API.')
         intro.setWordWrap(True);layout.addWidget(intro)
-        self.preset=QComboBox();self.preset.addItems(['Choose a provider preset…','OpenAI API','Local compatible server (LM Studio)','Custom compatible API'])
+        self.preset=QComboBox();self.preset.addItems(['Choose a provider preset…','OpenAI API','Groq API','Local compatible server (LM Studio)','Custom compatible API'])
         self.preset.currentIndexChanged.connect(self.apply_preset);layout.addWidget(self.preset)
         row=QHBoxLayout();left=QVBoxLayout();left.addWidget(QLabel('Saved profiles'));self.listing=QListWidget();left.addWidget(self.listing);row.addLayout(left,1)
         scroll=QScrollArea();scroll.setWidgetResizable(True);form_widget=QWidget();form=QVBoxLayout(form_widget);scroll.setWidget(form_widget);row.addWidget(scroll,2);layout.addLayout(row,1)
@@ -31,7 +31,7 @@ class ProviderDialog(QDialog):
         self.remember=QCheckBox('Remember pasted key with Windows user encryption');self.remember.setEnabled(os.name=='nt');form.addWidget(self.remember)
         self.default_api=QCheckBox('Use this API profile by default when I next open the app');form.addWidget(self.default_api)
         fine=QLabel('Session-only keys disappear on exit. Remembered keys are encrypted separately from profile metadata. A task may make several model calls; the token setting is not a money/spending cap. A listed model is not proof that it supports tools.');fine.setWordWrap(True);fine.setObjectName('muted');form.addWidget(fine)
-        self.status=QLabel('Select OpenAI API above, add your own key and fetch available models.');self.status.setWordWrap(True);self.status.setTextFormat(Qt.PlainText);form.addWidget(self.status)
+        self.status=QLabel('Select a provider above, add your own key if required and fetch available models.');self.status.setWordWrap(True);self.status.setTextFormat(Qt.PlainText);form.addWidget(self.status)
         actions=QHBoxLayout();layout.addLayout(actions)
         self.buttons={}
         for label,callback in [('New',self.new_profile),('Save profile',self.save_profile),('Fetch models',self.probe),('Use selected API',self.use_profile),('Forget saved key',self.forget_key),('Remove',self.remove_profile),('Close',self.accept)]:
@@ -56,6 +56,9 @@ class ProviderDialog(QDialog):
             self.label.setText('OpenAI');self.url.setText('https://api.openai.com/v1');self.env.setText('OPENAI_API_KEY')
             self.status.setText('Your own OpenAI API account/key is required. Fetch models, then select one supporting Chat Completions and function tools. No paid request is made by saving.')
         elif index==2:
+            self.label.setText('Groq');self.url.setText('https://api.groq.com/openai/v1');self.env.setText('GROQ_API_KEY');self.model.setEditText('llama-3.3-70b-versatile')
+            self.status.setText('Use your own Groq API key from console.groq.com/keys. The suggested model supports tools; Fetch models refreshes your account’s available IDs. Save, then Use selected API to run Chat and Code tasks here. Saving and fetching models make no generation request.')
+        elif index==3:
             self.label.setText('Local compatible');self.url.setText('http://127.0.0.1:1234/v1');self.status.setText('Start your local compatible server, then fetch models. No cloud API is configured by this preset.')
         else:self.status.setText('Enter your endpoint and a model supporting streamed Chat Completions with function tools.')
 
