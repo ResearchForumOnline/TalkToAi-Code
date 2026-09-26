@@ -12,7 +12,7 @@ A reliability and research follow-up to 0.6.0.
 
 ## Verification
 
-Final Windows regression and native acceptance results are recorded below before release. Linux/macOS source smoke workflow is run separately. The 0.6.0 real server-model coding trial and speed comparison remain historical evidence; this patch does not claim a new model benchmark.
+249 automated checks passed on Windows with native-control acceptance enabled. The packaged Windows app passed browser interaction/screenshot, managed-process, batch-read, bundled-example, output-registration and image-attachment checks; GUI preview startup passed. Linux/macOS source installation, offscreen launch and portable regressions passed: https://github.com/ResearchForumOnline/TalkToAi-Code/actions/runs/36275584662 The 0.6.0 real server-model coding trial and speed comparison remain historical evidence; this patch does not claim a new model benchmark.
 
 ## Research
 
