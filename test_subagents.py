@@ -27,6 +27,18 @@ class WorkerTests(unittest.TestCase):
         results=[m['content'] for m in payloads[1]['messages'] if m['role']=='tool']
         self.assertIn('return 1',results)
         self.assertEqual(sum('PermissionError' in r for r in results),2)
+        # Blocked write/delegation attempts remain unresolved failures even
+        # when the worker returns useful read-only findings.
+        self.assertEqual(report['status'],'incomplete')
+
+    def test_worker_with_successful_read_and_no_failed_actions_completes(self):
+        responses=iter([
+            {'message':{'tool_calls':[{'function':{'name':'read_file','arguments':{'path':'game.py'}}}]},'done':True},
+            {'message':{'content':'The function returns one.'},'done':True},
+        ])
+        with tempfile.TemporaryDirectory() as folder,patch.object(core,'stream_chat',side_effect=lambda *_:iter([next(responses)])),patch.object(core,'model_supports_vision',return_value=False):
+            Path(folder,'game.py').write_text('return 1')
+            report=json.loads(core.run_subagent('fixture','fixture',folder,'Review game.py','reviewer',threading.Event(),lambda *_:None))
         self.assertEqual(report['status'],'completed')
 
     def test_cancelled_worker_never_calls_model(self):

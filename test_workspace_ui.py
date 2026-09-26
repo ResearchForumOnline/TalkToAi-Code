@@ -26,6 +26,20 @@ class WorkspaceUITests(unittest.TestCase):
     def tearDown(self):
         self.window.allow_quit=True;self.window.close();self.window.deleteLater();self.app.processEvents();self.stack.close()
 
+    def test_export_includes_saved_work_checkpoint(self):
+        w=self.window;w.task['project']=str(self.root)
+        w.task['goal_checkpoint']={'state':'paused','steps':32,'verification':{'status':'failed'}}
+        w.export_task()
+        text=(self.root/'.talktoai-code/reports'/(w.task['id']+'.md')).read_text(encoding='utf-8')
+        self.assertIn('Work checkpoint',text)
+        self.assertIn('"state": "paused"',text)
+        self.assertIn('"status": "failed"',text)
+
+    def test_diagnostics_event_displays_plain_text(self):
+        w=self.window;w.handle_event('runtime_diagnostics','AMD: missing model <literal>')
+        self.assertEqual(w.output.toPlainText(),'AMD: missing model <literal>')
+        self.assertEqual(w.right.currentIndex(),2)
+
     def test_targeting_selects_native_game_and_persists_amd_without_escalating_plan(self):
         w=self.window;w.task['project']=str(self.root)
         native=self.root/'blacksite_nightfall'/'native';native.mkdir(parents=True)

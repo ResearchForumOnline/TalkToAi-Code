@@ -4,6 +4,7 @@ from pathlib import Path
 import tempfile
 import threading
 import unittest
+from contextlib import contextmanager
 from unittest.mock import patch
 import research_journal as journal
 
@@ -65,6 +66,74 @@ class ResearchJournalTests(unittest.TestCase):
     def test_read_is_empty_without_creating_files(self):
         self.assertEqual(json.loads(journal.read_experiments(self.root))['entries'], [])
         self.assertFalse((self.root / '.talktoai-code').exists())
+
+    def test_verification_detects_same_size_edits_missing_and_matches_without_mutation(self):
+        for name in ('same.csv','edit.csv','gone.csv'):(self.root/name).write_bytes(b'original')
+        self.record(evidence_paths=json.dumps(['same.csv','edit.csv','gone.csv']))
+        path=self.root/'.talktoai-code'/'EXPERIMENTS.jsonl';original=path.read_bytes()
+        (self.root/'edit.csv').write_bytes(b'modified');(self.root/'gone.csv').unlink()
+        report=json.loads(journal.read_experiments(self.root,verify_evidence='true'))
+        check=report['entries'][0]['evidence_check']
+        self.assertEqual(check['status'],'needs_attention')
+        self.assertEqual([item['status'] for item in check['files']],['match','changed','missing'])
+        self.assertEqual(report['evidence_bytes_read'],16)
+        self.assertIn('+00:00',report['evidence_checked_utc'])
+        self.assertEqual(path.read_bytes(),original)
+
+    def test_default_read_never_rehashes_and_empty_evidence_is_not_verified(self):
+        self.record()
+        with patch.object(journal,'_hash_evidence',side_effect=AssertionError('must not hash')):
+            self.assertNotIn('evidence_check',json.loads(journal.read_experiments(self.root))['entries'][0])
+            checked=json.loads(journal.read_experiments(self.root,verify_evidence=True))
+        self.assertEqual(checked['entries'][0]['evidence_check']['status'],'no_evidence')
+
+    def test_verification_budget_is_cumulative_and_prefers_recent_entries(self):
+        (self.root/'result.csv').write_bytes(b'1234')
+        self.record(evidence_paths='["result.csv"]');self.record(evidence_paths='["result.csv"]')
+        with patch.object(journal,'MAX_VERIFY_BYTES',4):
+            checked=json.loads(journal.read_experiments(self.root,verify_evidence=True))
+        self.assertEqual(checked['evidence_bytes_read'],4)
+        self.assertEqual(checked['entries'][1]['evidence_check']['status'],'all_match')
+        self.assertEqual(checked['entries'][0]['evidence_check']['files'][0]['status'],'budget_exceeded')
+
+    def test_tampered_evidence_reference_cannot_read_private_files(self):
+        (self.root/'result.csv').write_bytes(b'1234');self.record(evidence_paths='["result.csv"]')
+        path=self.root/'.talktoai-code'/'EXPERIMENTS.jsonl'
+        entry=json.loads(path.read_text());entry['evidence'][0]['path']='credentials.json'
+        path.write_text(json.dumps(entry)+'\n');original=path.read_bytes()
+        with patch.object(journal,'_hash_evidence',side_effect=AssertionError('private path must be rejected')):
+            report=json.loads(journal.read_experiments(self.root,verify_evidence=True))
+        self.assertEqual(report['entries'][0]['evidence_check']['files'][0]['status'],'blocked')
+        self.assertEqual(path.read_bytes(),original)
+
+    def test_invalid_record_and_verification_argument_are_rejected_safely(self):
+        self.record();path=self.root/'.talktoai-code'/'EXPERIMENTS.jsonl'
+        entry=json.loads(path.read_text());entry['evidence']=[{'path':'result.csv','sha256':'fake','bytes':0}]
+        path.write_text(json.dumps(entry)+'\n')
+        checked=json.loads(journal.read_experiments(self.root,verify_evidence=True))
+        self.assertEqual(checked['entries'][0]['evidence_check']['files'][0]['status'],'invalid_record')
+        for value in ('yes',1,[],None):
+            with self.subTest(value=value),self.assertRaises(ValueError):journal.read_experiments(self.root,verify_evidence=value)
+
+    def test_file_changed_during_hash_is_not_accepted(self):
+        evidence=self.root/'result.csv';evidence.write_bytes(b'1234')
+        original_open=Path.open
+        @contextmanager
+        def mutate_after_read(path,*args,**kwargs):
+            with original_open(path,*args,**kwargs) as stream:yield stream
+            with original_open(path,'wb') as stream:stream.write(b'longer changed result')
+        with patch.object(Path,'open',mutate_after_read):
+            with self.assertRaisesRegex(ValueError,'changed while being read'):journal._hash_evidence(evidence)
+
+    def test_evidence_replaced_by_external_link_is_not_rehashed(self):
+        evidence=self.root/'result.csv';evidence.write_bytes(b'1234');self.record(evidence_paths='["result.csv"]')
+        with tempfile.TemporaryDirectory() as outside:
+            target=Path(outside)/'result.csv';target.write_bytes(b'1234');evidence.unlink()
+            try:evidence.symlink_to(target)
+            except OSError:self.skipTest('Symlink privilege unavailable')
+            with patch.object(journal,'_hash_evidence',side_effect=AssertionError('link must not be read')):
+                data=json.loads(journal.read_experiments(self.root,verify_evidence=True))
+            self.assertEqual(data['entries'][0]['evidence_check']['files'][0]['status'],'blocked')
 
     def test_failed_replace_preserves_journal_and_releases_lock(self):
         self.record()

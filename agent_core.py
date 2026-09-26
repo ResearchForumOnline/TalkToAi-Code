@@ -113,9 +113,10 @@ JOB_TOOLS = [
 ]
 OUTPUT_TOOLS = [schema('register_output', 'Add an existing project output/report/build file to the Evidence panel with size and SHA-256. This does not upload or execute it and does not verify quality.', {'path':'Project-relative file path','title':'Short human-readable output label'})]
 RESEARCH_TOOLS = [
-    schema('read_experiments','Read the recent project experiment journal. Entries are reported hypotheses/results, not independent proof.',{'limit':'1-20 recent entries, usually 5'}),
+    schema('read_experiments','Read the recent project experiment journal. Optional evidence checks compare current file bytes, not scientific validity. Entries are reported hypotheses/results, not independent proof.',{'limit':'1-20 recent entries, usually 5','verify_evidence':'Optional true/false; compare current evidence files with recorded hashes'}),
     schema('record_experiment','Record an experiment after inspecting its actual evidence. Does not run commands. Result and metrics remain reported claims; referenced local evidence files are independently hashed. Never invent measurements.',{'hypothesis':'Specific hypothesis tested','command':'Exact command attempted, or empty if none','result':'Observed result, including failures and uncertainty','metrics':'JSON object of finite numeric measurements, or {}','evidence_paths':'JSON array of existing project-relative evidence files, or []','next_step':'Next bounded experiment or unresolved question'}),
 ]
+RESEARCH_TOOLS[0]['function']['parameters']['required']=['limit']
 GAME_TOOLS = [
     schema('run_checks', 'Detect and run existing project checks: Godot import, pytest/unittest, npm/pnpm/yarn scripts, Rust or .NET tests. Stops on failure; does not install dependencies. Returns actual output.', {}),
     schema('launch_game', 'Launch the selected Godot project in a native game window.', {}),
@@ -499,7 +500,7 @@ class ProjectTools:
             raise InterruptedError('Task stopped.')
         if name=='read_experiments':
             from research_journal import read_experiments
-            return read_experiments(self.root,args.get('limit','5'))
+            return read_experiments(self.root,args.get('limit','5'),verify_evidence=args.get('verify_evidence',False))
         if name=='record_experiment':
             if not self.act:raise PermissionError('Recording experiments requires Act mode.')
             from research_journal import record_experiment
@@ -865,6 +866,7 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
     plan_review_requested=False
     continuations=0
     job_review_requested=False
+    error_review_requested=False
     failed_calls={}
     discovery_guard=DiscoveryProgressGuard(tools.root)
     verification=None
@@ -873,11 +875,12 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
     total_passes=3 if keep_going and not worker_mode and not improvement_mode else 1
     max_steps=rounds*total_passes
     progress_seen=set();pass_progress=0;pass_errors=False;pass_recovered_errors=False
-    def goal_checkpoint(state,steps):
+    def goal_checkpoint(state,steps,blockers=None):
         if keep_going and not worker_mode and not improvement_mode:
             emit('goal_checkpoint',{'pass':max(1,min(total_passes,(max(1,steps)-1)//rounds+1)),
                  'total_passes':total_passes,'steps':steps,'changes':len(tools.changes),
-                 'verification':verification,'state':state,'progress_observations':pass_progress})
+                 'verification':verification,'state':state,'progress_observations':pass_progress,
+                 'blockers':list(blockers or [])})
     for step in range(max_steps):
         if cancel.is_set():
             goal_checkpoint('stopped',step)
@@ -992,8 +995,28 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
                 goal_checkpoint('paused',step+1)
                 emit('status',f'Response finished Â· {len(unfinished)} task steps remain unresolved')
                 return
-            goal_checkpoint('completed' if not verification or verification['status']=='passed' else 'paused',step+1)
-            emit('status', 'Ready' if not verification or verification['status']=='passed' else 'Response finished Â· checks '+verification['status'])
+            # Prose cannot erase failed actions or pending process evidence.
+            # Permit one bounded recovery opportunity, then remain unfinished.
+            running_jobs=list(tools.jobs.running()) if tools.jobs else []
+            if keep_going and act and not worker_mode and not improvement_mode and pass_errors and not error_review_requested and step+1<max_steps:
+                error_review_requested=True
+                messages.append({'role':'user','_automation_nudge':True,'content':
+                    'Before finishing: one or more tool actions failed and recovery is not verified. '+
+                    'Inspect the recorded errors, repair the task-related cause where practical, and run a relevant check. '+
+                    'Do not repeat an unchanged failed action. If blocked, explain the exact blocker and remaining work; '+
+                    'do not describe the task as completed.'})
+                emit('status','Reviewing unresolved tool failures before finishing')
+                continue
+            blockers=[]
+            if running_jobs:blockers.append('Owned processes still running: '+', '.join(running_jobs))
+            if pass_errors:blockers.append('Tool failures remain without verified recovery')
+            if verification and verification['status']!='passed':blockers.append('checks '+verification['status'])
+            if blockers:
+                goal_checkpoint('paused',step+1,blockers)
+                emit('status','Response finished - task unfinished: '+'; '.join(blockers))
+                return
+            goal_checkpoint('completed',step+1)
+            emit('status','Ready')
             return
         for call in calls:
             if cancel.is_set():

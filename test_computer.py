@@ -21,46 +21,88 @@ class ComputerTests(unittest.TestCase):
         self.cancel=threading.Event();self.engine=ComputerTools('.',self.cancel,self.desktop)
         self.engine.execute('windows')
 
+    def inspect(self):
+        result=self.engine.execute('inspect','123')
+        controls=json.loads(result)['controls']
+        self.control_id=controls[0]['id'] if controls else None
+        return result
+
     def test_inspect_then_fill_requires_reobservation(self):
-        result=json.loads(self.engine.execute('inspect','123'))
+        result=json.loads(self.inspect())
         self.assertEqual(result['controls'][0]['name'],'Player name')
-        self.engine.execute('fill','0','Builder')
+        self.engine.execute('fill',self.control_id,'Builder')
         self.control.set_edit_text.assert_called_once_with('Builder')
-        with self.assertRaises(ValueError):self.engine.execute('click','0')
+        with self.assertRaises(ValueError):self.engine.execute('click',self.control_id)
 
     def test_cancel_prevents_input(self):
-        self.engine.execute('inspect','123');self.cancel.set()
-        with self.assertRaises(InterruptedError):self.engine.execute('click','0')
+        self.inspect();self.cancel.set()
+        with self.assertRaises(InterruptedError):self.engine.execute('click',self.control_id)
         self.control.click_input.assert_not_called()
 
     def test_password_controls_not_exposed(self):
         self.control.element_info.element.CurrentIsPassword=True
-        self.assertEqual(json.loads(self.engine.execute('inspect','123'))['controls'],[])
+        self.assertEqual(json.loads(self.inspect())['controls'],[])
 
     def test_requires_observed_control(self):
-        self.engine.execute('inspect','123')
+        self.inspect()
         with self.assertRaises(ValueError):self.engine.execute('click','99')
         self.control.click_input.assert_not_called()
 
     def test_select_and_wait_are_available(self):
-        self.engine.execute('inspect','123');self.engine.execute('select','0','Windowed')
+        self.inspect();self.engine.execute('select',self.control_id,'Windowed')
         self.control.select.assert_called_once_with('Windowed')
         self.assertIn('Waited',self.engine.execute('wait','','0'))
 
     def test_click_prefers_accessibility_invoke(self):
-        self.engine.execute('inspect','123');self.engine.execute('click','0')
+        self.inspect();self.engine.execute('click',self.control_id)
         self.control.invoke.assert_called_once_with()
         self.control.click_input.assert_not_called()
 
     def test_click_only_falls_back_for_missing_invoke_pattern(self):
         from pywinauto.uia_defines import NoPatternInterfaceError
         self.control.invoke.side_effect=NoPatternInterfaceError()
-        self.engine.execute('inspect','123');self.engine.execute('click','0')
+        self.inspect();self.engine.execute('click',self.control_id)
         self.window.set_focus.assert_called_once_with()
         self.control.click_input.assert_called_once_with()
 
     def test_unknown_invoke_failure_never_repeats_input(self):
         self.control.invoke.side_effect=RuntimeError('Provider failed after an uncertain action')
-        self.engine.execute('inspect','123')
-        with self.assertRaises(RuntimeError):self.engine.execute('click','0')
+        self.inspect()
+        with self.assertRaises(RuntimeError):self.engine.execute('click',self.control_id)
         self.control.click_input.assert_not_called()
+
+    def test_previous_snapshot_id_cannot_target_new_control(self):
+        self.inspect();old_id=self.control_id
+        self.inspect()
+        self.assertNotEqual(old_id,self.control_id)
+        with self.assertRaisesRegex(ValueError,'latest inspect'):
+            self.engine.execute('click',old_id)
+        self.control.invoke.assert_not_called()
+        self.engine.execute('click',self.control_id)
+        self.control.invoke.assert_called_once_with()
+
+    def test_disabled_control_reported_and_input_rejected(self):
+        self.control.is_enabled.return_value=False
+        result=json.loads(self.inspect())
+        self.assertFalse(result['controls'][0]['enabled'])
+        with self.assertRaisesRegex(ValueError,'hidden or disabled'):
+            self.engine.execute('fill',self.control_id,'Builder')
+        self.control.set_edit_text.assert_not_called()
+
+    def test_control_hidden_after_inspect_is_rejected(self):
+        self.inspect();self.control.is_visible.return_value=False
+        with self.assertRaisesRegex(ValueError,'hidden or disabled'):
+            self.engine.execute('click',self.control_id)
+        self.control.invoke.assert_not_called()
+
+    def test_control_changed_to_password_after_inspect_is_rejected(self):
+        self.inspect();self.control.element_info.element.CurrentIsPassword=True
+        with self.assertRaisesRegex(ValueError,'password field'):
+            self.engine.execute('fill',self.control_id,'Builder')
+        self.control.set_edit_text.assert_not_called()
+
+    def test_failed_control_inspection_does_not_leave_actionable_id(self):
+        self.control.rectangle.side_effect=RuntimeError('Control disappeared')
+        result=json.loads(self.inspect())
+        self.assertEqual(result['controls'],[])
+        self.assertEqual(self.engine.controls,{})

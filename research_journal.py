@@ -12,6 +12,7 @@ MAX_BYTES = 1024 * 1024
 MAX_ENTRIES = 200
 MAX_ENTRY_BYTES = 12000
 MAX_EVIDENCE_BYTES = 4 * 1024 * 1024
+MAX_VERIFY_BYTES = 32 * 1024 * 1024
 PRIVATE_PARTS = {'.git', '.ssh', '.aws', '.azure', 'private', 'secrets', 'credentials'}
 PRIVATE_NAMES = {'credentials.json', 'token.json', 'tokens.json', 'config.json', 'providers.json', 'studio.json', 'connections.json', 'id_rsa', 'id_ed25519'}
 
@@ -64,6 +65,43 @@ def _metrics(value):
     return result
 
 
+def _evidence_path(root, name):
+    _text(name, 'Evidence path', 300, True)
+    relative = Path(name)
+    parts = {p.casefold() for p in relative.parts}
+    base = relative.name.casefold()
+    if relative.is_absolute() or '..' in relative.parts or parts & PRIVATE_PARTS or base in PRIVATE_NAMES or base.startswith('.env') or any(word in base for word in ('password', 'credential', 'private_key', 'secret')) or relative.suffix.casefold() in {'.pem', '.key', '.pfx', '.dpapi'}:
+        raise ValueError('Use a non-sensitive evidence file inside the project.')
+    path = root / relative
+    if not path.resolve().is_relative_to(root) or any(p.is_symlink() for p in (path, *list(path.parents)[:len(relative.parts)])):
+        raise ValueError('Evidence files must stay in the project without links.')
+    return relative, path
+
+
+def _hash_evidence(path, budget=None):
+    before = path.stat()
+    if not path.is_file() or before.st_size > MAX_EVIDENCE_BYTES:
+        raise ValueError('Evidence must be an existing file of at most 4 MiB.')
+    if budget is not None and before.st_size > budget[0]:
+        raise ValueError('Verification byte budget exhausted.')
+    digest = hashlib.sha256(); size = 0
+    with path.open('rb') as stream:
+        while True:
+            remaining=min(65536, MAX_EVIDENCE_BYTES-size, budget[0] if budget is not None else 65536)
+            if remaining <= 0:break
+            chunk=stream.read(remaining)
+            if not chunk:break
+            size += len(chunk)
+            if budget is not None:
+                budget[0] -= len(chunk)
+            digest.update(chunk)
+    after = path.stat()
+    signature = lambda item: (item.st_dev, item.st_ino, item.st_size, item.st_mtime_ns)
+    if signature(before) != signature(after) or size != after.st_size:
+        raise ValueError('Evidence changed while being read; retry with a stable file.')
+    return size, digest.hexdigest()
+
+
 def _evidence(root, names):
     if isinstance(names, str) and len(names) > 4000:
         raise ValueError('Evidence path JSON exceeds 4,000 characters.')
@@ -72,25 +110,11 @@ def _evidence(root, names):
         raise ValueError('Provide at most 8 project-relative evidence file paths.')
     evidence = []
     for name in names:
-        _text(name, 'Evidence path', 300, True)
-        relative = Path(name)
-        parts = {p.casefold() for p in relative.parts}
-        base = relative.name.casefold()
-        if relative.is_absolute() or '..' in relative.parts or parts & PRIVATE_PARTS or base in PRIVATE_NAMES or base.startswith('.env') or any(word in base for word in ('password', 'credential', 'private_key', 'secret')) or relative.suffix.casefold() in {'.pem', '.key', '.pfx', '.dpapi'}:
-            raise ValueError('Use a non-sensitive evidence file inside the project.')
-        path = root / relative
-        if not path.resolve().is_relative_to(root) or any(p.is_symlink() for p in (path, *list(path.parents)[:len(relative.parts)])):
-            raise ValueError('Evidence files must stay in the project without links.')
+        relative, path = _evidence_path(root, name)
         if not path.is_file() or path.stat().st_size > MAX_EVIDENCE_BYTES:
             raise ValueError('Evidence must be an existing file of at most 4 MiB.')
-        digest = hashlib.sha256(); size = 0
-        with path.open('rb') as stream:
-            while chunk := stream.read(65536):
-                size += len(chunk)
-                if size > MAX_EVIDENCE_BYTES:
-                    raise ValueError('Evidence grew beyond the 4 MiB limit.')
-                digest.update(chunk)
-        evidence.append({'path': relative.as_posix(), 'bytes': size, 'sha256': digest.hexdigest(), 'status': 'file_bytes_hashed'})
+        size, digest = _hash_evidence(path)
+        evidence.append({'path': relative.as_posix(), 'bytes': size, 'sha256': digest, 'status': 'file_bytes_hashed'})
     return evidence
 
 
@@ -134,8 +158,40 @@ def record_experiment(project, hypothesis, command, result, metrics='{}', eviden
         lock.unlink(missing_ok=True)
 
 
-def read_experiments(project, limit='5'):
-    _, path = _journal(project)
+def _verify_record(root, entry, budget):
+    records = entry.get('evidence', [])
+    if not isinstance(records, list) or len(records) > 8:
+        return {'status': 'invalid_record', 'files': []}
+    results = []
+    for record in records:
+        if (not isinstance(record, dict) or not isinstance(record.get('path'), str)
+                or not isinstance(record.get('sha256'), str) or len(record['sha256']) != 64
+                or any(char not in '0123456789abcdef' for char in record['sha256'])
+                or type(record.get('bytes')) is not int or not 0 <= record['bytes'] <= MAX_EVIDENCE_BYTES):
+            results.append({'status':'invalid_record'});continue
+        item = {'path':record['path'][:300]};results.append(item)
+        try:
+            _, target = _evidence_path(root, record['path'])
+        except (ValueError, OSError):
+            item['status']='blocked';continue
+        try:
+            size, digest = _hash_evidence(target, budget)
+            item.update(status='match' if (size == record['bytes'] and digest == record['sha256']) else 'changed',
+                        current_bytes=size, current_sha256=digest)
+        except FileNotFoundError:item['status']='missing'
+        except ValueError as exc:
+            item['status']='budget_exceeded' if 'budget' in str(exc) else 'unverifiable'
+            item['reason']=str(exc)
+        except OSError:item['status']='unreadable'
+    return {'status': 'no_evidence' if not results else 'all_match' if all(item['status']=='match' for item in results) else 'needs_attention', 'files':results}
+
+
+def read_experiments(project, limit='5', verify_evidence=False):
+    root, path = _journal(project)
+    if isinstance(verify_evidence,str):
+        if verify_evidence.lower() not in ('true','false'):raise ValueError('verify_evidence must be true or false.')
+        verify_evidence=verify_evidence.lower()=='true'
+    if not isinstance(verify_evidence,bool):raise ValueError('verify_evidence must be true or false.')
     limit = int(limit)
     if not 1 <= limit <= 20:
         raise ValueError('Read 1–20 recent experiment entries.')
@@ -146,5 +202,12 @@ def read_experiments(project, limit='5'):
         if size + len(item) > 16000:
             break
         selected.insert(0, entry); size += len(item)
-    return json.dumps({'total_entries': len(entries), 'entries': selected, 'omitted_entries': len(entries) - len(selected),
-                       'note': 'Historical reported claims; file hashes are not proof of scientific correctness. Recheck current evidence before continuing.'}, ensure_ascii=False)
+    budget=[MAX_VERIFY_BYTES]
+    if verify_evidence:
+        for entry in reversed(selected):entry['evidence_check']=_verify_record(root,entry,budget)
+        while selected and len(json.dumps(selected,ensure_ascii=False))>32000:selected.pop(0)
+    response={'total_entries': len(entries), 'entries': selected, 'omitted_entries': len(entries) - len(selected),
+              'note': 'Historical reported claims; matching current file hashes establish byte consistency only, not scientific correctness, journal authenticity, or successful command execution.'}
+    if verify_evidence:
+        response.update(evidence_checked_utc=datetime.now(timezone.utc).isoformat(),evidence_bytes_read=MAX_VERIFY_BYTES-budget[0])
+    return json.dumps(response, ensure_ascii=False)

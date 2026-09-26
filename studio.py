@@ -1012,6 +1012,8 @@ class Studio(QMainWindow):
         elif kind=='change':self.task['changes'].append(data);self.persist();self.refresh_changes()
         elif kind=='status':self.status.setText(data)
         elif kind=='health':self.health_label.setText(data)
+        elif kind=='runtime_diagnostics':
+            self.output.setPlainText(data);self.right.setCurrentIndex(2);self.status.setText('Model diagnostics complete; see Tools for recovery steps')
         elif kind=='mail_status':self.mail_status_label.setText(data)
         elif kind=='mail_connect_done':
             self.gmail_button.setEnabled(True);self.zmail_button.setEnabled(True)
@@ -1491,12 +1493,26 @@ Use an available local or server model, stop a task, or steer it into a smaller 
 
 The compact model is intentionally kept as the weak-CPU fallback. TalkToAi Code never pulls a large model merely by opening this panel: downloads happen only when you choose that route and send a task, with progress shown in the status line.
 ''');layout.addWidget(info)
+        self.button('Diagnose local / server connection',self.diagnose_models,layout)
         row=QHBoxLayout();self.button('Use installed local model…',self.select_installed_model,row)
         def compare():dialog.accept();self.compare_installed_models()
         compare_button=self.button('Compare installed coding models',compare,row)
         compare_button.setToolTip('Runs two short checks on the configured server and large local model. Uses your own runtimes, takes up to four minutes per route, and can be stopped. Does not download models or change your selection.')
         self.button('Close',dialog.accept,row);layout.addLayout(row)
         dialog.exec()
+
+    def diagnose_models(self):
+        if getattr(self,'diagnostics_running',False):return
+        self.diagnostics_running=True;config=dict(self.config)
+        self.status.setText('Checking local and server inventories…')
+        def work():
+            try:
+                from runtime_diagnostics import report
+                self.bus.event.emit('runtime_diagnostics',report(config))
+            except Exception:
+                self.bus.event.emit('runtime_diagnostics','Model diagnostics could not finish. Check Ollama and your server connection, then retry.')
+            finally:self.diagnostics_running=False
+        threading.Thread(target=work,daemon=True).start()
 
     def compare_installed_models(self):
         if self.busy:return
@@ -1533,6 +1549,9 @@ The compact model is intentionally kept as the weak-CPU fallback. TalkToAi Code 
         for message in self.task['messages']:
             if message['role'] in ('user','assistant') and message.get('content'):
                 lines+=['## '+message['role'].title(),'',message['content'],'']
+        checkpoint=self.task.get('goal_checkpoint')
+        if checkpoint:
+            lines+=['## Work checkpoint','', 'Execution state and checks recorded by the app; not an independent quality assessment.', '```json', json.dumps(checkpoint,indent=2,ensure_ascii=False), '```','']
         lines+=['## File changes','']
         lines += ['- '+change['path']+(' (restored)' if change.get('restored') else '') for change in self.task['changes']]
         lines+=['','## Tool evidence','']

@@ -51,6 +51,42 @@ Example tool arguments:
 
 These are example values, not measurements produced by TalkToAi Code.
 
+## Recheck evidence before resuming
+
+Ask the agent to read recent experiments with `verify_evidence` enabled:
+
+```json
+{"limit":"5","verify_evidence":"true"}
+```
+
+The read-only check rehashes the referenced project files and adds a temporary
+`evidence_check` to each returned entry. It never modifies the journal, executes
+the recorded command, or updates the old hash to hide a changed result. The
+response includes the check's UTC time and the number of evidence bytes read.
+
+| File status | Meaning and next step |
+| --- | --- |
+| `match` | Current size and SHA256 match the recorded file bytes. |
+| `changed` | The file has different bytes; inspect the new result or rerun the original experiment before relying on it. |
+| `missing` | The recorded file is absent; restore the original artifact or repeat the experiment. |
+| `blocked` | The recorded path is outside the project, sensitive, or a link. It was not read. |
+| `invalid_record` | The record lacks a valid path, size or hash. Preserve and repair the journal entry. |
+| `budget_exceeded` | This call reached its bounded verification budget; request fewer recent entries. |
+| `unreadable` / `unverifiable` | File permissions, size limits or a file changing during the read prevented a reliable comparison. |
+
+An entry is `all_match` only when every attached evidence file matches. Entries
+with no attachments are `no_evidence`; missing evidence never counts as a pass.
+Reads check at most 32 MiB across the selected entries, prioritizing the most
+recent records, with the existing 4 MiB per-file cap. Returned checked entries
+are limited to 32,000 characters. Ordinary reads keep their existing smaller
+response limit and do not read evidence contents unless explicitly requested.
+
+Matching hashes support reproduction by identifying unchanged artifacts. They
+do not validate scientific conclusions, authenticate a journal that someone
+could have edited, prove a command executed, or establish measurement quality.
+Preserve the command, environment, inputs, seed and independent checks needed
+to reproduce the actual result.
+
 ## Why this workflow
 
 [Anthropic's 25 September 2026 account](https://www.anthropic.com/research/yes-claude-can-do-nine-loops)

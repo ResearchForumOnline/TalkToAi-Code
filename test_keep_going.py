@@ -3,7 +3,7 @@ from pathlib import Path
 import tempfile
 import threading
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import agent_core as core
 
@@ -15,8 +15,10 @@ def response(name=None,args=None,text=''):
 
 
 class KeepGoingTests(unittest.TestCase):
-    def fixture(self,sequence,rounds=2,keep=True,cancel_at=None,worker=False,improvement=False,check_results=None):
+    def fixture(self,sequence,rounds=2,keep=True,cancel_at=None,worker=False,improvement=False,check_results=None,running_jobs=None):
         events=[];payloads=[];cancel=threading.Event()
+        jobs=Mock() if running_jobs is not None else None
+        if jobs is not None:jobs.running.return_value=running_jobs
         checks=iter(check_results) if check_results is not None else None
         original_execute=core.ProjectTools.execute
         def execute(tools,name,args):
@@ -38,7 +40,7 @@ class KeepGoingTests(unittest.TestCase):
                         if tools.jobs:tools.jobs.close()
                 else:
                     core.run_agent('fixture','fixture',[{'role':'user','content':'Inspect the requested source files'}],folder,True,cancel,
-                                   lambda k,v:events.append((k,v)),rounds=rounds,keep_going=keep)
+                                   lambda k,v:events.append((k,v)),rounds=rounds,keep_going=keep,jobs=jobs)
         return payloads,events
 
     def test_progress_continues_same_history_until_third_pass(self):
@@ -101,6 +103,41 @@ class KeepGoingTests(unittest.TestCase):
         checkpoint=[v for k,v in events if k=='goal_checkpoint'][-1]
         self.assertEqual(checkpoint['state'],'paused')
         self.assertEqual(checkpoint['verification']['status'],'stale')
+
+    def test_research_evidence_check_is_optional_in_provider_schema(self):
+        parameters=core.RESEARCH_TOOLS[0]['function']['parameters']
+        self.assertIn('verify_evidence',parameters['properties'])
+        self.assertNotIn('verify_evidence',parameters['required'])
+
+    def test_final_prose_cannot_hide_failed_tool_action(self):
+        sequence=[response('read_file',{'path':'missing.txt'}),response(text='Everything is complete.')]
+        payloads,events=self.fixture(sequence,rounds=8)
+        self.assertEqual(len(payloads),3)
+        checkpoint=[v for k,v in events if k=='goal_checkpoint'][-1]
+        self.assertEqual(checkpoint['state'],'paused')
+        self.assertIn('Tool failures remain without verified recovery',checkpoint['blockers'])
+        self.assertFalse(any(k=='status' and v=='Ready' for k,v in events))
+        self.assertIn('recovery is not verified',payloads[-1]['messages'][-1]['content'])
+
+    def test_completion_review_can_recover_failed_check(self):
+        sequence=[response('run_checks',{}),response(text='Done.'),response('run_checks',{}),response(text='Checks pass now.')]
+        payloads,events=self.fixture(sequence,rounds=8,check_results=['Exit 1\nFailed','Exit 0\nPassed'])
+        self.assertEqual(len(payloads),4)
+        self.assertEqual([v['state'] for k,v in events if k=='goal_checkpoint'],['completed'])
+        self.assertEqual([v for k,v in events if k=='status'][-1],'Ready')
+
+    def test_final_response_with_owned_jobs_is_unfinished_after_one_review(self):
+        payloads,events=self.fixture([response(text='The build is complete.')],rounds=8,running_jobs=['job-123'])
+        self.assertEqual(len(payloads),2)
+        checkpoint=[v for k,v in events if k=='goal_checkpoint'][-1]
+        self.assertEqual(checkpoint['state'],'paused')
+        self.assertIn('Owned processes still running: job-123',checkpoint['blockers'])
+        self.assertFalse(any(k=='status' and v=='Ready' for k,v in events))
+
+    def test_last_available_step_still_cannot_claim_failed_task_completed(self):
+        payloads,events=self.fixture([response('read_file',{'path':'missing.txt'}),response(text='Done.')],rounds=2,keep=False)
+        self.assertEqual(len(payloads),2)
+        self.assertIn('task unfinished',[v for k,v in events if k=='status'][-1])
 
     def test_complete_response_finishes_without_spending_remaining_passes(self):
         payloads,events=self.fixture([response(text='Finished the requested explanation.')])

@@ -32,21 +32,23 @@ class ComputerTools:
             if str(target) not in self.handles:raise ValueError('List windows first, then inspect a returned handle.')
             self.observed=0;self.controls={}
             self.window=self.desktop.window(handle=int(target)).wrapper_object()
-            entries=[]
+            entries=[];snapshot=uuid.uuid4().hex[:12]
             for control in self.window.descendants()[:250]:
                 try:
                     if not control.is_visible():continue
                     info=control.element_info
                     if info.element.CurrentIsPassword:continue
-                    key=str(len(entries));self.controls[key]=control
+                    key=f'{snapshot}:{len(entries)}'
                     rect=control.rectangle()
                     entries.append({'id':key,'name':control.window_text()[:300],'type':info.control_type,
+                                    'enabled':bool(control.is_enabled()),
                                     'bounds':[rect.left,rect.top,rect.right,rect.bottom]})
+                    self.controls[key]=control
                 except Exception:continue
             self.observed=time.monotonic()
             window_rect=self.window.rectangle()
             return json.dumps({'title':self.window.window_text(),'window_bounds':[window_rect.left,window_rect.top,window_rect.right,window_rect.bottom],'controls':entries,
-                               'instruction':'Use a returned control id. Input consumes this snapshot. Inspect again after each action. Stop button cancels further actions.'})
+                               'instruction':'Use a returned control id from this snapshot; older ids are invalid. Input consumes this snapshot. Inspect again after each action. Stop button cancels further actions.'})
         if action=='wait':
             seconds=float(value or '1')
             if not 0 <= seconds <= 10:raise ValueError('Computer wait must be between 0 and 10 seconds.')
@@ -64,6 +66,13 @@ class ComputerTools:
         if action in ('click','fill','select','focus') and control is None:raise ValueError('Use a control id from the latest inspect result.')
         self.observed=0
         if self.cancel.is_set():raise InterruptedError('Computer control stopped.')
+        if action in ('click','fill','select','focus'):
+            # UI providers can change between observation and delivery. Do not
+            # turn a stale target into an input to an inaccessible/replaced field.
+            if not control.is_visible() or not control.is_enabled():
+                raise ValueError('The observed control is now hidden or disabled. Inspect again before acting.')
+            if control.element_info.element.CurrentIsPassword:
+                raise ValueError('The observed control is now a password field. Inspect again before acting.')
         if action=='click':
             # Invoke the observed accessibility control directly when supported.
             # This avoids DPI/occlusion problems with physical coordinates.
