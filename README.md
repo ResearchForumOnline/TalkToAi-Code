@@ -1,6 +1,14 @@
 # TalkToAi Code — Your projects. Your AI. Your workspace.
 
-> **Latest release: 0.10.0** — [Download the Windows installer](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v0.10.0/TalkToAi-Code-0.10.0-Windows-Setup.exe) · [View release notes and checksums](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/tag/v0.10.0)
+> **Latest release: 0.11.0** — [Download the Windows installer](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v0.11.0/TalkToAi-Code-0.11.0-Windows-Setup.exe) · [View release notes and checksums](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/tag/v0.11.0)
+
+### 0.11.0: a project workbench with reusable evidence
+
+Open **More → Project workbench** for a Task view of the current checkpoint, Playbooks with project-owned workflow steps and rechecked evidence files, and Experiments that compare reported baseline and candidate metrics under recorded conditions. Playbooks are guidance for the current request, not permission to run commands. Experiment comparisons show missing or differing dataset, split, seed, environment, controls, budget, metric definition and sample size; matching file hashes establish byte consistency, not a scientific result. The research journal can also record specific claims alongside source URLs and their reported support or uncertainty.
+
+The run now observes bounded source-file changes made through shell commands as well as the file editor and marks checks stale when source changes after verification. The scope and completeness of each scan are shown; files outside it need separate review. **Skynet Mode** keeps a frozen baseline and check files, runs detected checks in a disposable source copy, and offers one to five candidate iterations. Without a project evaluator, it retains the latest candidate that passed checks. With a frozen `SKYNET-EVALUATOR.json` contract, it selects only a checked candidate whose finite metric strictly improves on the baseline or previous best. Checks-only selection is not a measured quality gain; the original project is not replaced. Fresh Code conversations select Keep going with a two-hour ceiling; saved choices stay as they are. See [0.11.0 release notes](docs/RELEASE-0.11.0.md) and [Project playbooks](docs/PROJECT-PLAYBOOKS.md).
+
+In a disposable live coding fixture, the configured 30B server model ran for 258.3 seconds and reached eight tool steps. It changed one source file to fix an inclusive-bound calculation, then two unchanged tests passed and it saved a playbook. The task paused at the eight-step limit. The runtime reported zero bytes of model VRAM allocation; this fixture does not establish GPU speed, game-scale capability, or general coding reliability.
 
 ### 0.10.0: clearer live work and longer coding sessions
 
@@ -52,6 +60,16 @@ Skynet candidates now preserve supported Godot and Unity source and small assets
 ![TalkToAi Code 0.4.1 with Chat and Code spaces](assets/screens/studio-project-workflow-060.png)
 
 The workspace above is rendered from the actual app with a disposable profile; it is not a model-performance result. Earlier Windows screenshots below show real user conversations.
+
+### Project workbench in 0.11.0
+
+![TalkToAi Code 0.11.0 Project workbench comparing two reported experiment records](assets/screens/project-workbench-0110.png)
+
+The actual 0.11.0 Experiments interface is shown with example fixture records. The comparison illustrates reported arithmetic and evidence-file checks; it is not a model-performance or scientific result.
+
+![TalkToAi Code 0.11.0 Playbooks view with reusable steps and evidence status](assets/screens/project-playbooks-0110.png)
+
+The actual 0.11.0 Playbooks interface is shown with an example fixture workflow. The steps and matching file hash illustrate the view; they do not prove that an agent completed that workflow.
 
 The app is built around a simple loop: describe the outcome, let the agent inspect and act, steer it when needed, then review evidence.
 
@@ -164,10 +182,10 @@ In Act mode, try: **“Connect to my website server using my existing SSH config
 
 ### Platform installers
 
-- **Windows:** use the [0.10.0 Windows installer](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v0.10.0/TalkToAi-Code-0.10.0-Windows-Setup.exe). This is an unsigned desktop installer, not a Microsoft Store package. The standard per-user installer creates Start Menu/Desktop shortcuts and an uninstaller, and preserves local task data during upgrades.
+- **Windows:** use the [0.11.0 Windows installer](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v0.11.0/TalkToAi-Code-0.11.0-Windows-Setup.exe). This is an unsigned desktop installer, not a Microsoft Store package. The standard per-user installer creates Start Menu/Desktop shortcuts and an uninstaller, and preserves local task data during upgrades.
 - **Portable Windows:** use the [0.1.3 portable ZIP](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v0.1.3-preview/TalkToAi-Code-0.1.3-Windows-Portable.zip) when you do not want an installer.
-- **Linux:** install Python 3.10+ with `venv`, extract the [0.10.0 source ZIP](https://github.com/ResearchForumOnline/TalkToAi-Code/archive/refs/tags/v0.10.0.zip) outside your app-data folder, and run `bash install-linux.sh` from that folder. This creates a user-local virtual environment, launcher and desktop entry. The app uses `~/.local/state/TalkToAiCode` or `XDG_STATE_HOME` for chats/settings. Install Ollama separately and pull a model before selecting Auto. A Secret Service desktop keyring is needed to remember API keys or OAuth tokens.
-- **macOS:** install Python 3.10+, extract the [0.10.0 source ZIP](https://github.com/ResearchForumOnline/TalkToAi-Code/archive/refs/tags/v0.10.0.zip), and run `bash install-macos.sh` from that folder. This creates a local virtual environment, `~/bin/talktoai-code` launcher, and `~/Applications/TalkToAi Code.app` launcher. Chats/settings use `~/Library/Application Support/TalkToAiCode`. Install Ollama separately and pull a model. Remembered keys and account tokens use macOS Keychain.
+- **Linux:** install Python 3.10+ with `venv`, extract the [0.11.0 source ZIP](https://github.com/ResearchForumOnline/TalkToAi-Code/archive/refs/tags/v0.11.0.zip) outside your app-data folder, and run `bash install-linux.sh` from that folder. This creates a user-local virtual environment, launcher and desktop entry. The app uses `~/.local/state/TalkToAiCode` or `XDG_STATE_HOME` for chats/settings. Install Ollama separately and pull a model before selecting Auto. A Secret Service desktop keyring is needed to remember API keys or OAuth tokens.
+- **macOS:** install Python 3.10+, extract the [0.11.0 source ZIP](https://github.com/ResearchForumOnline/TalkToAi-Code/archive/refs/tags/v0.11.0.zip), and run `bash install-macos.sh` from that folder. This creates a local virtual environment, `~/bin/talktoai-code` launcher, and `~/Applications/TalkToAi Code.app` launcher. Chats/settings use `~/Library/Application Support/TalkToAiCode`. Install Ollama separately and pull a model. Remembered keys and account tokens use macOS Keychain.
 
 Windows has a packaged x64 installer. Linux and macOS use source installers with per-user virtual environments; the [native Ubuntu and macOS install-and-launch smoke run](https://github.com/ResearchForumOnline/TalkToAi-Code/actions/runs/36245686313) passed using an offscreen GUI on clean GitHub runners. An interactive human workflow has not been confirmed on those hosts. Browser research, Chat/Code, local Ollama, project edits, shell commands, jobs and SSH use portable code paths. Windows accessibility PC Pilot and Windows startup shortcuts are Windows-only. Linux browser operation may need desktop libraries for Playwright Chromium; if its browser download fails, install them and rerun `python -m playwright install chromium` inside the app virtual environment.
 

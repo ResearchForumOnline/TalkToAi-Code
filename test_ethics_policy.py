@@ -78,9 +78,9 @@ class EthicsPolicyTests(unittest.TestCase):
             for name in ('studio.py','ethics_policy.py','agent_core.py'):(root/name).write_text('# fixture')
             def change(*args,**kwargs):
                 (Path(args[3])/'ethics_policy.py').write_text('# altered')
-            with patch.object(skynet_mode.tempfile,'mkdtemp',return_value=target),patch.object(skynet_mode,'_run_agent',side_effect=change),patch.object(skynet_mode.ProjectTools,'execute') as execute:
+            with patch.object(skynet_mode,'_create_candidate',return_value=Path(target)),patch.object(skynet_mode,'_run_agent',side_effect=change),patch.object(skynet_mode.ProjectTools,'execute') as execute:
                 result=skynet_mode.run_improvement('fixture','fixture',root,'Improve app',threading.Event(),lambda *args:None)
-            execute.assert_not_called()
+            self.assertEqual(execute.call_count,1)  # Baseline only; no altered candidate check.
             self.assertEqual(result['policy_status'],'rejected')
             self.assertEqual(result['rejected_policy_changes'],['ethics_policy.py'])
             self.assertEqual(result['iterations'][0]['checks']['status'],'blocked')
@@ -94,7 +94,7 @@ class EthicsPolicyTests(unittest.TestCase):
             def checks(*args,**kwargs):
                 (Path(target)/'ethics_policy.py').write_text('# altered by test command')
                 return 'Exit 0\nPassed fixture checks'
-            with patch.object(skynet_mode.tempfile,'mkdtemp',return_value=target),patch.object(skynet_mode,'_run_agent',side_effect=change),patch.object(skynet_mode.ProjectTools,'execute',side_effect=checks):
+            with patch.object(skynet_mode,'_create_candidate',return_value=Path(target)),patch.object(skynet_mode,'_run_agent',side_effect=change),patch.object(skynet_mode.ProjectTools,'execute',side_effect=checks):
                 result=skynet_mode.run_improvement('fixture','fixture',root,'Improve app',threading.Event(),lambda *args:None)
             self.assertEqual(result['policy_status'],'rejected')
             self.assertEqual(result['iterations'][0]['checks']['status'],'blocked')

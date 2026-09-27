@@ -45,6 +45,78 @@ clear error. Unsupported formats are not copied; complex projects may need a
 manually prepared development copy. Binary assets appear in the candidate
 report with hashes instead of a text diff.
 
+Skynet runs the available project check once on a disposable baseline copy
+before proposing changes. Each iteration runs its checks in another disposable
+copy. Original test files, common check configuration, and `AGENTS.md` are
+frozen for candidate selection: edits to those files block selection. A check
+run that modifies source in its evaluation copy is also blocked. A passing
+candidate is retained when a later iteration fails, so its diff and report
+remain available. The report records baseline checks, every iteration's
+check status and candidate folder, and which iteration was selected. The code
+API accepts 1–5 finite iterations; the desktop button lets you choose one to five.
+
+Without a project evaluator, selection means **latest candidate that passed
+the available checks**. It is not an independently measured gain in coding
+ability. If no check is available, the candidate is marked unverified and
+receives no passing selection. Evaluate gameplay, performance, user experience,
+and other quality goals separately before applying a candidate. Tests execute
+with the current user's permissions; the copied folder is not an OS sandbox.
+A malicious test can still affect files outside that folder if the operating
+system permits it.
+
+### Optional measured evaluator
+
+A project can add tracked `SKYNET-EVALUATOR.json` at its root. The contract,
+evaluator script, and named fixtures are frozen from the original project.
+Skynet runs the existing project checks first, then the evaluator in a
+disposable source copy. A candidate is selected only if checks pass and its
+finite metric strictly improves over a measured baseline or previous best. If
+the baseline check or metric is unavailable, selection pauses because no
+improvement can be established. Missing,
+malformed, nonfinite, timed-out, or oversized metric output cannot select a
+candidate. Without this contract, checks-only selection remains available.
+
+```json
+{
+  "schema": "talktoai.skynet.evaluator.v1",
+  "metric": "mean_absolute_error",
+  "direction": "minimize",
+  "command": ["python", "evaluation/score.py"],
+  "timeout_seconds": 30,
+  "frozen_files": ["evaluation/score.py", "evaluation/cases.json"]
+}
+```
+
+For example, `evaluation/cases.json` can contain fixed local cases:
+
+```json
+[{"x": 2, "expected": 3}, {"x": 5, "expected": 8}, {"x": 8, "expected": 13}]
+```
+
+An original `evaluation/score.py` can import the project function and print
+one JSON object to standard output:
+
+```python
+import json
+import sys
+from pathlib import Path
+
+root = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(root))
+from app import estimate
+
+cases = json.loads((Path(__file__).with_name("cases.json")).read_text())
+error = sum(abs(estimate(case["x"]) - case["expected"]) for case in cases) / len(cases)
+print(json.dumps({"metric": "mean_absolute_error", "value": error}))
+```
+
+The command is limited to a frozen relative Python script, runs for at most
+60 seconds, and may emit at most 16 KB. Its output must contain exactly the
+named metric and a finite number. Existing project checks must be detectable
+for scoring to run. The evaluator is still project code running with your
+permissions, and a small fixed case set can be overfit or gamed. Review the
+candidate and use separate held-out cases before claiming general improvement.
+
 ## Improve TalkToAi Code itself
 
 Download or clone the source from https://github.com/ResearchForumOnline/TalkToAi-Code
@@ -58,6 +130,12 @@ this source too; it does not install or merge that candidate automatically.
 Candidate checks run with the current user's permissions. A passing syntax,
 import or unit check does not establish game quality, performance, or full
 product readiness.
+
+The candidate/evaluator/archive design was informed by the primary
+[OpenEvolve project](https://github.com/algorithmicsuperintelligence/openevolve)
+and the original [Darwin Gödel Machine code and paper](https://github.com/jennyzzt/dgm).
+TalkToAi Code uses its own bounded implementation; it does not copy either
+project's source or claim their benchmark results.
 
 ## Design references
 

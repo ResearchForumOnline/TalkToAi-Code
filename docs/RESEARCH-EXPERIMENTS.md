@@ -7,8 +7,8 @@ the existing project commands or managed jobs for an authorized experiment,
 and record the outcome before choosing a next step.
 
 Each entry has a stable identifier, UTC timestamp, sequence number, hypothesis,
-reported command/result/metrics, evidence filenames with observed sizes and
-SHA256 hashes, and a next step. Results and metrics stay explicitly
+reported command/result/metrics, optional method protocol, evidence filenames
+with observed sizes and SHA256 hashes, and a next step. Results and metrics stay explicitly
 **self-reported**. Hashing a file establishes its bytes at that time; it does
 not independently verify a measurement or scientific conclusion. Command text
 in an entry is metadata: recording an entry never executes it.
@@ -45,11 +45,50 @@ Example tool arguments:
   "result": "Reported runtime decreased; outputs matched this fixture. More seeds remain.",
   "metrics": "{\"runtime_seconds\": 2.3, \"output_mismatches\": 0}",
   "evidence_paths": "[\"results/seed-7.csv\", \"results/seed-7.log\"]",
-  "next_step": "Repeat the same comparison with seeds 11 and 19 within the agreed budget"
+  "next_step": "Repeat the same comparison with seeds 11 and 19 within the agreed budget",
+  "protocol": "{\"dataset\":\"fixture v1\",\"split\":\"held-out A\",\"seed\":\"7\",\"environment\":\"Python 3.12\",\"controls\":\"same inputs and configuration\",\"budget\":\"20 seconds\",\"metric_definition\":\"runtime measured in seconds\",\"sample_size\":\"10 cases\",\"limitations\":\"Only one seed\",\"source_claims\":[{\"claim\":\"Earlier paper described this method\",\"url\":\"https://example.org/method\",\"relationship\":\"unverified\"}]}"
 }
 ```
 
 These are example values, not measurements produced by TalkToAi Code.
+
+## Compare a baseline and candidate
+
+`compare_experiments` is read-only in Plan and Act. Supply the two IDs returned
+by `record_experiment`, the exact metric name in both records, and whether a
+smaller or larger value is desirable:
+
+```json
+{
+  "baseline_id": "BASELINE_ID",
+  "candidate_id": "CANDIDATE_ID",
+  "metric": "runtime_seconds",
+  "direction": "minimize",
+  "verify_evidence": "true"
+}
+```
+
+It reports the candidate minus baseline difference and whether that numeric
+change points in the requested direction. The result remains **reported
+arithmetic**. It also warns when dataset, split, seed, environment, controls,
+budget, metric definition or sample size are missing or differ, when a record
+reports limitations or uncertain source claims, when the
+candidate predates the baseline, or when attached evidence no longer matches.
+Current file hashes are rechecked by default within a 32 MiB total read budget.
+`comparable_as_reported` means only that the listed protocol fields agree and
+the attached file bytes currently match. It does not validate the measurement,
+statistical significance, causality, source URLs or scientific conclusion.
+Missing evidence yields a warning; no artifact is invented or downloaded.
+
+The optional `protocol` field is bounded to dataset, split, seed, environment,
+controls, budget, metric definition, sample size, limitations, at most four
+HTTP(S) source URLs and at most four claim-to-source notes. Each note labels a
+claim as `supports`, `contradicts`, `background` or `unverified`; that label is
+still the recorder's assessment. Source URLs are syntactically checked but are
+**not opened or authenticated** by the journal.
+Use the browser research tools to read original sources and record what each
+one actually supports. Older records without protocol metadata remain readable;
+their comparison will show the missing fields rather than imply comparability.
 
 ## Recheck evidence before resuming
 
@@ -93,9 +132,12 @@ to reproduce the actual result.
 describes a nine-loop six-particle amplitude computation in planar N=4
 super Yang–Mills using its Claude Science harness. The guest account includes
 Lance Dixon's independent validation and describes following earlier research
-methods with continued computation and debugging. Encouragement to continue
-was part of a structured scientific workflow with an expert check. It does
-not demonstrate that a generic loop or any local model will make discoveries.
+methods with continued computation and debugging. Repeated encouragement to
+continue was part of that workflow. A generic loop or local model does not
+inherit its result. The [SWE-agent trajectory documentation](https://github.com/SWE-agent/SWE-agent/blob/main/docs/usage/trajectories.md)
+separates saved run traces and configuration from subsequent evaluation. The
+journal applies the same evidence boundary to its own reported experiments;
+it does not import SWE-agent or its code.
 
 For this implementation, only local research-directory and public research
 index metadata were inspected. The index's source-ledger and methods headings

@@ -83,6 +83,12 @@ QListWidget::item:selected { background:#244451; border-left:2px solid #8ce5cd; 
 QListWidget::item:hover { background:#1c3442; }
 QTextBrowser { border:0; background:transparent; font-size:15px; padding:14px; }
 QPlainTextEdit { background:#172534; border:1px solid #34495b; border-radius:8px; padding:10px; selection-background-color:#435f70; }
+QScrollBar:vertical { background:#101c26; width:10px; margin:0; border:0; }
+QScrollBar:horizontal { background:#101c26; height:10px; margin:0; border:0; }
+QScrollBar::handle { background:#3b5969; border-radius:5px; min-height:24px; min-width:24px; }
+QScrollBar::handle:hover { background:#6ab5a9; }
+QScrollBar::add-line, QScrollBar::sub-line { width:0; height:0; }
+QScrollBar::add-page, QScrollBar::sub-page { background:none; }
 QFrame#composer { background:#192b3a; border:1px solid #5c7884; border-radius:14px; }
 QFrame#composer QPlainTextEdit { background:transparent; border:0; }
 QFrame#composer QWidget { background:transparent; }
@@ -143,7 +149,7 @@ class Studio(QMainWindow):
             'approval_policy': 'ask_remote',
             'auto_context': True,
             'num_ctx': 8192,
-            'keep_going': False,
+            'keep_going': True,
             'show_tool_activity': True,
             'show_model_activity': False,
             'work_session_minutes': 120,
@@ -278,6 +284,7 @@ class Studio(QMainWindow):
         for title,callback in [('Actions · Ctrl+K',self.command_palette),('Project memory · Ctrl+Shift+M',self.memory_dialog),('Project instructions · AGENTS.md',self.instructions_dialog),('Back up conversations',self.backup_conversations),('API providers',self.providers_dialog),('Link ZeroThink account & vault',self.link_zerothink),('Model choices and storage',self.models_dialog),('FAQ / How to · F1',self.faq_dialog),('Open app data folder',lambda:QDesktopServices.openUrl(QUrl.fromLocalFile(str(STATE))))]:
             more_menu.addAction(title,callback)
         more_menu.addAction('Operating policy',self.operating_policy_dialog)
+        more_menu.addAction('Project workbench · playbooks & experiments',self.project_workbench)
         self.model_activity_action=more_menu.addAction('Show model activity')
         self.model_activity_action.setCheckable(True)
         self.model_activity_action.setChecked(bool(self.config.get('show_model_activity',False)))
@@ -291,6 +298,8 @@ class Studio(QMainWindow):
         center = QWidget(); chat = QVBoxLayout(center); chat.setContentsMargins(30,18,30,20); chat.setSpacing(12)
         bar = QHBoxLayout(); self.title = QLabel('New task'); self.title.setFont(QFont('Segoe UI',14,QFont.DemiBold)); bar.addWidget(self.title,1)
         self.button('Conversation ···',self.chat_menu,bar)
+        self.workbench_button=self.button('Workbench',self.project_workbench,bar)
+        self.workbench_button.setToolTip('Inspect task evidence, saved workflows and experiment comparisons.')
         self.button('Workspace  ▥', lambda: self.right.setVisible(not self.right.isVisible()), bar)
         chat.addLayout(bar)
         self.recovery_label=QLabel();self.recovery_label.setWordWrap(True);self.recovery_label.setObjectName('muted');self.recovery_label.hide();chat.addWidget(self.recovery_label)
@@ -326,7 +335,7 @@ class Studio(QMainWindow):
         self.step_budget=QComboBox()
         for steps in (16,32,64):self.step_budget.addItem(f'{steps} steps',steps)
         self.step_budget.setCurrentIndex(1);self.step_budget.setToolTip('Maximum model/tool cycles per code request. Stop or steer at any time. Larger budgets can use more time and provider tokens.');options.addWidget(self.step_budget)
-        self.keep_going=QCheckBox('Keep going');self.keep_going.setToolTip('Opt in for a bounded, resumable long coding session. Stop or steer at any time. More time uses more inference.');self.keep_going.toggled.connect(self.save_keep_going);options.addWidget(self.keep_going)
+        self.keep_going=QCheckBox('Keep going');self.keep_going.setToolTip('Continue bounded coding passes until done or paused. Stop or steer at any time. More time uses more inference.');self.keep_going.toggled.connect(self.save_keep_going);options.addWidget(self.keep_going)
         self.work_duration=QComboBox();self.work_duration.setToolTip('Maximum elapsed time when Keep going is on; the agent also has step and pass limits.')
         for title,value in [('1 hour',60),('2 hours',120),('4 hours',240)]:self.work_duration.addItem(title,value)
         self.work_duration.setCurrentIndex(max(0,self.work_duration.findData(self.config.get('work_session_minutes',120))))
@@ -349,6 +358,8 @@ class Studio(QMainWindow):
         row=QHBoxLayout(); self.button('Refresh',self.refresh_files,row); self.button('Save',self.save_file,row); fl.addLayout(row)
         self.editor=QPlainTextEdit(); self.editor.setFont(QFont('Consolas',11)); fl.addWidget(self.editor,2); self.right.addTab(files,'Files')
         changes=QWidget(); cl=QVBoxLayout(changes)
+        self.observed_changes=QLabel('Source change observations appear during an agent run.');self.observed_changes.setWordWrap(True);self.observed_changes.setTextFormat(Qt.PlainText);cl.addWidget(self.observed_changes)
+        self.button('View source observations in Workbench',self.project_workbench,cl)
         self.change_list=QListWidget(); self.change_list.currentRowChanged.connect(self.show_diff); cl.addWidget(self.change_list,1)
         self.diff=QPlainTextEdit(); self.diff.setReadOnly(True); self.diff.setFont(QFont('Consolas',10)); cl.addWidget(self.diff,3)
         self.button('Restore selected edit',self.undo,cl); self.right.addTab(changes,'Changes')
@@ -664,6 +675,7 @@ class Studio(QMainWindow):
         actions += [('Archive or restore conversation',self.toggle_archive_task),('Search chats · Ctrl+Shift+F',self.focus_task_search),('Find in conversation · Ctrl+F',self.find_in_chat),('Copy last reply',self.copy_last_reply)]
         actions += [('Starter: '+name,lambda n=name:self.use_starter(n)) for name in STARTERS]
         actions += [('Open example game · Score Arena',lambda:self.quick_command('open score arena'))]
+        actions += [('Project workbench · playbooks and experiments',self.project_workbench)]
         actions += [('Continue unfinished work',self.continue_task),('Managed process jobs',lambda:self.right.setCurrentIndex(self.jobs_tab)),('Add project output to Evidence',self.add_output)]
         for label,callback in actions:items.addItem(label)
         def filter_items(text):
@@ -753,6 +765,8 @@ class Studio(QMainWindow):
             now=time.monotonic();quiet=max(0,int(now-(self.last_observed_at or self.started_at)))
             changes=max(0,len(self.task.get('changes',[]))-self.run_change_start)
             text=f'{self.run_phase} · step {self.run_step or "—"} · {int(now-self.started_at)}s elapsed · {sum(self.run_tool_counts.values())} tools · {changes} editor-tool edits'
+            observed=self.task.get('workspace_changes') or {}
+            if observed:text+=f' · {observed.get("count",0)} observed source changes'+(' (partial scan)' if not observed.get('complete',True) else '')
             speed=self.task.get('last_metrics',{}).get('tokens_per_second')
             if speed is not None:text+=f' · last response {speed} tokens/s'
             if quiet>=90:text+=f'\nNo new output for {quiet}s. The model or command may still be running; Stop remains available.'
@@ -770,15 +784,18 @@ class Studio(QMainWindow):
         steps=checkpoint.get('steps',self.run_step);changes=checkpoint.get('changes',0)
         verification=checkpoint.get('verification') or {}
         check='recorded check status: '+str(verification.get('status','unknown')) if verification else 'no check result recorded this run'
-        lines=[f'Task paused after {steps} model steps. Work remains unfinished.',
+        lines=['App pause report',f'Task paused after {steps} model steps. Work remains unfinished.',
                f'Recorded this run: {changes} tracked file edits; {check}.']
-        if not changes:lines.append('Shell commands can change files outside the tracked editor; inspect Git changes before assuming nothing changed.')
+        observed=checkpoint.get('workspace_changes') or self.task.get('workspace_changes') or {}
+        if observed:lines.append(f'Observed source changes: {observed.get("count",0)}'+(' (partial scan).' if not observed.get('complete',True) else '.')+' Review the changed paths in Workbench and the full diff in Git.')
+        elif not changes:lines.append('Shell commands can change files outside the tracked editor; inspect Git changes before assuming nothing changed.')
         blockers=checkpoint.get('blockers') or []
         if blockers:lines.append('Reported blockers: '+'; '.join(str(item)[:220] for item in blockers[:3]))
+        if checkpoint.get('last_tool_error'):lines.append('Last tool error: '+str(checkpoint['last_tool_error'])[:220])
         goal=self.current_task_goal() or {}
-        next_action=goal.get('next_action') or next((item['text'] for item in goal.get('criteria',[]) if item['status']!='met'),'')
-        if not next_action:next_action='Use the files already inspected to implement one concrete change, then run its relevant check.'
-        lines.append('Next: '+next_action+' Review the latest Tools error before retrying a failed command.')
+        next_action=checkpoint.get('next_action') or goal.get('next_action') or next((item['text'] for item in goal.get('criteria',[]) if item['status']!='met'),'')
+        if not next_action:next_action='Review the original objective against the changed files and checks; finish the report if satisfied, otherwise continue the remaining work.'
+        lines.append('Next: '+next_action+(' Review the latest Tools error before retrying the failed command.' if checkpoint.get('last_tool_error') else ''))
         return '\n\n'.join(lines)
 
     def refresh_artifacts(self):
@@ -1021,6 +1038,16 @@ class Studio(QMainWindow):
             self.model_activity.clear()
             self.status.setText('Model activity hidden. Normal progress updates remain visible.')
 
+    def project_workbench(self):
+        if not self.task:return
+        from project_workbench import ProjectWorkbench
+        dialog=ProjectWorkbench(self.task['project'],self.task,self)
+        if dialog.exec()==QDialog.Accepted and dialog.selected_prompt:
+            draft=self.prompt.toPlainText().strip()
+            self.prompt.setPlainText((draft+'\n\n' if draft else '')+dialog.selected_prompt)
+            self.prompt.setFocus()
+            self.status.setText('Workflow prepared in the composer. Review it, then Send or Steer.')
+
     def prepare_task_target(self,text):
         resume=re.fullmatch(r'(?:please\s+)?(?:continue|keep going|resume|carry on|continue unfinished work)[.!\s]*',text,re.I)
         if resume or text.startswith(STARTERS['Continue unfinished work']):
@@ -1047,6 +1074,7 @@ class Studio(QMainWindow):
             if self.current_file and self.editor.document().isModified():
                 self.error('Save your open file before switching to the project named in this request.');return False
             self.task['project']=target['root'];self.task['project_target']=target
+            self.task.pop('workspace_changes',None)
             self.task.pop('project_context',None)
             had_goal=bool(self.task.pop('task_goal',None));self.task.pop('task_goal_project',None);self.task.pop('goal_checkpoint',None)
             self.current_file=None;self.editor.clear()
@@ -1058,16 +1086,16 @@ class Studio(QMainWindow):
 
     def start_skynet(self):
         if self.busy or not self.task or self.task.get('kind','code')!='code':return
-        goal=self.prompt.toPlainText().strip()
-        if not goal:
-            goal,ok=QInputDialog.getMultiLineText(self,'Skynet Mode','What should this project improve?')
-            if not ok:return
-            goal=goal.strip()
+        from project_workbench import choose_improvement
+        settings=choose_improvement(self,self.prompt.toPlainText().strip(),self.config.get('skynet_iterations',2))
+        if settings is None:return
+        goal,iterations=settings
         if not goal or len(goal)>4000:
             self.status.setText('Give Skynet Mode a focused goal of 1–4,000 characters.');return
         if not self.prepare_task_target(goal):return
         try:ProjectTools(self.task['project'])
         except Exception as exc:self.error(exc);return
+        self.config['skynet_iterations']=iterations;self.write_config()
         self.task['messages'].append({'role':'user','content':'Skynet Mode candidate: '+goal})
         self.prompt.clear();self.task['draft']='';self.partial='';self.render();self.persist()
         self.cancel=threading.Event();self.set_busy(True);self.skynet_button.setEnabled(False)
@@ -1091,7 +1119,7 @@ class Studio(QMainWindow):
                         if not ready and preference=='server':raise ConnectionError(detail)
                     selected=choose_route(self.config,preference,{})
                 self.bus.event.emit('route',selected)
-                run_improvement(selected['url'],selected['model'],project,goal,self.cancel,self.bus.event.emit,performance=performance,max_iterations=2)
+                run_improvement(selected['url'],selected['model'],project,goal,self.cancel,self.bus.event.emit,performance=performance,max_iterations=iterations)
             except Exception as exc:self.bus.event.emit('error',str(exc))
             finally:
                 set_active_provider(None)
@@ -1108,7 +1136,9 @@ class Studio(QMainWindow):
             self.task.pop('last_metrics',None)
             self.performance_label.setToolTip('')
             self.task.pop('pause_summary',None)
+            self.task.pop('run_summary',None)
             self.task.pop('goal_checkpoint',None)
+            self.task.pop('workspace_changes',None);self.refresh_changes()
             self.run_phase='Connecting to model';self.run_step=0;self.last_observed_at=time.monotonic()
             self.run_tool_counts={};self.run_change_start=len(self.task.get('changes',[]))
             token=object();self.control_cancel_token=token;cancel=self.cancel
@@ -1164,6 +1194,10 @@ class Studio(QMainWindow):
                 self.run_step=int(data.get('step') or self.run_step or 0)
                 self.run_card_title.setText('Waiting for model')
                 self.status.setText(f"Model step {self.run_step} · {int(data.get('elapsed_seconds') or 0)}s elapsed for this response")
+        elif kind=='workspace_changes':
+            if isinstance(data,dict):
+                self.task['workspace_changes']=data
+                self.refresh_changes();self.persist()
         elif kind=='reasoning':
             if isinstance(data,dict) and self.config.get('show_model_activity') and data.get('source')=='provider':
                 self.observe_progress('Model activity',data.get('step',self.run_step))
@@ -1192,13 +1226,25 @@ class Studio(QMainWindow):
         elif kind=='project_context':
             self.task['project_context']=data;self.refresh_plan();self.persist()
         elif kind=='goal_checkpoint':
+            run_summary=self.task.get('run_summary') or {}
+            if data.get('state')=='paused' and run_summary.get('steps')==data.get('steps'):
+                data=dict(data,**{key:run_summary[key] for key in ('next_action','last_tool_error','workspace_changes') if key in run_summary})
             self.task['goal_checkpoint']=data;self.refresh_plan();self.persist()
             self.status.setText(f"Work pass {data.get('pass',1)}/{data.get('total_passes',1)} · {data.get('steps',0)} steps · {data.get('state','')}")
             self.observe_progress('Paused' if data.get('state')=='paused' else 'Continuing work',data.get('steps',self.run_step))
             if data.get('state')=='paused':
                 summary=self.pause_report(data)
                 if self.task.get('pause_summary')!=summary:
-                    self.task['pause_summary']=summary;self.task['messages'].append({'role':'assistant','content':summary});self.persist();self.render()
+                    self.task['pause_summary']=summary;self.task['messages'].append({'role':'assistant','source':'app','content':summary});self.persist();self.render()
+        elif kind=='run_summary':
+            if isinstance(data,dict):
+                self.task['run_summary']=data
+                if not self.task.get('pause_summary'):
+                    checkpoint=dict(data,state='paused',changes=data.get('editor_changes',0))
+                    self.task['goal_checkpoint']=checkpoint
+                    summary=self.pause_report(checkpoint);self.task['pause_summary']=summary
+                    self.task['messages'].append({'role':'assistant','source':'app','content':summary})
+                    self.refresh_plan();self.persist();self.render()
         elif kind=='task_goal':
             from task_goals import normalize_goal
             try:goal=normalize_goal(data,previous=self.current_task_goal())
@@ -1240,7 +1286,18 @@ class Studio(QMainWindow):
                 else:artifacts.append(data)
                 self.refresh_artifacts();self.persist()
         elif kind=='skynet_report':
+            metric_summary=''
+            if data.get('evaluation_mode')=='metric':
+                contract=data.get('evaluation_contract') or {}
+                baseline=data.get('baseline_metric') or {};selected=data.get('selected_metric') or {}
+                metric_summary=('Metric: '+str(contract.get('metric','unknown'))+' ('+str(contract.get('direction',''))+')\n'
+                    +'Baseline: '+str(baseline.get('value') if baseline.get('status')=='measured' else 'unavailable')+'\n'
+                    +'Selected: '+str(selected.get('value') if selected.get('status')=='measured' else 'none')+'\n')
             summary=('Skynet Mode candidate ready: '+str(len(data.get('changed_files',[])))+' changed files.\n\n'
+                     +'Baseline checks: '+str(data.get('baseline_checks',{}).get('status','unverified'))+'\n'
+                     +'Selected iteration: '+str(data.get('selected_iteration') or 'none')+'\n'
+                     +metric_summary
+                     +str(data.get('selection_basis','Inspect recorded checks before applying.'))+'\n\n'
                      'Candidate: '+data['candidate_dir']+'\nDiff: '+data['diff_path']+'\nReport: '+data['report_path']+
                      '\n\nReview the diff and checks before manually applying any changes to the original project.')
             self.task['messages'].append({'role':'assistant','content':summary})
@@ -1335,6 +1392,8 @@ class Studio(QMainWindow):
     def refresh_changes(self):
         self.change_list.clear()
         for change in self.task['changes']:self.change_list.addItem(change['path']+(' · restored' if change.get('restored') else ''))
+        observed=self.task.get('workspace_changes') or {}
+        self.observed_changes.setText((str(observed.get('count',0))+' observed source changes'+(' · partial scan' if not observed.get('complete',True) else '')+'\n'+str(observed.get('reason',''))+'\nEditor checkpoints below can be restored; other source changes need Git or manual review.') if observed else 'Source change observations appear during an agent run.')
 
     def show_diff(self,row):
         self.diff.setPlainText(self.task['changes'][row]['diff'] if row>=0 else '')

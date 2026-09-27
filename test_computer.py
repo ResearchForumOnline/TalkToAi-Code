@@ -1,4 +1,5 @@
 import json
+import tempfile
 import threading
 import unittest
 from unittest.mock import MagicMock
@@ -16,10 +17,15 @@ class ComputerTests(unittest.TestCase):
         self.control.element_info.element.CurrentIsPassword=False
         rect=self.control.rectangle.return_value
         rect.left=0;rect.top=0;rect.right=100;rect.bottom=40
+        rect.width.return_value=100;rect.height.return_value=40
         self.window.rectangle.return_value=rect
         self.window.handle=123;self.desktop.windows.return_value=[self.window]
-        self.cancel=threading.Event();self.engine=ComputerTools('.',self.cancel,self.desktop)
+        self.temp_project=tempfile.TemporaryDirectory()
+        self.cancel=threading.Event();self.engine=ComputerTools(self.temp_project.name,self.cancel,self.desktop)
         self.engine.execute('windows')
+
+    def tearDown(self):
+        self.temp_project.cleanup()
 
     def inspect(self):
         result=self.engine.execute('inspect','123')
@@ -106,3 +112,37 @@ class ComputerTests(unittest.TestCase):
         result=json.loads(self.inspect())
         self.assertEqual(result['controls'],[])
         self.assertEqual(self.engine.controls,{})
+
+    def test_point_click_requires_recent_screenshot_of_same_window(self):
+        self.inspect()
+        with self.assertRaisesRegex(ValueError,'fresh screenshot'):
+            self.engine.execute('click_point','','30,20')
+        self.inspect()
+        image=json.loads(self.engine.execute('screenshot'))
+        self.assertEqual(image['coordinate_system'],'window-relative x,y')
+        self.engine.execute('click_point','','30,20')
+        self.window.click_input.assert_called_once_with(coords=(30,20))
+
+    def test_point_click_rejects_window_move_and_expired_image(self):
+        self.inspect()
+        self.engine.execute('screenshot')
+        rect=self.window.rectangle.return_value
+        rect.right=140
+        with self.assertRaisesRegex(ValueError,'moved or resized'):
+            self.engine.execute('click_point','','30,20')
+        self.window.click_input.assert_not_called()
+        rect.right=100
+        self.inspect()
+        self.engine.execute('screenshot')
+        self.engine.pixel_observed-=31
+        with self.assertRaisesRegex(ValueError,'fresh screenshot'):
+            self.engine.execute('click_point','','30,20')
+        self.window.click_input.assert_not_called()
+
+    def test_point_click_rejects_invalid_or_outside_coordinates(self):
+        for point in ('30', 'x,10', '-1,4', '100,20'):
+            self.inspect()
+            self.engine.execute('screenshot')
+            with self.assertRaises(ValueError):
+                self.engine.execute('click_point','',point)
+        self.window.click_input.assert_not_called()

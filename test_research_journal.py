@@ -169,5 +169,85 @@ class ResearchJournalTests(unittest.TestCase):
             except OSError: self.skipTest('Symlink privilege unavailable')
             with self.assertRaises(ValueError): self.record(evidence_paths='["evidence.txt"]')
 
+    def test_compare_reports_arithmetic_and_rechecks_both_evidence_files(self):
+        evidence=self.root/'result.csv';evidence.write_text('baseline',encoding='utf-8')
+        protocol=json.dumps({'dataset':'fixture v1','split':'held-out A','seed':'7',
+                             'environment':'Python 3.12','controls':'same input and budget',
+                             'budget':'20 seconds','metric_definition':'percent error on fixed cases',
+                             'sample_size':'10 cases','source_urls':['https://example.org/method']})
+        baseline=self.record(metrics='{"error_percent":20}',evidence_paths='["result.csv"]',protocol=protocol)
+        evidence.write_text('candidate',encoding='utf-8')
+        candidate=self.record(metrics='{"error_percent":12}',evidence_paths='["result.csv"]',protocol=protocol)
+        before=(self.root/'.talktoai-code'/'EXPERIMENTS.jsonl').read_bytes()
+        comparison=json.loads(journal.compare_experiments(self.root,baseline['id'],candidate['id'],'error_percent'))
+        self.assertEqual(comparison['candidate_minus_baseline'],-8)
+        self.assertTrue(comparison['reported_improvement'])
+        self.assertEqual(comparison['reported_numeric_direction'],'lower')
+        self.assertEqual(comparison['comparison_status'],'limitations_found')
+        self.assertEqual(comparison['evidence_checks']['baseline']['status'],'needs_attention')
+        self.assertEqual(comparison['evidence_checks']['candidate']['status'],'all_match')
+        self.assertEqual(before,(self.root/'.talktoai-code'/'EXPERIMENTS.jsonl').read_bytes())
+
+    def test_compare_requires_same_reported_protocol_for_comparable_label(self):
+        (self.root/'base.txt').write_text('base',encoding='utf-8')
+        (self.root/'new.txt').write_text('new',encoding='utf-8')
+        protocol={'dataset':'same','split':'test','seed':'9','environment':'fixture',
+                  'controls':'fixed','budget':'same','metric_definition':'exact score','sample_size':'10'}
+        baseline=self.record(metrics={'score':4},evidence_paths=['base.txt'],protocol=protocol)
+        candidate=self.record(metrics={'score':6},evidence_paths=['new.txt'],protocol=protocol)
+        comparison=json.loads(journal.compare_experiments(self.root,baseline['id'],candidate['id'],'score','maximize'))
+        self.assertEqual(comparison['comparison_status'],'comparable_as_reported')
+        self.assertTrue(comparison['reported_improvement'])
+        self.assertEqual(comparison['warnings'],[])
+        self.assertIn('do not prove measurement validity',comparison['verification'])
+
+    def test_compare_rejects_missing_metric_invalid_direction_and_credential_url(self):
+        baseline=self.record(metrics={'runtime_seconds':2})
+        candidate=self.record(metrics={'runtime_seconds':1})
+        with self.assertRaisesRegex(ValueError,'lacks the requested metric'):
+            journal.compare_experiments(self.root,baseline['id'],candidate['id'],'accuracy')
+        with self.assertRaisesRegex(ValueError,'direction'):
+            journal.compare_experiments(self.root,baseline['id'],candidate['id'],'runtime_seconds','sideways')
+        with self.assertRaisesRegex(ValueError,'Source URLs'):
+            self.record(protocol={'source_urls':['https://example.org/paper?token=secret']})
+
+    def test_claim_to_source_uncertainty_is_recorded_and_flagged(self):
+        protocol={'dataset':'same','split':'held-out','seed':'4','environment':'fixture',
+                  'controls':'same','budget':'same','metric_definition':'seconds','sample_size':'5',
+                  'source_claims':[{'claim':'The method is reproducible','url':'https://example.org/paper',
+                                    'relationship':'unverified'}]}
+        baseline=self.record(metrics={'runtime_seconds':3},protocol=protocol)
+        candidate=self.record(metrics={'runtime_seconds':2},protocol=protocol)
+        comparison=json.loads(journal.compare_experiments(self.root,baseline['id'],candidate['id'],'runtime_seconds'))
+        self.assertTrue(any('unverified source claims' in warning for warning in comparison['warnings']))
+        with self.assertRaisesRegex(ValueError,'relationship'):
+            self.record(protocol={'source_claims':[{'claim':'x','url':'https://example.org',
+                                                    'relationship':'certain'}]})
+
+    def test_parseable_damage_is_rejected_without_rewriting_journal(self):
+        baseline=self.record(metrics={'score':1})
+        candidate=self.record(metrics={'score':2})
+        path=self.root/'.talktoai-code'/'EXPERIMENTS.jsonl'
+        original=[json.loads(line) for line in path.read_text(encoding='utf-8').splitlines()]
+        cases=[('missing id', lambda row: row.pop('id')),
+               ('missing hypothesis', lambda row: row.pop('hypothesis')),
+               ('non-object protocol', lambda row: row.update(reported_protocol=['invalid'])),
+               ('malformed source claim', lambda row: row.update(reported_protocol={
+                   'source_claims':[{'claim':'x','url':'https://example.org','relationship':['invalid']}] }))]
+        for label, mutate in cases:
+            with self.subTest(label=label):
+                rows=[dict(entry) for entry in original]
+                mutate(rows[0])
+                damaged=''.join(json.dumps(row)+'\n' for row in rows).encode('utf-8')
+                path.write_bytes(damaged)
+                with self.assertRaisesRegex(ValueError,'damaged'):
+                    journal.read_experiments(self.root)
+                with self.assertRaisesRegex(ValueError,'damaged'):
+                    journal.compare_experiments(self.root,baseline['id'],candidate['id'],'score')
+                with self.assertRaisesRegex(ValueError,'damaged'):
+                    self.record()
+                self.assertEqual(path.read_bytes(),damaged)
+                self.assertFalse(path.with_suffix('.lock').exists())
+
 
 if __name__ == '__main__': unittest.main()

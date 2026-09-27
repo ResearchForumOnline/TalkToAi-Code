@@ -20,8 +20,11 @@ def smoke(destination):
                 self.wfile.write(b'<label>Player<input aria-label="Player"></label><button aria-label="Start" onclick="document.querySelector(\'h1\').textContent=\'Hello \'+document.querySelector(\'input\').value">+</button><h1>Ready</h1><a href="/report" target="_blank">Open report</a>')
     server=None;browser=None
     try:
-        import pywinauto
-        result['computer_dependency']=pywinauto.__version__
+        if os.name=='nt':
+            import pywinauto
+            result['computer_dependency']=pywinauto.__version__
+        else:
+            result['computer_dependency']='Windows-only PC Pilot; portable browser checks remain available'
         from ethics_policy import verify_release_policy
         result['operating_policy']=verify_release_policy()['status']=='verified'
         if os.name=='nt':
@@ -40,6 +43,20 @@ def smoke(destination):
             Path(folder,'report.txt').write_text('Packaged fixture evidence',encoding='utf-8')
             result['batch_read']=json.loads(read_batch(tools,[{'path':'report.txt'}]))['files'][0]['complete']
             result['output_registration']=bool(json.loads(register_output(tools,'report.txt'))['sha256'])
+            from project_playbooks import save_playbook, find_playbooks
+            save_playbook(folder,'Fixture workflow','Use for this release fixture',
+                          ['Read report.txt'],'Fixture file exists',['report.txt'])
+            result['project_playbooks']=find_playbooks(folder,'Fixture workflow')['entries'][0]['evidence_status']=='current'
+            from research_journal import record_experiment, compare_experiments
+            first=json.loads(record_experiment(folder,'Fixture baseline','fixture','reported',{'steps':10}))
+            second=json.loads(record_experiment(folder,'Fixture candidate','fixture','reported',{'steps':8}))
+            comparison=json.loads(compare_experiments(folder,first['id'],second['id'],'steps'))
+            result['research_comparison']=comparison['candidate_minus_baseline']==-2 and bool(comparison['warnings'])
+            from workspace_change_evidence import WorkspaceChangeTracker
+            tracker=WorkspaceChangeTracker(folder)
+            Path(folder,'fixture.py').write_text('value = 1\n',encoding='utf-8')
+            observed=tracker.observe('packaged fixture')
+            result['source_change_evidence']=observed['count']==1 and observed['complete']
             if os.name=='nt':
                 jobs=ProcessJobs(folder)
                 try:
@@ -63,7 +80,7 @@ def smoke(destination):
             report=json.loads(browser.execute('click','Open report'))
             result['browser_popup']=report['url'].endswith('/report') and 'Packaged report ready' in report['page']
             browser.close();browser=None
-        result['passed']=all(result.get(key,False) for key in ('operating_policy','bundled_example','browser_interaction','browser_popup','browser_screenshot','vision_attachment','batch_read','output_registration')) and (os.name!='nt' or (result.get('managed_process',False) and result.get('escape_hook_registration',False)))
+        result['passed']=all(result.get(key,False) for key in ('operating_policy','bundled_example','browser_interaction','browser_popup','browser_screenshot','vision_attachment','batch_read','output_registration','project_playbooks','research_comparison','source_change_evidence')) and (os.name!='nt' or (result.get('managed_process',False) and result.get('escape_hook_registration',False)))
     except Exception as exc:result.update(passed=False,error=f'{type(exc).__name__}: {exc}')
     finally:
         if browser:browser.close()

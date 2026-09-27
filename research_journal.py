@@ -7,6 +7,7 @@ from pathlib import Path
 import tempfile
 import uuid
 from datetime import datetime, timezone
+from urllib.parse import urlsplit
 
 MAX_BYTES = 1024 * 1024
 MAX_ENTRIES = 200
@@ -15,6 +16,10 @@ MAX_EVIDENCE_BYTES = 4 * 1024 * 1024
 MAX_VERIFY_BYTES = 32 * 1024 * 1024
 PRIVATE_PARTS = {'.git', '.ssh', '.aws', '.azure', 'private', 'secrets', 'credentials'}
 PRIVATE_NAMES = {'credentials.json', 'token.json', 'tokens.json', 'config.json', 'providers.json', 'studio.json', 'connections.json', 'id_rsa', 'id_ed25519'}
+PROTOCOL_FIELDS = {'dataset', 'split', 'seed', 'environment', 'controls', 'budget',
+                   'metric_definition', 'sample_size', 'limitations', 'source_urls', 'source_claims'}
+COMPARISON_FIELDS = ('dataset', 'split', 'seed', 'environment', 'controls', 'budget',
+                     'metric_definition', 'sample_size')
 
 
 def _journal(project):
@@ -41,6 +46,27 @@ def _entries(path):
         raise ValueError('Experiment journal is damaged; preserve and repair it before appending.') from exc
     if len(entries) > MAX_ENTRIES or any(not isinstance(e, dict) or e.get('schema') != 'talktoai.experiment.v1' for e in entries):
         raise ValueError('Experiment journal has an unsupported format or too many entries.')
+    seen_ids = set()
+    for index, entry in enumerate(entries, 1):
+        identifier = entry.get('id')
+        if (not isinstance(identifier, str) or len(identifier) != 32
+                or any(char not in '0123456789abcdef' for char in identifier)
+                or identifier in seen_ids
+                or not isinstance(entry.get('hypothesis'), str) or not entry['hypothesis'].strip()
+                or type(entry.get('sequence')) is not int or entry['sequence'] != index
+                or not isinstance(entry.get('reported_metrics'), dict)
+                or not isinstance(entry.get('evidence'), list)):
+            raise ValueError(f'Experiment journal entry {index} is damaged; preserve and repair it before continuing.')
+        seen_ids.add(identifier)
+        protocol = entry.get('reported_protocol', {})
+        try:
+            _metrics(entry['reported_metrics'])
+        except (ValueError, TypeError) as exc:
+            raise ValueError(f'Experiment journal entry {index} has damaged metrics; preserve and repair it before continuing.') from exc
+        try:
+            _protocol(protocol)
+        except (ValueError, TypeError, KeyError, AttributeError) as exc:
+            raise ValueError(f'Experiment journal entry {index} has damaged protocol metadata; preserve and repair it before continuing.') from exc
     return entries
 
 
@@ -62,6 +88,48 @@ def _metrics(value):
         if isinstance(number, bool) or not isinstance(number, (int, float)) or not math.isfinite(number):
             raise ValueError('Metric values must be finite numbers. Describe units in the metric name.')
         result[name] = number
+    return result
+
+
+def _protocol(value):
+    """Describe a method; metadata is user-reported, never executed or fetched."""
+    if isinstance(value, str) and len(value) > 4000:
+        raise ValueError('Protocol JSON exceeds 4,000 characters.')
+    try:
+        value = json.loads(value) if isinstance(value, str) else value
+    except (ValueError, TypeError) as exc:
+        raise ValueError('Protocol must be a JSON object.') from exc
+    if not isinstance(value, dict) or set(value) - PROTOCOL_FIELDS:
+        raise ValueError('Protocol must contain only supported method fields.')
+    result = {}
+    for key in sorted(set(value) - {'source_urls', 'source_claims'}):
+        result[key] = _text(value[key], key, 500, True)
+    def reference(url):
+        url = _text(url, 'Source URL', 500, True)
+        parsed = urlsplit(url)
+        if (parsed.scheme not in ('http', 'https') or not parsed.hostname
+                or parsed.username or parsed.password or parsed.query or parsed.fragment):
+            raise ValueError('Source URLs must be HTTP(S) references without credentials, query strings or fragments.')
+        return url
+    if 'source_urls' in value:
+        urls = value['source_urls']
+        if not isinstance(urls, list) or len(urls) > 4:
+            raise ValueError('source_urls must contain at most four HTTP(S) references.')
+        result['source_urls'] = [reference(url) for url in urls]
+    if 'source_claims' in value:
+        claims = value['source_claims']
+        if not isinstance(claims, list) or len(claims) > 4:
+            raise ValueError('source_claims must contain at most four claim-to-source notes.')
+        result['source_claims'] = []
+        for item in claims:
+            if not isinstance(item, dict) or set(item) != {'claim', 'url', 'relationship'}:
+                raise ValueError('Each source claim needs claim, URL and relationship.')
+            relationship = item['relationship']
+            if relationship not in ('supports', 'contradicts', 'background', 'unverified'):
+                raise ValueError('Source relationship must be supports, contradicts, background or unverified.')
+            result['source_claims'].append({'claim': _text(item['claim'], 'Source claim', 300, True),
+                                            'url': reference(item['url']),
+                                            'relationship': relationship})
     return result
 
 
@@ -118,13 +186,14 @@ def _evidence(root, names):
     return evidence
 
 
-def record_experiment(project, hypothesis, command, result, metrics='{}', evidence_paths='[]', next_step=''):
+def record_experiment(project, hypothesis, command, result, metrics='{}', evidence_paths='[]', next_step='', protocol='{}'):
     root, path = _journal(project)
     entry = {'schema': 'talktoai.experiment.v1', 'id': uuid.uuid4().hex, 'created_utc': datetime.now(timezone.utc).isoformat(),
              'hypothesis': _text(hypothesis, 'Hypothesis', 1600, True),
              'reported_command': _text(command, 'Command', 1600),
              'reported_result': _text(result, 'Result', 2400, True),
-             'reported_metrics': _metrics(metrics), 'evidence': _evidence(root, evidence_paths),
+             'reported_metrics': _metrics(metrics), 'reported_protocol': _protocol(protocol),
+             'evidence': _evidence(root, evidence_paths),
              'next_step': _text(next_step, 'Next step', 1000),
              'verification': 'Claims and metrics are reported, not independently verified. Evidence hashes establish file bytes only. No command was executed by this tool.'}
     encoded = (json.dumps(entry, ensure_ascii=False, allow_nan=False) + '\n').encode('utf-8')
@@ -211,3 +280,87 @@ def read_experiments(project, limit='5', verify_evidence=False):
     if verify_evidence:
         response.update(evidence_checked_utc=datetime.now(timezone.utc).isoformat(),evidence_bytes_read=MAX_VERIFY_BYTES-budget[0])
     return json.dumps(response, ensure_ascii=False)
+
+
+def compare_experiments(project, baseline_id, candidate_id, metric, direction='minimize', verify_evidence=True):
+    """Compare reported measurements without upgrading them to verified facts.
+
+    Protocol fields and evidence hashes are checked for reproducibility. Equal
+    hashes establish byte identity only; the method and metric remain reported.
+    The journal is read-only throughout this operation.
+    """
+    root, path = _journal(project)
+    baseline_id = _text(baseline_id, 'Baseline ID', 32, True)
+    candidate_id = _text(candidate_id, 'Candidate ID', 32, True)
+    metric = _text(metric, 'Metric name', 80, True)
+    if baseline_id == candidate_id:
+        raise ValueError('Choose different baseline and candidate records.')
+    if direction not in ('minimize', 'maximize'):
+        raise ValueError('direction must be minimize or maximize.')
+    if isinstance(verify_evidence, str):
+        if verify_evidence.lower() not in ('true', 'false'):
+            raise ValueError('verify_evidence must be true or false.')
+        verify_evidence = verify_evidence.lower() == 'true'
+    if not isinstance(verify_evidence, bool):
+        raise ValueError('verify_evidence must be true or false.')
+    records = {entry['id']: entry for entry in _entries(path)
+               if isinstance(entry.get('id'), str) and len(entry['id']) == 32}
+    if baseline_id not in records or candidate_id not in records:
+        raise ValueError('Both experiment IDs must be present in this project journal.')
+    baseline, candidate = records[baseline_id], records[candidate_id]
+    for name, entry in (('baseline', baseline), ('candidate', candidate)):
+        measurements = entry.get('reported_metrics')
+        if not isinstance(measurements, dict) or metric not in measurements:
+            raise ValueError(f'{name} lacks the requested metric.')
+        value = measurements[metric]
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+            raise ValueError(f'{name} metric is not a finite number.')
+    before, after = baseline['reported_metrics'][metric], candidate['reported_metrics'][metric]
+    delta = after - before
+    if not math.isfinite(delta):
+        raise ValueError('Reported metric difference is outside the finite numeric range.')
+    baseline_protocol = baseline.get('reported_protocol') or {}
+    candidate_protocol = candidate.get('reported_protocol') or {}
+    if not isinstance(baseline_protocol, dict) or not isinstance(candidate_protocol, dict):
+        raise ValueError('One experiment has invalid reported protocol metadata.')
+    warnings = []
+    for field in COMPARISON_FIELDS:
+        old, new = baseline_protocol.get(field), candidate_protocol.get(field)
+        if old is None or new is None:
+            warnings.append(f'{field} missing from one or both reported protocols')
+        elif old != new:
+            warnings.append(f'{field} differs between reported protocols')
+    baseline_sequence, candidate_sequence = baseline.get('sequence'), candidate.get('sequence')
+    if (type(baseline_sequence) is not int or type(candidate_sequence) is not int
+            or baseline_sequence >= candidate_sequence):
+        warnings.append('candidate is not later than baseline in this journal')
+    for name, protocol in (('baseline', baseline_protocol), ('candidate', candidate_protocol)):
+        if protocol.get('limitations'):
+            warnings.append(f'{name} reports limitations; inspect the original entry')
+        if any(item.get('relationship') in ('contradicts', 'unverified')
+               for item in protocol.get('source_claims', []) if isinstance(item, dict)):
+            warnings.append(f'{name} has contradicting or unverified source claims')
+    budget = [MAX_VERIFY_BYTES]
+    checks = {}
+    if verify_evidence:
+        checks = {'baseline': _verify_record(root, baseline, budget),
+                  'candidate': _verify_record(root, candidate, budget)}
+        for name, check in checks.items():
+            if check['status'] != 'all_match':
+                warnings.append(f'{name} evidence status: {check["status"]}')
+    else:
+        warnings.append('current evidence file bytes were not rechecked')
+    numeric_direction = 'lower' if delta < 0 else 'higher' if delta > 0 else 'unchanged'
+    reported_improvement = delta < 0 if direction == 'minimize' else delta > 0
+    response = {'schema': 'talktoai.experiment-comparison.v1',
+                'baseline_id': baseline_id, 'candidate_id': candidate_id,
+                'metric': metric, 'desired_direction': direction,
+                'baseline_reported': before, 'candidate_reported': after,
+                'candidate_minus_baseline': delta,
+                'reported_numeric_direction': numeric_direction,
+                'reported_improvement': reported_improvement,
+                'comparison_status': 'comparable_as_reported' if not warnings else 'limitations_found',
+                'warnings': warnings,
+                'evidence_checks': checks,
+                'verification': 'Arithmetic uses reported metrics. Matching file hashes check current bytes only; they do not prove measurement validity, causal improvement or a scientific discovery.'}
+    return json.dumps(response, ensure_ascii=False, allow_nan=False)

@@ -42,6 +42,15 @@ class WorkspaceUITests(unittest.TestCase):
         self.assertEqual(w.output.toPlainText(),'AMD: missing model <literal>')
         self.assertEqual(w.right.currentIndex(),2)
 
+    def test_source_changes_are_distinct_from_restorable_editor_changes(self):
+        w=self.window
+        before=list(w.task['changes'])
+        w.handle_event('workspace_changes',{'count':2,'paths':['main.gd','player.gd'],'complete':False,'reason':'Partial project source scan'})
+        self.assertEqual(w.task['changes'],before)
+        self.assertEqual(w.task['workspace_changes']['count'],2)
+        self.assertIn('partial scan',w.observed_changes.text())
+        self.assertIn('Git or manual review',w.observed_changes.text())
+
     def test_active_run_has_immediate_receipt_and_readable_tool_output(self):
         w=self.window
         self.assertEqual(w.output.lineWrapMode(),QPlainTextEdit.NoWrap)
@@ -162,15 +171,15 @@ class WorkspaceUITests(unittest.TestCase):
         w.stop_task();self.assertTrue(w.cancel.is_set());self.assertEqual(w.route.currentIndex(),1)
         w.set_busy(False)
 
-    def test_keep_going_is_opt_in_and_persisted_per_conversation(self):
+    def test_keep_going_defaults_on_and_preserves_conversation_choice(self):
         w=self.window;first=w.task['id']
-        self.assertFalse(w.keep_going.isChecked())
-        w.keep_going.setChecked(True)
+        self.assertTrue(w.keep_going.isChecked())
+        w.keep_going.setChecked(False)
         saved=next(task for task in load_tasks(studio.SESSION)[0] if task['id']==first)
-        self.assertTrue(saved['keep_going'])
-        w.new_task();self.assertFalse(w.keep_going.isChecked())
-        w.select_task_by_id(first);self.assertTrue(w.keep_going.isChecked())
-        w.config['keep_going']=True;w.new_task();self.assertTrue(w.keep_going.isChecked())
+        self.assertFalse(saved['keep_going'])
+        w.new_task();self.assertTrue(w.keep_going.isChecked())
+        w.select_task_by_id(first);self.assertFalse(w.keep_going.isChecked())
+        w.config['keep_going']=False;w.new_task();self.assertFalse(w.keep_going.isChecked())
 
     def test_keep_going_flag_and_budget_reach_agent(self):
         w=self.window;w.task['project']=str(self.root);w.route.setCurrentIndex(1)
@@ -400,7 +409,7 @@ class WorkspaceUITests(unittest.TestCase):
         summary=w.task['pause_summary'];before=len(w.task['messages'])
         self.assertIn('0 tracked file edits',summary);self.assertIn('no check result recorded this run',summary)
         self.assertIn('Shell commands can change files',summary);self.assertIn('PowerShell command syntax failed',summary)
-        self.assertIn('Use the files already inspected',summary);self.assertNotIn('recorded check status: passed',summary)
+        self.assertIn('Review the original objective',summary);self.assertNotIn('recorded check status: passed',summary)
         w.handle_event('goal_checkpoint',checkpoint);self.assertEqual(len(w.task['messages']),before)
         self.assertEqual(load_tasks(studio.SESSION)[0][0]['pause_summary'],summary)
 
@@ -412,6 +421,21 @@ class WorkspaceUITests(unittest.TestCase):
         self.assertIn('0 tracked file edits',display.call_args.args[0])
         self.assertEqual(w.task['messages'],before)
         w.set_busy(True);self.assertNotIn('goal_checkpoint',w.task);w.set_busy(False)
+
+    def test_step_cap_report_is_app_status_and_following_checkpoint_does_not_duplicate(self):
+        w=self.window;w.set_busy(True)
+        report={'state':'paused','reason':'step_budget','steps':8,'editor_changes':1,
+                'verification':{'status':'passed'},'workspace_changes':{'count':1,'complete':True},
+                'last_tool_error':'','next_action':'Review the tool result and continue the final report.'}
+        w.handle_event('run_summary',report)
+        summary=w.task['pause_summary'];count=len(w.task['messages'])
+        self.assertIn('App pause report',summary);self.assertIn('unfinished',summary)
+        self.assertIn('recorded check status: passed',summary);self.assertIn('Observed source changes: 1',summary)
+        self.assertEqual(w.task['messages'][-1]['source'],'app')
+        w.handle_event('goal_checkpoint',{'state':'paused','steps':8,'changes':1,'verification':{'status':'passed'}})
+        self.assertEqual(len(w.task['messages']),count);self.assertEqual(w.task['pause_summary'],summary)
+        w.set_busy(False);w.set_busy(True)
+        self.assertNotIn('run_summary',w.task);w.set_busy(False)
 
     def test_pause_report_uses_saved_next_action_and_finish_keeps_summary_visible(self):
         import time
