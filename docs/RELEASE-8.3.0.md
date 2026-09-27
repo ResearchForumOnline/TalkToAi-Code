@@ -50,7 +50,12 @@ Commands are `quick_check`, `project_report`, `find_files`, `find_symbols`, `tod
 
 ## Verification and release status
 
-- Windows source regression suite: **535 tests passed, 13 skipped**, in 73.846 seconds. The skips include the opt-in browser template test.
+- Windows source regression suite: **535 tests run; OK, 13 skipped**, in 73.846 seconds. The skips include the opt-in browser template test. The final 18-test local UI suite also passed after the status wording was refined.
 - The separate template browser run passed all **14 template tests**, including actual Edge gameplay controls, score progression, pause/resume, restart and mobile layout, with no JavaScript errors or HTTP(S) requests.
 - Local UI tests reject model/server entry points if called and exercise actual template creation in a temporary directory. Source-shaped markup stays visible as local data; local errors, cancellation and paused coding checkpoints retain their meaning.
-- Packaged app, installer and portable CI verification are pending completion; their final evidence will be recorded before publication.
+- Packaged Windows self-test: passed, including `offline_program`, `offline_starter`, existing browser interaction and process checks.
+- [Ubuntu and macOS portable install/startup/regression workflow](https://github.com/ResearchForumOnline/TalkToAi-Code/actions/runs/36344360437): both jobs passed at source commit `bd0f20bd5fd6259bf8b1907ee386dbde47366de2`. The later release finalization changes documentation and checksums only. Offscreen startup does not establish interactive usability on every system.
+- Installer: `TalkToAi-Code-8.3.0-Windows-Setup.exe`, **66,471,113 bytes**. SHA-256: `222d79c6356b97676238eb7e91b0da0620d5b072006924b0d35712c46e0bac06`.
+- Local Windows installation: upgrade exited successfully, the installed binary matches the packaged binary, and its isolated self-test passed. Saved conversation, configuration and connection file lengths and modification timestamps were preserved; private contents were not included in this report.
+
+Download the [8.3.0 release](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/tag/v8.3.0) or read the [product page](https://talktoai.org/TALKTOAIcode/). These checks establish the listed behavior and build outcomes; arbitrary project quality still needs task-specific verification.
