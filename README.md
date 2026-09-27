@@ -1,6 +1,6 @@
 # TalkToAi Code — Your projects. Your AI. Your workspace.
 
-> **8.2.0 release target** — [Windows installer link](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v8.2.0/TalkToAi-Code-8.2.0-Windows-Setup.exe) · [Release page and checksums](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/tag/v8.2.0). These links become available after the release is published. [8.1.0 remains the verified download](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/tag/v8.1.0) until then.
+> **Latest release: 8.2.0** — [Download the Windows installer](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v8.2.0/TalkToAi-Code-8.2.0-Windows-Setup.exe) · [Release notes and checksums](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/tag/v8.2.0) · [Linux/macOS source ZIP](https://github.com/ResearchForumOnline/TalkToAi-Code/archive/refs/tags/v8.2.0.zip).
 
 ### 8.2.0: a better first look at your project
 
@@ -10,7 +10,7 @@ For a narrow **Plan** request to explain explicitly named files, when every name
 
 `project_map` now ranks source files by matching declarations, with filename and text matches as secondary signals. A function in `engine.py` can surface for a query about its name even when the filename has no match. Candidate inspection stays bounded and skips obvious credential or secret paths. This is navigation evidence, not a whole-repository semantic index.
 
-For native model tool calls, the controller validates the **whole batch** against the enabled tool schemas before executing any call. A disabled tool, missing field, unexpected field or wrong argument type causes the batch to be retried without running its actions. This is atomic *validation*, not a transaction for tool execution; a later runtime failure does not roll back earlier completed calls. [8.2.0 source release notes](docs/RELEASE-8.2.0.md).
+For native model tool calls, the controller validates the **whole batch** against the enabled tool schemas before executing any call. A disabled tool, missing field, unexpected field or wrong argument type causes the batch to be retried without running its actions. This is atomic *validation*, not a transaction for tool execution; a later runtime failure does not roll back earlier completed calls. [8.2.0 release notes](docs/RELEASE-8.2.0.md).
 
 Act coding tasks that ask for a change stay unfinished if the model only replies in prose. A passing local check no longer hides an unresolved failure from a different browser, server, mail or tool-chain action. Optional tool fields now match the defaults the underlying adapters actually accept.
 
@@ -136,7 +136,7 @@ An independent native desktop AI assistant from TalkToAI for coding, games and g
 
 ## Install
 
-**Recommended for Windows:** use the [published 8.1.0 installer](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v8.1.0/TalkToAi-Code-8.1.0-Windows-Setup.exe) until the 8.2.0 release is published, then use its installer link above. Run setup and open **TalkToAi Code** from Start. Python is bundled; you do not need the source setup below. Future releases can be checked from **About & updates** inside the app.
+**Recommended for Windows:** use the [8.2.0 installer](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v8.2.0/TalkToAi-Code-8.2.0-Windows-Setup.exe). Run setup and open **TalkToAi Code** from Start. Python is bundled; you do not need the source setup below. Future releases can be checked from **About & updates** inside the app.
 
 ## Updates and saved settings
 
@@ -229,10 +229,10 @@ In Act mode, try: **“Connect to my website server using my existing SSH config
 
 ### Platform installers
 
-- **Windows:** after publication, use the [8.2.0 Windows installer](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v8.2.0/TalkToAi-Code-8.2.0-Windows-Setup.exe); until then, use the [published 8.1.0 release](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/tag/v8.1.0). This is an unsigned desktop installer, not a Microsoft Store package. The standard per-user installer creates Start Menu/Desktop shortcuts and an uninstaller, and preserves local task data during upgrades.
+- **Windows:** use the [8.2.0 Windows installer](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v8.2.0/TalkToAi-Code-8.2.0-Windows-Setup.exe). This is an unsigned desktop installer, not a Microsoft Store package. The standard per-user installer creates Start Menu/Desktop shortcuts and an uninstaller, and preserves local task data during upgrades.
 - **Portable Windows:** use the [0.1.3 portable ZIP](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v0.1.3-preview/TalkToAi-Code-0.1.3-Windows-Portable.zip) when you do not want an installer.
-- **Linux:** install Python 3.10+ with `venv`, then, once published, extract the [8.2.0 source ZIP](https://github.com/ResearchForumOnline/TalkToAi-Code/archive/refs/tags/v8.2.0.zip) outside your app-data folder and run `bash install-linux.sh` from that folder. Until publication, use the [8.1.0 source ZIP](https://github.com/ResearchForumOnline/TalkToAi-Code/archive/refs/tags/v8.1.0.zip). This creates a user-local virtual environment, launcher and desktop entry. The app uses `~/.local/state/TalkToAiCode` or `XDG_STATE_HOME` for chats/settings. Install Ollama separately and pull a model before selecting Auto. A Secret Service desktop keyring is needed to remember API keys or OAuth tokens.
-- **macOS:** install Python 3.10+, then, once published, extract the [8.2.0 source ZIP](https://github.com/ResearchForumOnline/TalkToAi-Code/archive/refs/tags/v8.2.0.zip) and run `bash install-macos.sh` from that folder. Until publication, use the [8.1.0 source ZIP](https://github.com/ResearchForumOnline/TalkToAi-Code/archive/refs/tags/v8.1.0.zip). This creates a local virtual environment, `~/bin/talktoai-code` launcher, and `~/Applications/TalkToAi Code.app` launcher. Chats/settings use `~/Library/Application Support/TalkToAiCode`. Install Ollama separately and pull a model. Remembered keys and account tokens use macOS Keychain.
+- **Linux:** install Python 3.10+ with `venv`, extract the [8.2.0 source ZIP](https://github.com/ResearchForumOnline/TalkToAi-Code/archive/refs/tags/v8.2.0.zip) outside your app-data folder, and run `bash install-linux.sh` from that folder. This creates a user-local virtual environment, launcher and desktop entry. The app uses `~/.local/state/TalkToAiCode` or `XDG_STATE_HOME` for chats/settings. Install Ollama separately and pull a model before selecting Auto. A Secret Service desktop keyring is needed to remember API keys or OAuth tokens.
+- **macOS:** install Python 3.10+, extract the [8.2.0 source ZIP](https://github.com/ResearchForumOnline/TalkToAi-Code/archive/refs/tags/v8.2.0.zip), and run `bash install-macos.sh` from that folder. This creates a local virtual environment, `~/bin/talktoai-code` launcher, and `~/Applications/TalkToAi Code.app` launcher. Chats/settings use `~/Library/Application Support/TalkToAiCode`. Install Ollama separately and pull a model. Remembered keys and account tokens use macOS Keychain.
 
 Windows has a packaged x64 installer. Linux and macOS use source installers with per-user virtual environments; the [native Ubuntu and macOS install-and-launch smoke run](https://github.com/ResearchForumOnline/TalkToAi-Code/actions/runs/36245686313) passed using an offscreen GUI on clean GitHub runners. An interactive human workflow has not been confirmed on those hosts. Browser research, Chat/Code, local Ollama, project edits, shell commands, jobs and SSH use portable code paths. Windows accessibility PC Pilot and Windows startup shortcuts are Windows-only. Linux browser operation may need desktop libraries for Playwright Chromium; if its browser download fails, install them and rerun `python -m playwright install chromium` inside the app virtual environment.
 

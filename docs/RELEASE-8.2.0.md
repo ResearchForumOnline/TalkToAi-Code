@@ -21,6 +21,7 @@ In one disposable Plan-mode two-file fixture on the configured 30B server route,
 - Source regression suite: **482 tests ran, 11 skipped, no failures** on the Windows release checkout.
 - Windows binary: built with PyInstaller; isolated packaged `--self-test` passed, including startup and existing desktop, browser, chain, process, and policy checks.
 - Inno Setup installer: built as `TalkToAi-Code-8.2.0-Windows-Setup.exe`, 66,422,073 bytes, SHA-256 `4607e125948e592acfbe745b8c2e762eed104d022656ba2e40e51d3fab39d01e`.
-- Portable Ubuntu/macOS workflow, GitHub release asset, local installation, and public website deployment are separate outcomes. Check their linked run, release and live page before claiming them complete.
+- [Portable desktop smoke](https://github.com/ResearchForumOnline/TalkToAi-Code/actions/runs/36339718489) passed on both `ubuntu-latest` and `macos-latest` for source commit `6b44fd8aff1ca190ea3325c273e060df912bcd9a`. These jobs install the source, launch the workspace offscreen, and run the portable agent regression set; interactive use still needs separate confirmation.
+- GitHub release asset, local installation, and public website deployment are separate outcomes. Check their release, installation and live-page evidence before claiming them complete.
 
 The live model fixture above was read-only. It does not verify game creation, extended autonomous coding, GUI operation, or the quality of an arbitrary model.
