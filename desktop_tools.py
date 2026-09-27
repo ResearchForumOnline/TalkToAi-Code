@@ -15,6 +15,7 @@ import uuid
 import signal
 from pathlib import Path
 from platform_paths import state_dir
+from ethics_policy import assert_mutable_path
 
 
 SKIP = {"AppData", ".ssh", ".codex", ".config", ".gnupg", ".aws", ".kube", ".local", ".talktoai-code", ".git", "node_modules", "__pycache__", ".venv", "venv", "Library", "Temp", "obj", "bin", "vendor", "dist", "build"}
@@ -94,7 +95,7 @@ class DesktopTools:
             return p.read_text(encoding="utf-8")
         if name == "desktop_write_file":
             if not self.act:raise PermissionError("Plan mode does not permit desktop edits.")
-            p=self.path(args["path"]);content=args["content"]
+            p=assert_mutable_path(self.path(args["path"]));content=args["content"]
             if len(content.encode("utf-8"))>800000:raise ValueError("Generated desktop file exceeds the 800 KB limit.")
             old=p.read_bytes() if p.exists() else None;before=old.decode("utf-8") if old is not None else ""
             checkpoint=self.state/uuid.uuid4().hex;checkpoint.mkdir(parents=True,exist_ok=True)

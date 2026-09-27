@@ -22,6 +22,8 @@ def smoke(destination):
     try:
         import pywinauto
         result['computer_dependency']=pywinauto.__version__
+        from ethics_policy import verify_release_policy
+        result['operating_policy']=verify_release_policy()['status']=='verified'
         if os.name=='nt':
             from control_cancel import EscapeCancel
             escape=EscapeCancel()
@@ -61,7 +63,7 @@ def smoke(destination):
             report=json.loads(browser.execute('click','Open report'))
             result['browser_popup']=report['url'].endswith('/report') and 'Packaged report ready' in report['page']
             browser.close();browser=None
-        result['passed']=all(result.get(key,False) for key in ('bundled_example','browser_interaction','browser_popup','browser_screenshot','vision_attachment','batch_read','output_registration')) and (os.name!='nt' or (result.get('managed_process',False) and result.get('escape_hook_registration',False)))
+        result['passed']=all(result.get(key,False) for key in ('operating_policy','bundled_example','browser_interaction','browser_popup','browser_screenshot','vision_attachment','batch_read','output_registration')) and (os.name!='nt' or (result.get('managed_process',False) and result.get('escape_hook_registration',False)))
     except Exception as exc:result.update(passed=False,error=f'{type(exc).__name__}: {exc}')
     finally:
         if browser:browser.close()

@@ -126,6 +126,8 @@ class Studio(QMainWindow):
         self.partial = ''
         self.stream_dirty=False
         self.started_at=None
+        self.run_phase='Idle';self.run_step=0;self.last_observed_at=None
+        self.run_tool_counts={};self.run_change_start=0
         self.tool_events=[]
         self.pending_prompt=''
         self.allow_quit=False
@@ -272,6 +274,7 @@ class Studio(QMainWindow):
         more=QPushButton('More  ·  tools && help');more_menu=QMenu(more)
         for title,callback in [('Actions · Ctrl+K',self.command_palette),('Project memory · Ctrl+Shift+M',self.memory_dialog),('Project instructions · AGENTS.md',self.instructions_dialog),('Back up conversations',self.backup_conversations),('API providers',self.providers_dialog),('Link ZeroThink account & vault',self.link_zerothink),('Model choices and storage',self.models_dialog),('FAQ / How to · F1',self.faq_dialog),('Open app data folder',lambda:QDesktopServices.openUrl(QUrl.fromLocalFile(str(STATE))))]:
             more_menu.addAction(title,callback)
+        more_menu.addAction('Operating policy',self.operating_policy_dialog)
         more.setMenu(more_menu);side.addWidget(more)
         self.connection_label = QLabel('⌁  No SSH connection'); self.connection_label.setObjectName('muted'); side.addWidget(self.connection_label)
         self.health_label = QLabel('○  Checking models'); self.health_label.setObjectName('muted'); side.addWidget(self.health_label)
@@ -318,6 +321,7 @@ class Studio(QMainWindow):
         self.mode.currentTextChanged.connect(show_mode);show_mode();chat.addWidget(self.mode_hint)
         hint=QLabel('Enter to send  ·  Shift+Enter for a new line  ·  Ctrl+O to open a project'); hint.setObjectName('muted'); chat.addWidget(hint)
         self.performance_label=QLabel('Auto prefers a verified coding route, then falls back when unavailable.');self.performance_label.setObjectName('muted');chat.addWidget(self.performance_label)
+        self.performance_label.setWordWrap(True)
         split.addWidget(center)
         self.right = QTabWidget(); self.right.setMinimumWidth(320); split.addWidget(self.right); split.setSizes([850,390])
         files = QWidget(); fl=QVBoxLayout(files)
@@ -397,6 +401,23 @@ class Studio(QMainWindow):
         row=QHBoxLayout();layout.addLayout(row)
         self.button('Save notes',save,row,True);self.button('Cancel',dialog.reject,row)
         dialog.exec()
+
+    def operating_policy_dialog(self):
+        dialog=QDialog(self);dialog.setWindowTitle('Operating policy');dialog.resize(740,580)
+        layout=QVBoxLayout(dialog)
+        status=QLabel();status.setObjectName('operating_policy_status');status.setTextFormat(Qt.PlainText);status.setWordWrap(True);layout.addWidget(status)
+        body=QPlainTextEdit();body.setObjectName('operating_policy_text');body.setReadOnly(True);layout.addWidget(body,1)
+        try:
+            from ethics_policy import policy_prompt, verify_release_policy
+            report=verify_release_policy();text=policy_prompt()
+            status.setText('Release policy text: '+report['status']+'\nSHA-256: '+report['policy_sha256'])
+            body.setPlainText(text)
+        except (OSError,ValueError,ImportError) as exc:
+            status.setText('Operating policy integrity check failed. Restore the trusted release before running tasks.')
+            body.setPlainText('Verified policy text is unavailable.\n\n'+str(exc)+'\n\nThis dialog cannot modify or reseal the policy.')
+        boundary=QLabel('This is an application policy check, not an operating-system sandbox. A process with the same user permissions can bypass it; the owner controls the open-source software.')
+        boundary.setWordWrap(True);boundary.setTextFormat(Qt.PlainText);layout.addWidget(boundary)
+        self.button('Close',dialog.accept,layout);dialog.exec()
 
     def instructions_dialog(self):
         if self.busy:return
@@ -689,6 +710,8 @@ class Studio(QMainWindow):
         partial,hidden=conversation_prose(self.partial);hidden_protocol=hidden_protocol or hidden
         if partial:parts.append('## TalkToAi Code\n\n'+partial)
         if hidden_protocol:parts.append('Model protocol text is hidden from this conversation view. Actual tool activity appears in Tools; protocol text alone does not establish execution.')
+        if not self.busy and not self.task.get('pause_summary') and self.task.get('goal_checkpoint',{}).get('state')=='paused':
+            parts.append('## Task pause report\n\n'+self.pause_report(self.task['goal_checkpoint']))
         if not parts:
             if self.task.get('kind','code')=='chat':
                 parts=['# Start a conversation\n\nAsk a question, explore an idea, or plan your next move. Chat starts in **Plan** mode so it can read relevant files without changing them. Switch to **Act** if you want it to take action.\n\nPinned chats stay at the top of this space. Use the conversation menu to rename, branch, archive, or move a chat into Code.']
@@ -704,7 +727,34 @@ class Studio(QMainWindow):
 
     def tick(self):
         if self.busy and self.started_at:
-            self.performance_label.setText(f'{self.route_description}  ·  {int(time.monotonic()-self.started_at)}s elapsed  ·  output streams when available')
+            now=time.monotonic();quiet=max(0,int(now-(self.last_observed_at or self.started_at)))
+            changes=max(0,len(self.task.get('changes',[]))-self.run_change_start)
+            text=f'{self.run_phase} · step {self.run_step or "—"} · {int(now-self.started_at)}s elapsed · {sum(self.run_tool_counts.values())} tools · {changes} tracked edits'
+            speed=self.task.get('last_metrics',{}).get('tokens_per_second')
+            if speed is not None:text+=f' · last response {speed} tokens/s'
+            if quiet>=90:text+=f'\nNo new output for {quiet}s. The model or command may still be running; Stop remains available.'
+            else:text+=f' · last output {quiet}s ago'
+            self.performance_label.setText(text)
+
+    def observe_progress(self,phase=None,step=None):
+        self.last_observed_at=time.monotonic()
+        if phase:self.run_phase=phase
+        if step is not None:self.run_step=step
+
+    def pause_report(self,checkpoint):
+        steps=checkpoint.get('steps',self.run_step);changes=checkpoint.get('changes',0)
+        verification=checkpoint.get('verification') or {}
+        check='recorded check status: '+str(verification.get('status','unknown')) if verification else 'no check result recorded this run'
+        lines=[f'Task paused after {steps} model steps. Work remains unfinished.',
+               f'Recorded this run: {changes} tracked file edits; {check}.']
+        if not changes:lines.append('Shell commands can change files outside the tracked editor; inspect Git changes before assuming nothing changed.')
+        blockers=checkpoint.get('blockers') or []
+        if blockers:lines.append('Reported blockers: '+'; '.join(str(item)[:220] for item in blockers[:3]))
+        goal=self.current_task_goal() or {}
+        next_action=goal.get('next_action') or next((item['text'] for item in goal.get('criteria',[]) if item['status']!='met'),'')
+        if not next_action:next_action='Use the files already inspected to implement one concrete change, then run its relevant check.'
+        lines.append('Next: '+next_action+' Review the latest Tools error before retrying a failed command.')
+        return '\n\n'.join(lines)
 
     def refresh_artifacts(self):
         self.artifacts.clear()
@@ -1012,6 +1062,11 @@ class Studio(QMainWindow):
             self.output.clear();self.status.setText('Starting new run…')
             self.task['activity_run_start']=len(self.task.get('activity',[]))
             self.task.pop('last_metrics',None)
+            self.performance_label.setToolTip('')
+            self.task.pop('pause_summary',None)
+            self.task.pop('goal_checkpoint',None)
+            self.run_phase='Connecting to model';self.run_step=0;self.last_observed_at=time.monotonic()
+            self.run_tool_counts={};self.run_change_start=len(self.task.get('changes',[]))
             token=object();self.control_cancel_token=token;cancel=self.cancel
             self.explicit_stop=threading.Event();explicit_stop=self.explicit_stop
             def escape():
@@ -1050,18 +1105,20 @@ class Studio(QMainWindow):
             draft=self.prompt.toPlainText().strip();queued=self.pending_prompt;self.pending_prompt=''
             self.prompt.setPlainText(queued+('\n\n'+draft if draft and draft!=queued else ''))
         self.cancel.set(); self.status.setText('Stopping · waiting for model or running command to yield')
+        self.observe_progress('Stopping')
         if self.control_active:
             self.control_overlay.show_stopping();self.control_banner.setText('TalkToAi is stopping…\nWaiting for the current action to finish safely.')
 
     def handle_event(self,kind,data):
         if kind=='control_cancel':
             if self.busy and data is self.control_cancel_token:self.stop_task()
-        elif kind=='delta':self.partial+=data;self.stream_dirty=True
+        elif kind=='delta':self.partial+=data;self.stream_dirty=True;self.observe_progress('Model responding')
         elif kind=='job':
             target=next((task for task in self.tasks if task['id']==data.get('task_id',self.task['id'])),None)
             if target is None:return
             jobs=target.setdefault('jobs',[])
             old=next((j for j in jobs if j['id']==data['id']),None)
+            if target is self.task and (old is None or any(old.get(key)!=data.get(key) for key in ('output','state'))):self.observe_progress('Managed command running' if data.get('state')=='running' else 'Managed command finished')
             state_changed=old is None or old.get('state')!=data.get('state')
             if old is not None:old.update(data)
             else:jobs.append(dict(data))
@@ -1073,6 +1130,11 @@ class Studio(QMainWindow):
         elif kind=='goal_checkpoint':
             self.task['goal_checkpoint']=data;self.refresh_plan();self.persist()
             self.status.setText(f"Work pass {data.get('pass',1)}/{data.get('total_passes',1)} · {data.get('steps',0)} steps · {data.get('state','')}")
+            self.observe_progress('Paused' if data.get('state')=='paused' else 'Continuing work',data.get('steps',self.run_step))
+            if data.get('state')=='paused':
+                summary=self.pause_report(data)
+                if self.task.get('pause_summary')!=summary:
+                    self.task['pause_summary']=summary;self.task['messages'].append({'role':'assistant','content':summary});self.persist();self.render()
         elif kind=='task_goal':
             from task_goals import normalize_goal
             try:goal=normalize_goal(data,previous=self.current_task_goal())
@@ -1081,15 +1143,27 @@ class Studio(QMainWindow):
         elif kind=='plan':
             self.task['plan']=data;self.refresh_plan();self.persist()
         elif kind=='verification':
+            self.observe_progress('Check result received')
             self.task['verification']=data;self.refresh_plan();self.persist()
         elif kind=='message':self.task['messages'].append(data);self.partial='';self.persist();self.render()
         elif kind=='tool':
+            name=data['name'];self.run_tool_counts[name]=self.run_tool_counts.get(name,0)+1
+            if name in ('read_file','read_project_files','list_files','project_info','search_code','project_map','git_changes'):phase='Inspecting project'
+            elif name in ('write_file','write_file_checked','edit_file'):phase='Editing files'
+            elif name=='run_checks':phase='Running project checks'
+            elif name=='run_command':phase='Running project command'
+            elif name in ('start_process','poll_process'):phase='Monitoring managed command'
+            elif name=='browser':phase='Using browser'
+            elif name=='computer':phase='Operating desktop'
+            else:phase='Using '+name
+            self.observe_progress(phase)
             if data['name'] in CONTROL_TOOLS:self.start_control_session(data['name'],data.get('args',{}))
             line='→ '+data['name']+'\n'+json.dumps(data['args'],ensure_ascii=False)[:2000]
             if self.config.get('show_tool_activity',True):self.output.appendPlainText(line)
             self.task.setdefault('activity',[]).append(line)
             if not self.cancel.is_set():self.status.setText('Using '+data['name'])
         elif kind=='result':
+            self.observe_progress('Tool result received')
             if self.config.get('show_tool_activity',True):self.output.appendPlainText(str(data)+'\n')
             self.task.setdefault('activity',[]).append(str(data)[-6000:]);self.persist()
         elif kind=='artifact':
@@ -1130,7 +1204,15 @@ class Studio(QMainWindow):
             label=self.server_name() if data['route']=='server' else 'API' if data['route']=='provider' else 'Local'
             self.route_description=label+' · '+data['model'];self.status.setText(self.route_description+' · '+data['reason'])
         elif kind=='metrics':
+            self.observe_progress('Model response received',data.get('step',self.run_step))
             self.task['last_metrics']=data
+            details=['Last completed response: measured runtime timings, not live phase estimates.']
+            for key,label in [('load_seconds','Model loading'),('prompt_seconds','Prompt processing'),('generation_seconds','Token generation')]:
+                value=data.get(key)
+                if isinstance(value,(int,float)) and not isinstance(value,bool) and value>=0:details.append(f'{label}: {value:g}s')
+            if isinstance(data.get('prompt_tokens'),int) and data['prompt_tokens']>=0:details.append(f"Prompt tokens: {data['prompt_tokens']}")
+            details.append('Tokens/s describes the last response generation speed, not overall task throughput.')
+            self.performance_label.setToolTip('\n'.join(details))
             usage=data.get('api_usage')
             if usage:
                 totals=self.task.setdefault('api_usage',{'prompt_tokens':0,'completion_tokens':0,'total_tokens':0})
@@ -1138,9 +1220,12 @@ class Studio(QMainWindow):
                     if isinstance(usage.get(key),int):totals[key]+=usage[key]
                 self.performance_label.setText(f"API: {usage.get('total_tokens','unknown')} tokens this response · {totals['total_tokens']} reported in chat · not a billing total")
             else:self.performance_label.setText(f"{data['tokens_per_second']} tokens/s · {data['seconds']}s · step {data['step']}")
-        elif kind=='change':self.task['changes'].append(data);self.persist();self.refresh_changes()
+        elif kind=='change':self.task['changes'].append(data);self.persist();self.refresh_changes();self.observe_progress('File edit recorded')
         elif kind=='status':
             if not (self.busy and self.cancel.is_set()):self.status.setText(data)
+            step=re.search(r'\bstep\s+(\d+)\b',str(data),re.I)
+            if step:self.observe_progress('Waiting for model',int(step.group(1)))
+            elif str(data).lower().startswith(('retrying','repairing')):self.observe_progress('Retrying model response')
         elif kind=='health':self.health_label.setText(data)
         elif kind=='runtime_diagnostics':
             self.output.setPlainText(data);self.right.setCurrentIndex(2);self.status.setText('Model diagnostics complete; see Tools for recovery steps')
@@ -1150,6 +1235,7 @@ class Studio(QMainWindow):
             self.status.setText(data)
             self.refresh_mail_status()
         elif kind=='error':
+            self.observe_progress('Failed')
             self.end_control_session()
             if not self.prompt.toPlainText().strip():
                 previous=next((m.get('content','') for m in reversed(self.task['messages']) if m.get('role')=='user'), '')
@@ -1169,6 +1255,9 @@ class Studio(QMainWindow):
             if metrics.get('api_usage'):
                 self.performance_label.setText(f"{self.route_description} · {self.task.get('api_usage',{}).get('total_tokens',0)} reported API tokens in chat · not a billing total")
             else:self.performance_label.setText(f"{self.route_description} · {int(time.monotonic()-self.started_at)}s total · last step {metrics.get('tokens_per_second','—')} tokens/s")
+            if self.task.get('pause_summary') and not self.cancel.is_set() and not self.status.text().startswith('Request failed'):
+                checkpoint=self.task.get('goal_checkpoint',{})
+                self.performance_label.setText(f"Paused · {int(time.monotonic()-self.started_at)}s total · {checkpoint.get('steps',0)} model steps · {checkpoint.get('changes',0)} tracked edits · last response {metrics.get('tokens_per_second','—')} tokens/s\nSee the task pause report for recorded checks, blockers and the next action.")
             if self.pending_prompt:
                 queued=self.pending_prompt;self.pending_prompt=''
                 self._send_queued(queued)

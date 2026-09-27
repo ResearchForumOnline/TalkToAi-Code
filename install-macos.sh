@@ -33,8 +33,8 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<'EOF'
 <key>CFBundleIdentifier</key><string>org.talktoai.code</string>
 <key>CFBundleExecutable</key><string>TalkToAiCode</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleVersion</key><string>0.8.0</string>
-<key>CFBundleShortVersionString</key><string>0.8.0</string>
+<key>CFBundleVersion</key><string>0.9.0</string>
+<key>CFBundleShortVersionString</key><string>0.9.0</string>
 </dict></plist>
 EOF
 echo "Installed TalkToAi Code. Open $APP_BUNDLE or run $HOME/bin/talktoai-code"

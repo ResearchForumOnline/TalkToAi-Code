@@ -45,7 +45,7 @@ class ProgressGuardTests(unittest.TestCase):
         for i in range(200):guard.observe('search_code',{'query':str(i)},'none')
         self.assertEqual(len(guard.entries),128)
 
-    def run_fixture(self,commands,cancel=None):
+    def run_fixture(self,commands,cancel=None,command_result=None):
         payloads=[];events=[];executed=[]
         def stream(_url,payload,_cancel):
             payloads.append(payload)
@@ -55,6 +55,7 @@ class ProgressGuardTests(unittest.TestCase):
         def execute(tools,name,args):
             executed.append(name)
             if name=='list_files':return 'project.godot\nscene.gd'
+            if name=='run_command' and command_result is not None:return command_result
             return original(tools,name,args)
         with tempfile.TemporaryDirectory() as folder,patch.object(core,'stream_chat',side_effect=stream), \
                 patch.object(core,'model_supports_vision',return_value=False),patch.object(core.ProjectTools,'execute',execute), \
@@ -77,6 +78,14 @@ class ProgressGuardTests(unittest.TestCase):
         self.assertEqual(executed.count('list_files'),6)
         self.assertIn('write_file',executed)
         self.assertTrue(any(k=='change' for k,v in events))
+
+    def test_shell_results_cannot_reset_unchanged_discovery_loop(self):
+        commands=[('list_files',{})]*3+[('run_command',{'command':'dir /s'}),('list_files',{}),('run_command',{'command':'dir /s /b'}),('list_files',{})]
+        for outcome in ('Exit 1\nPowerShell syntax error','Exit 0\nSame source listing'):
+            payloads,events,executed=self.run_fixture(commands,command_result=outcome)
+            self.assertEqual(len(payloads),7)
+            self.assertEqual(executed.count('list_files'),3)
+            self.assertTrue(any(k=='status' and 'task remains unfinished' in v for k,v in events))
 
     def test_cancelled_agent_never_executes_discovery(self):
         cancel=threading.Event();cancel.set()

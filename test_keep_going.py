@@ -89,6 +89,12 @@ class KeepGoingTests(unittest.TestCase):
         self.assertEqual(checkpoints[0]['verification']['status'],'passed')
         self.assertEqual(checkpoints[0]['changes'],1)
 
+    def test_failed_check_nudge_targets_diagnosis_and_preserves_batch(self):
+        payloads,events=self.fixture([response('run_checks',{}),response(text='Blocked.')],rounds=3,check_results=['Exit 1\nFAIL: validation_case'])
+        prompts=[m['content'] for m in payloads[1]['messages'] if m['role']=='user']
+        self.assertTrue(any('exact failing test/assertion' in prompt and 'Preserve the tests' in prompt for prompt in prompts))
+        self.assertFalse(any(k=='status' and v=='Ready' for k,v in events))
+
     def test_successful_read_does_not_clear_a_failed_check(self):
         sequence=[response('run_checks',{}),response('read_file',{'path':'0.txt'})]
         payloads,events=self.fixture(sequence,check_results=['Exit 1\nTest failed'])

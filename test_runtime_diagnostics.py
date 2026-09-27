@@ -2,7 +2,7 @@ import io
 import json
 import unittest
 from unittest.mock import patch
-from runtime_diagnostics import probe, diagnose, report, MAX_BYTES
+from runtime_diagnostics import probe, diagnose, report, MAX_BYTES, running_probe, residency_summary
 
 
 class RuntimeDiagnosticsTests(unittest.TestCase):
@@ -27,7 +27,7 @@ class RuntimeDiagnosticsTests(unittest.TestCase):
         self.assertIn('Settings', rows[1]['action'])
 
     def test_offline_actions_and_custom_label(self):
-        with patch('runtime_diagnostics.probe', return_value={'state':'unreachable','models':[]}):
+        with patch('runtime_diagnostics.probe', return_value={'state':'unreachable','models':[]}),patch('runtime_diagnostics.running_probe',return_value={'state':'unreachable','models':[]}):
             text=report({'server_label':'AMD'})
         self.assertIn('AMD',text);self.assertIn('SSH host alias',text);self.assertIn('Start or install Ollama',text)
         self.assertIn('does not load or download',text)
@@ -44,4 +44,30 @@ class RuntimeDiagnosticsTests(unittest.TestCase):
 
     def test_deadline_stops_trickling_response(self):
         with patch('runtime_diagnostics.urllib.request.urlopen',return_value=io.BytesIO(b' ' * 20000)), patch('runtime_diagnostics.time.monotonic',side_effect=[0,0,4]):
-            self.assertEqual(probe(11434)['state'],'unreachable')
+                self.assertEqual(probe(11434)['state'],'unreachable')
+
+    def test_residency_cpu_gpu_missing_and_not_loaded_are_distinct(self):
+        state={'state':'reachable','models':[{'name':'coder:latest','size':100,'size_vram':0,'context_length':8192}]}
+        self.assertIn('CPU/system-memory',residency_summary(state,'coder'))
+        state['models'][0]['size_vram']=100
+        self.assertIn('GPU-resident',residency_summary(state,'coder'))
+        state['models'][0]['size_vram']=50
+        self.assertIn('GPU offload',residency_summary(state,'coder'))
+        state['models'][0]['size_vram']=None
+        self.assertIn('unknown',residency_summary(state,'coder'))
+        self.assertIn('not loaded',residency_summary(state,'other'))
+
+    def test_running_probe_bounds_and_validates_numbers(self):
+        raw=json.dumps({'models':[{'name':'a','size':100,'size_vram':False,'context_length':8192}]}).encode()
+        with patch('runtime_diagnostics.urllib.request.urlopen',return_value=io.BytesIO(raw)):
+            state=running_probe(11435)
+        self.assertIsNone(state['models'][0]['size_vram'])
+        for raw in (b'[]',b'{"models":[null]}',b'x'*(MAX_BYTES+1)):
+            with patch('runtime_diagnostics.urllib.request.urlopen',return_value=io.BytesIO(raw)):
+                self.assertEqual(running_probe(11435)['state'],'invalid')
+
+    def test_residency_does_not_assume_gpu_absent_when_unloaded(self):
+        with patch('runtime_diagnostics.urllib.request.urlopen',return_value=io.BytesIO(b'{"models":[]}')) as request:
+            state=running_probe(11435)
+        self.assertEqual(request.call_args.args[0],'http://127.0.0.1:11435/api/ps')
+        self.assertIn('GPU availability is not established',residency_summary(state,'a'))

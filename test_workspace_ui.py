@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QPlainTextEdit, QPushButton, QComboBox, QDialog, QLineEdit
+from PySide6.QtWidgets import QApplication, QPlainTextEdit, QPushButton, QComboBox, QDialog, QLineEdit, QLabel
 import studio
 from session_store import load_tasks
 
@@ -313,6 +313,91 @@ class WorkspaceUITests(unittest.TestCase):
         with patch.object(w,'_send_queued') as resume:w.handle_event('finished',None);resume.assert_not_called()
         w.handle_event(*pending[0])
         self.assertEqual(w.pending_prompt,'');self.assertIn('Queued steering',w.prompt.toPlainText())
+
+    def test_run_progress_distinguishes_model_tool_and_no_output_without_claiming_stall(self):
+        w=self.window
+        with patch('studio.time.monotonic',return_value=100):
+            w.started_at=100;w.set_busy(True)
+            w.handle_event('status','Working - step 7')
+        with patch('studio.time.monotonic',return_value=200):w.tick()
+        text=w.performance_label.text()
+        self.assertIn('Waiting for model',text);self.assertIn('step 7',text)
+        self.assertIn('No new output for 100s',text);self.assertIn('may still be running',text)
+        self.assertFalse(w.cancel.is_set())
+        with patch('studio.time.monotonic',return_value=201):
+            w.handle_event('tool',{'name':'run_command','args':{'command':'fixture'}});w.tick()
+        self.assertIn('Running project command',w.performance_label.text())
+        self.assertIn('1 tools',w.performance_label.text());self.assertIn('0 tracked edits',w.performance_label.text())
+        self.assertNotIn('No new output',w.performance_label.text())
+        w.handle_event('delta','Planning a change');self.assertEqual(w.run_phase,'Model responding')
+        w.set_busy(False)
+
+    def test_completed_response_timing_details_use_only_reported_values(self):
+        w=self.window
+        w.handle_event('metrics',{'seconds':50,'tokens_per_second':8.29,'step':4,'load_seconds':12.5,
+                                 'prompt_seconds':30,'generation_seconds':7.5,'prompt_tokens':2000})
+        tooltip=w.performance_label.toolTip()
+        self.assertIn('Last completed response',tooltip);self.assertIn('Model loading: 12.5s',tooltip)
+        self.assertIn('Prompt processing: 30s',tooltip);self.assertIn('Token generation: 7.5s',tooltip)
+        self.assertIn('Prompt tokens: 2000',tooltip);self.assertIn('not overall task throughput',tooltip)
+        w.handle_event('metrics',{'seconds':5,'tokens_per_second':2,'step':5})
+        self.assertNotIn('Model loading:',w.performance_label.toolTip())
+        w.set_busy(True);self.assertEqual(w.performance_label.toolTip(),'');w.set_busy(False)
+
+    def test_operating_policy_dialog_is_read_only_and_shows_verified_digest(self):
+        from ethics_policy import EXPECTED_POLICY_SHA256
+        def inspect(dialog):
+            body=dialog.findChild(QPlainTextEdit,'operating_policy_text')
+            status=dialog.findChild(QLabel,'operating_policy_status')
+            self.assertTrue(body.isReadOnly());self.assertIn('TalkToAi operating policy',body.toPlainText())
+            self.assertIn('verified',status.text());self.assertIn(EXPECTED_POLICY_SHA256,status.text())
+            self.assertEqual([button.text() for button in dialog.findChildren(QPushButton)],['Close'])
+            self.assertFalse(dialog.findChildren(QLineEdit));dialog.accept()
+        with patch.object(studio.QDialog,'exec',inspect):self.window.operating_policy_dialog()
+
+    def test_operating_policy_integrity_error_requires_trusted_restore(self):
+        from ethics_policy import PolicyIntegrityError
+        def inspect(dialog):
+            body=dialog.findChild(QPlainTextEdit,'operating_policy_text')
+            status=dialog.findChild(QLabel,'operating_policy_status')
+            self.assertIn('Restore the trusted release',status.text())
+            self.assertIn('cannot modify or reseal',body.toPlainText());self.assertTrue(body.isReadOnly())
+            self.assertEqual([button.text() for button in dialog.findChildren(QPushButton)],['Close']);dialog.accept()
+        with patch('ethics_policy.verify_release_policy',side_effect=PolicyIntegrityError('Fixture mismatch')),patch('ethics_policy.policy_prompt') as prompt,patch.object(studio.QDialog,'exec',inspect):
+            self.window.operating_policy_dialog();prompt.assert_not_called()
+
+    def test_pause_report_is_evidence_bound_persisted_and_not_duplicated(self):
+        w=self.window;w.task['verification']={'status':'passed','summary':'Old run'}
+        checkpoint={'pass':1,'total_passes':3,'steps':32,'changes':0,'verification':None,
+                    'state':'paused','progress_observations':10,'blockers':['PowerShell command syntax failed']}
+        w.handle_event('goal_checkpoint',checkpoint)
+        summary=w.task['pause_summary'];before=len(w.task['messages'])
+        self.assertIn('0 tracked file edits',summary);self.assertIn('no check result recorded this run',summary)
+        self.assertIn('Shell commands can change files',summary);self.assertIn('PowerShell command syntax failed',summary)
+        self.assertIn('Use the files already inspected',summary);self.assertNotIn('recorded check status: passed',summary)
+        w.handle_event('goal_checkpoint',checkpoint);self.assertEqual(len(w.task['messages']),before)
+        self.assertEqual(load_tasks(studio.SESSION)[0][0]['pause_summary'],summary)
+
+    def test_old_paused_conversation_gets_visible_summary_without_history_rewrite(self):
+        w=self.window;w.task['goal_checkpoint']={'state':'paused','steps':32,'changes':0,'verification':None}
+        before=list(w.task['messages'])
+        with patch.object(w.transcript,'setMarkdown') as display:w.render()
+        self.assertIn('Task pause report',display.call_args.args[0])
+        self.assertIn('0 tracked file edits',display.call_args.args[0])
+        self.assertEqual(w.task['messages'],before)
+        w.set_busy(True);self.assertNotIn('goal_checkpoint',w.task);w.set_busy(False)
+
+    def test_pause_report_uses_saved_next_action_and_finish_keeps_summary_visible(self):
+        import time
+        w=self.window;w.started_at=time.monotonic();w.route_description='Fixture';w.set_busy(True)
+        w.handle_event('task_goal',{'objective':'Pause menu','criteria':[{'text':'Menu opens'}],'next_action':'Edit input handler and run its test'})
+        w.handle_event('goal_checkpoint',{'state':'paused','steps':8,'changes':2,'verification':{'status':'failed'},'blockers':[]})
+        self.assertIn('Edit input handler and run its test',w.task['pause_summary'])
+        self.assertIn('recorded check status: failed',w.task['pause_summary'])
+        w.handle_event('finished',None)
+        self.assertIn('Paused',w.performance_label.text());self.assertIn('2 tracked edits',w.performance_label.text())
+        w.set_busy(True);self.assertNotIn('pause_summary',w.task);self.assertEqual(w.run_step,0)
+        w.set_busy(False)
 
     def test_continue_prefers_explicit_saved_goal_but_new_steering_wins_and_clears_goal(self):
         w=self.window;w.task['project']=str(self.root)

@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 
 from agent_core import ProjectTools, _run_agent
 from agent_workflow import check_evidence
+from ethics_policy import verify_release_policy, rejected_candidate_changes
 
 
 SOURCE_SUFFIXES = {'.py', '.js', '.jsx', '.ts', '.tsx', '.json', '.toml', '.yaml',
@@ -141,6 +142,7 @@ def run_improvement(url, model, project, goal, cancel, emit, performance=None, m
     `emit` accepts the same (kind, value) shape as run_agent. It additionally
     receives ``skynet_report`` with the candidate and report paths.
     """
+    verify_release_policy()
     root = Path(project).resolve()
     if not root.is_dir():
         raise ValueError('Select an existing project folder.')
@@ -154,6 +156,7 @@ def run_improvement(url, model, project, goal, cancel, emit, performance=None, m
     candidate = Path(tempfile.mkdtemp(prefix='TalkToAi-Skynet-')).resolve()
     baseline = _copy_candidate(root, candidate)
     results = []
+    policy_rejections = []
     emit('status', 'Skynet Mode: candidate copy ready; original project is unchanged')
     for index in range(max_iterations):
         if cancel.is_set():
@@ -175,6 +178,13 @@ def run_improvement(url, model, project, goal, cancel, emit, performance=None, m
             if tools.computer:
                 tools.computer.close()
         changed = _changes(candidate, baseline)
+        policy_rejections = rejected_candidate_changes(root,changed)
+        if policy_rejections:
+            results.append({'iteration':index+1,'changed_files':len(changed),
+                            'checks':{'status':'blocked','summary':'Candidate changed protected operating policy or enforcement.'},
+                            'check_output':'Rejected paths: '+', '.join(policy_rejections)})
+            emit('status','Skynet candidate rejected: protected policy/enforcement changed. Do not apply this candidate.')
+            break
         check = {'status': 'unverified', 'summary': 'No candidate changes to verify.'}
         check_output = ''
         if changed and not cancel.is_set():
@@ -188,11 +198,17 @@ def run_improvement(url, model, project, goal, cancel, emit, performance=None, m
                 check_output = str(exc)
         results.append({'iteration': index + 1, 'changed_files': len(changed),
                         'checks': check, 'check_output': check_output[-12000:]})
+        policy_rejections = rejected_candidate_changes(root,_changes(candidate,baseline))
+        if policy_rejections:
+            results[-1]['checks']={'status':'blocked','summary':'Candidate checks changed protected operating policy. Candidate rejected.'}
+            emit('status','Skynet candidate rejected: checks changed protected policy. Do not apply this candidate.')
+            break
         emit('status', f'Skynet Mode: iteration {index + 1}/{max_iterations}; checks {check["status"]}')
         if not changed or changed == before or check['status'] == 'failed':
             break
 
     changes = _changes(candidate, baseline)
+    policy_rejections = rejected_candidate_changes(root,changes)
     diff_path = candidate / 'SKYNET-CANDIDATE.diff'
     diff_path.write_text(_diff(root, candidate, changes), encoding='utf-8')
     report = {'schema': 'talktoai.skynet.candidate.v1', 'created_utc': datetime.now(timezone.utc).isoformat(),
@@ -201,6 +217,8 @@ def run_improvement(url, model, project, goal, cancel, emit, performance=None, m
               'test_files_changed': [item['path'] for item in changes if Path(item['path']).name.startswith('test_')
                                      or '/test/' in item['path'].lower() or '/tests/' in item['path'].lower()],
               'diff_path': str(diff_path), 'cancelled': cancel.is_set(),
+              'rejected_policy_changes': policy_rejections,
+              'policy_status': 'rejected' if policy_rejections else 'unchanged',
               'review_required': True,
               'note': 'Candidate only. Checks run with current user permissions. Review diff and evidence before manually applying anything.'}
     report_path = candidate / 'SKYNET-REPORT.json'
