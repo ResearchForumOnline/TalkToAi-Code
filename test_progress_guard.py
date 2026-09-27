@@ -59,7 +59,7 @@ class ProgressGuardTests(unittest.TestCase):
             return original(tools,name,args)
         with tempfile.TemporaryDirectory() as folder,patch.object(core,'stream_chat',side_effect=stream), \
                 patch.object(core,'model_supports_vision',return_value=False),patch.object(core.ProjectTools,'execute',execute), \
-                patch.object(core,'AUTO_CONTEXT',False):
+                patch.object(core,'AUTO_CONTEXT',False),patch.object(core,'research_query',return_value=None):
             core.run_agent('http://fixture','fixture',[{'role':'user','content':'Improve this game'}],folder,True,
                            cancel or threading.Event(),lambda k,v:events.append((k,v)),rounds=9)
         return payloads,events,executed
