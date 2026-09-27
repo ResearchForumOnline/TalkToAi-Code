@@ -128,6 +128,7 @@ class Studio(QMainWindow):
         self.started_at=None
         self.run_phase='Idle';self.run_step=0;self.last_observed_at=None
         self.run_tool_counts={};self.run_change_start=0
+        self.reasoning_excerpt=''
         self.tool_events=[]
         self.pending_prompt=''
         self.allow_quit=False
@@ -144,6 +145,8 @@ class Studio(QMainWindow):
             'num_ctx': 8192,
             'keep_going': False,
             'show_tool_activity': True,
+            'show_model_activity': False,
+            'work_session_minutes': 120,
             'remote_enabled': True,
             'remote_pilot': True,
             'active_ssh_alias': '',
@@ -275,6 +278,10 @@ class Studio(QMainWindow):
         for title,callback in [('Actions · Ctrl+K',self.command_palette),('Project memory · Ctrl+Shift+M',self.memory_dialog),('Project instructions · AGENTS.md',self.instructions_dialog),('Back up conversations',self.backup_conversations),('API providers',self.providers_dialog),('Link ZeroThink account & vault',self.link_zerothink),('Model choices and storage',self.models_dialog),('FAQ / How to · F1',self.faq_dialog),('Open app data folder',lambda:QDesktopServices.openUrl(QUrl.fromLocalFile(str(STATE))))]:
             more_menu.addAction(title,callback)
         more_menu.addAction('Operating policy',self.operating_policy_dialog)
+        self.model_activity_action=more_menu.addAction('Show model activity')
+        self.model_activity_action.setCheckable(True)
+        self.model_activity_action.setChecked(bool(self.config.get('show_model_activity',False)))
+        self.model_activity_action.triggered.connect(self.toggle_model_activity)
         more.setMenu(more_menu);side.addWidget(more)
         self.connection_label = QLabel('⌁  No SSH connection'); self.connection_label.setObjectName('muted'); side.addWidget(self.connection_label)
         self.health_label = QLabel('○  Checking models'); self.health_label.setObjectName('muted'); side.addWidget(self.health_label)
@@ -297,6 +304,14 @@ class Studio(QMainWindow):
         self.skynet_button=self.button('⚡ Skynet Mode',self.start_skynet,shortcuts)
         self.skynet_button.setToolTip('Create and check a bounded improvement candidate in a separate copy. Review the diff before applying it.')
         chat.addWidget(self.code_actions)
+        self.run_card=QFrame();self.run_card.setObjectName('runCard')
+        run_card_layout=QVBoxLayout(self.run_card);run_card_layout.setContentsMargins(14,10,14,10)
+        self.run_card_title=QLabel('Request received');self.run_card_title.setStyleSheet('font-weight:600;color:#dff9f2;')
+        self.run_card_detail=QLabel('App status · waiting for the model to reply.');self.run_card_detail.setWordWrap(True)
+        self.run_card_detail.setTextFormat(Qt.PlainText)
+        run_card_layout.addWidget(self.run_card_title);run_card_layout.addWidget(self.run_card_detail)
+        self.run_card.setStyleSheet('QFrame#runCard {background:#17323d;border:1px solid #476c74;border-radius:9px;}')
+        self.run_card.hide();chat.addWidget(self.run_card)
         self.transcript = QTextBrowser(); self.transcript.setOpenExternalLinks(False); self.transcript.document().setDefaultStyleSheet('p {line-height:1.6;} pre {background:#242424; padding:12px;} code {font-family:Consolas;} h2 {font-size:17px;}')
         chat.addWidget(self.transcript,1)
         self.status = QLabel('Ready'); self.status.setObjectName('muted'); chat.addWidget(self.status)
@@ -311,7 +326,11 @@ class Studio(QMainWindow):
         self.step_budget=QComboBox()
         for steps in (16,32,64):self.step_budget.addItem(f'{steps} steps',steps)
         self.step_budget.setCurrentIndex(1);self.step_budget.setToolTip('Maximum model/tool cycles per code request. Stop or steer at any time. Larger budgets can use more time and provider tokens.');options.addWidget(self.step_budget)
-        self.keep_going=QCheckBox('Keep going');self.keep_going.setToolTip('Opt in for this code conversation: continue unfinished work for up to 3 passes of the selected step budget, at most 192 steps. Stop or steer at any time. Each pass uses more inference.');self.keep_going.toggled.connect(self.save_keep_going);options.addWidget(self.keep_going)
+        self.keep_going=QCheckBox('Keep going');self.keep_going.setToolTip('Opt in for a bounded, resumable long coding session. Stop or steer at any time. More time uses more inference.');self.keep_going.toggled.connect(self.save_keep_going);options.addWidget(self.keep_going)
+        self.work_duration=QComboBox();self.work_duration.setToolTip('Maximum elapsed time when Keep going is on; the agent also has step and pass limits.')
+        for title,value in [('1 hour',60),('2 hours',120),('4 hours',240)]:self.work_duration.addItem(title,value)
+        self.work_duration.setCurrentIndex(max(0,self.work_duration.findData(self.config.get('work_session_minutes',120))))
+        self.work_duration.currentIndexChanged.connect(self.save_work_duration);options.addWidget(self.work_duration)
         options.addStretch()
         self.stop = self.button('Stop', self.stop_task, options); self.stop.setEnabled(False)
         self.send_button = self.button('↑  Send', self.send, options, True)
@@ -333,7 +352,7 @@ class Studio(QMainWindow):
         self.change_list=QListWidget(); self.change_list.currentRowChanged.connect(self.show_diff); cl.addWidget(self.change_list,1)
         self.diff=QPlainTextEdit(); self.diff.setReadOnly(True); self.diff.setFont(QFont('Consolas',10)); cl.addWidget(self.diff,3)
         self.button('Restore selected edit',self.undo,cl); self.right.addTab(changes,'Changes')
-        self.output=QPlainTextEdit(); self.output.setReadOnly(True); self.output.setFont(QFont('Consolas',10)); self.right.addTab(self.output,'Tools')
+        self.output=QPlainTextEdit(); self.output.setReadOnly(True); self.output.setFont(QFont('Consolas',10));self.output.setLineWrapMode(QPlainTextEdit.NoWrap);self.output.setMaximumBlockCount(4000); self.right.addTab(self.output,'Tools')
         game=QWidget(); gl=QVBoxLayout(game)
         lab=QLabel('Game Lab'); lab.setFont(QFont('Segoe UI',20,QFont.DemiBold)); gl.addWidget(lab)
         desc=QLabel('Launch a project, run an import check,\nand keep visual evidence with your task.'); desc.setWordWrap(True); desc.setObjectName('muted'); gl.addWidget(desc)
@@ -370,6 +389,10 @@ class Studio(QMainWindow):
         self.job_output=QPlainTextEdit();self.job_output.setReadOnly(True);self.job_output.setFont(QFont('Consolas',10));jl.addWidget(self.job_output,1)
         self.cancel_job_button=self.button('Stop selected job',self.cancel_selected_job,jl);self.cancel_job_button.setEnabled(False)
         self.jobs_tab=self.right.addTab(jobs_page,'Jobs')
+        model_page=QWidget();model_layout=QVBoxLayout(model_page)
+        model_hint=QLabel('Model activity appears here only when you enable it and the selected runtime supplies a separate reasoning stream. This is model output, not a complete account of how it works.');model_hint.setWordWrap(True);model_hint.setObjectName('muted');model_layout.addWidget(model_hint)
+        self.model_activity=QPlainTextEdit();self.model_activity.setReadOnly(True);self.model_activity.setLineWrapMode(QPlainTextEdit.WidgetWidth);self.model_activity.setMaximumBlockCount(80);model_layout.addWidget(self.model_activity,1)
+        self.right.addTab(model_page,'Model activity')
 
     def persist(self):
         save_tasks(SESSION,self.tasks)
@@ -684,7 +707,7 @@ class Studio(QMainWindow):
         self.task=next((task for task in self.tasks if task.get('id')==task_id), None)
         if not self.task:return
         kind=self.task.get('kind','code')
-        self.keep_going.blockSignals(True);self.keep_going.setChecked(bool(self.task.setdefault('keep_going',self.config.get('keep_going',False))));self.keep_going.blockSignals(False);self.keep_going.setVisible(kind=='code')
+        self.keep_going.blockSignals(True);self.keep_going.setChecked(bool(self.task.setdefault('keep_going',self.config.get('keep_going',False))));self.keep_going.blockSignals(False);self.keep_going.setVisible(kind=='code');self.work_duration.setVisible(kind=='code')
         self.mode.setCurrentText('Plan' if kind=='chat' or self.config.get('approval_policy')=='plan' else 'Act')
         self.prompt.setPlaceholderText('Ask a question or work through an idea…' if kind=='chat' else 'Describe what to build or fix…')
         self.right.setVisible(kind=='code')
@@ -729,12 +752,14 @@ class Studio(QMainWindow):
         if self.busy and self.started_at:
             now=time.monotonic();quiet=max(0,int(now-(self.last_observed_at or self.started_at)))
             changes=max(0,len(self.task.get('changes',[]))-self.run_change_start)
-            text=f'{self.run_phase} · step {self.run_step or "—"} · {int(now-self.started_at)}s elapsed · {sum(self.run_tool_counts.values())} tools · {changes} tracked edits'
+            text=f'{self.run_phase} · step {self.run_step or "—"} · {int(now-self.started_at)}s elapsed · {sum(self.run_tool_counts.values())} tools · {changes} editor-tool edits'
             speed=self.task.get('last_metrics',{}).get('tokens_per_second')
             if speed is not None:text+=f' · last response {speed} tokens/s'
             if quiet>=90:text+=f'\nNo new output for {quiet}s. The model or command may still be running; Stop remains available.'
             else:text+=f' · last output {quiet}s ago'
             self.performance_label.setText(text)
+            self.run_card_title.setText(self.run_phase)
+            self.run_card_detail.setText(f'App status · step {self.run_step or "—"} · {int(now-self.started_at)}s elapsed · last observed output {quiet}s ago. Stop or steer is available. Shell commands can change files outside the editor-tool count.')
 
     def observe_progress(self,phase=None,step=None):
         self.last_observed_at=time.monotonic()
@@ -980,6 +1005,22 @@ class Studio(QMainWindow):
         if self.task and not self.busy:
             self.task['keep_going']=bool(enabled);self.persist()
 
+    def save_work_duration(self):
+        if not self.busy:
+            self.config['work_session_minutes']=self.work_duration.currentData() or 120
+            self.write_config()
+
+    def toggle_model_activity(self,checked=False):
+        self.config['show_model_activity']=bool(checked)
+        self.model_activity_action.setChecked(bool(checked))
+        self.write_config()
+        if checked:
+            self.right.setCurrentIndex(self.right.count()-1)
+            self.status.setText('Model activity is enabled for the next model request when supported. It is shown live and not saved to chat history.')
+        else:
+            self.model_activity.clear()
+            self.status.setText('Model activity hidden. Normal progress updates remain visible.')
+
     def prepare_task_target(self,text):
         resume=re.fullmatch(r'(?:please\s+)?(?:continue|keep going|resume|carry on|continue unfinished work)[.!\s]*',text,re.I)
         if resume or text.startswith(STARTERS['Continue unfinished work']):
@@ -1060,6 +1101,9 @@ class Studio(QMainWindow):
     def set_busy(self,busy):
         if busy and not self.busy:
             self.output.clear();self.status.setText('Starting new run…')
+            self.reasoning_excerpt='';self.model_activity.clear();self.run_card_title.setText('Request received')
+            self.run_card_detail.setText('App status · checking the selected runtime. The model has not replied yet.')
+            self.run_card.show()
             self.task['activity_run_start']=len(self.task.get('activity',[]))
             self.task.pop('last_metrics',None)
             self.performance_label.setToolTip('')
@@ -1075,9 +1119,10 @@ class Studio(QMainWindow):
         if not busy:
             self.control_cancel_token=None;self.escape_cancel.disarm();self.global_escape=False
             self.end_control_session()
+            self.run_card.hide()
         self.busy=busy
         self.escape_shortcut.setEnabled(busy and not self.global_escape)
-        for w in (self.new_button,self.project_button,self.task_list,self.task_view,self.route,self.mode,self.step_budget,self.keep_going,self.goal_button,self.chat_space,self.code_space,self.skynet_button):w.setEnabled(not busy)
+        for w in (self.new_button,self.project_button,self.task_list,self.task_view,self.route,self.mode,self.step_budget,self.keep_going,self.work_duration,self.goal_button,self.chat_space,self.code_space,self.skynet_button):w.setEnabled(not busy)
         self.prompt.setEnabled(True);self.send_button.setEnabled(True);self.send_button.setText('✦  Steer' if busy else '↑  Send')
         self.stop.setEnabled(busy)
         if self.tray:self.tray.setToolTip('TalkToAi Code — '+('working in background' if busy else 'ready'))
@@ -1113,6 +1158,25 @@ class Studio(QMainWindow):
         if kind=='control_cancel':
             if self.busy and data is self.control_cancel_token:self.stop_task()
         elif kind=='delta':self.partial+=data;self.stream_dirty=True;self.observe_progress('Model responding')
+        elif kind=='model_wait':
+            if isinstance(data,dict):
+                self.run_phase='Waiting for model'
+                self.run_step=int(data.get('step') or self.run_step or 0)
+                self.run_card_title.setText('Waiting for model')
+                self.status.setText(f"Model step {self.run_step} · {int(data.get('elapsed_seconds') or 0)}s elapsed for this response")
+        elif kind=='reasoning':
+            if isinstance(data,dict) and self.config.get('show_model_activity') and data.get('source')=='provider':
+                self.observe_progress('Model activity',data.get('step',self.run_step))
+                excerpt=str(data.get('excerpt') or '').strip()
+                if excerpt:self.reasoning_excerpt=excerpt
+                label='Model supplied a separate reasoning stream'
+                if not data.get('active',True) and not data.get('characters'):
+                    label=str(data.get('label') or 'The selected model did not supply a separate reasoning stream.')
+                count=data.get('characters')
+                if isinstance(count,int):label+=f' · {count} characters received'
+                self.model_activity.setPlainText(label+(('\n\n'+self.reasoning_excerpt) if self.reasoning_excerpt else '\n\nNo excerpt displayed.'))
+                self.run_card_title.setText('Model is responding')
+                self.run_card_detail.setText('Model supplied activity; see the Model activity tab. This view is live and is not saved as a conversation message.')
         elif kind=='job':
             target=next((task for task in self.tasks if task['id']==data.get('task_id',self.task['id'])),None)
             if target is None:return
@@ -1164,7 +1228,9 @@ class Studio(QMainWindow):
             if not self.cancel.is_set():self.status.setText('Using '+data['name'])
         elif kind=='result':
             self.observe_progress('Tool result received')
-            if self.config.get('show_tool_activity',True):self.output.appendPlainText(str(data)+'\n')
+            rendered=str(data)
+            if len(rendered)>12000:rendered=rendered[:7000]+f'\n\n… {len(rendered)-11000} characters omitted from this panel; the agent received the complete tool result …\n\n'+rendered[-4000:]
+            if self.config.get('show_tool_activity',True):self.output.appendPlainText(rendered+'\n')
             self.task.setdefault('activity',[]).append(str(data)[-6000:]);self.persist()
         elif kind=='artifact':
             if isinstance(data,dict) and data.get('artifact'):
@@ -1600,7 +1666,9 @@ Use an available local or server model, stop a task, or steer it into a smaller 
 
     def model_performance(self):
         selected=self.config.get('num_ctx',8192)
-        return {'num_ctx':selected if selected in (8192,16384,32768) else 8192}
+        return {'num_ctx':selected if selected in (8192,16384,32768) else 8192,
+                'show_thinking':bool(self.config.get('show_model_activity',False)),
+                'work_session_minutes':self.work_duration.currentData() or 120}
 
     def settings(self):
         if self.busy:return

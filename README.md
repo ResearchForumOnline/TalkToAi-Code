@@ -1,6 +1,12 @@
 # TalkToAi Code — Your projects. Your AI. Your workspace.
 
-> **Latest release: 0.9.0** — [Download the Windows installer](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v0.9.0/TalkToAi-Code-0.9.0-Windows-Setup.exe) · [View release notes and checksums](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/tag/v0.9.0)
+> **Latest release: 0.10.0** — [Download the Windows installer](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v0.10.0/TalkToAi-Code-0.10.0-Windows-Setup.exe) · [View release notes and checksums](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/tag/v0.10.0)
+
+### 0.10.0: clearer live work and longer coding sessions
+
+After Send, the app immediately shows **Request received** while it connects to the selected runtime. This is app status, not an invented model reply. During inference it shows the model step and elapsed wait; Stop and Steer remain available. **More → Show model activity** can display a short, live excerpt only when an Ollama model supplies a separate reasoning stream. The option applies to the next request, is off by default, and may slow generation. Reasoning activity is not saved as a chat message; API providers and models without that stream retain normal progress status.
+
+Code's **Keep going** now offers a selected one, two or four-hour maximum, with bounded model steps and work passes. It can stop earlier for completion, cancellation, repeated discovery, unresolved failures or lack of new evidence. The Tools panel keeps long command and source output readable with horizontal scrolling. See [0.10.0 release notes](docs/RELEASE-0.10.0.md) for limits and verification.
 
 ### 0.9.0: less wasted discovery, visible progress and a readable operating policy
 
@@ -158,10 +164,10 @@ In Act mode, try: **“Connect to my website server using my existing SSH config
 
 ### Platform installers
 
-- **Windows:** use the [0.9.0 Windows installer](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v0.9.0/TalkToAi-Code-0.9.0-Windows-Setup.exe). This is an unsigned desktop installer, not a Microsoft Store package. The standard per-user installer creates Start Menu/Desktop shortcuts and an uninstaller, and preserves local task data during upgrades.
+- **Windows:** use the [0.10.0 Windows installer](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v0.10.0/TalkToAi-Code-0.10.0-Windows-Setup.exe). This is an unsigned desktop installer, not a Microsoft Store package. The standard per-user installer creates Start Menu/Desktop shortcuts and an uninstaller, and preserves local task data during upgrades.
 - **Portable Windows:** use the [0.1.3 portable ZIP](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v0.1.3-preview/TalkToAi-Code-0.1.3-Windows-Portable.zip) when you do not want an installer.
-- **Linux:** install Python 3.10+ with `venv`, extract the [0.9.0 source ZIP](https://github.com/ResearchForumOnline/TalkToAi-Code/archive/refs/tags/v0.9.0.zip) outside your app-data folder, and run `bash install-linux.sh` from that folder. This creates a user-local virtual environment, launcher and desktop entry. The app uses `~/.local/state/TalkToAiCode` or `XDG_STATE_HOME` for chats/settings. Install Ollama separately and pull a model before selecting Auto. A Secret Service desktop keyring is needed to remember API keys or OAuth tokens.
-- **macOS:** install Python 3.10+, extract the [0.9.0 source ZIP](https://github.com/ResearchForumOnline/TalkToAi-Code/archive/refs/tags/v0.9.0.zip), and run `bash install-macos.sh` from that folder. This creates a local virtual environment, `~/bin/talktoai-code` launcher, and `~/Applications/TalkToAi Code.app` launcher. Chats/settings use `~/Library/Application Support/TalkToAiCode`. Install Ollama separately and pull a model. Remembered keys and account tokens use macOS Keychain.
+- **Linux:** install Python 3.10+ with `venv`, extract the [0.10.0 source ZIP](https://github.com/ResearchForumOnline/TalkToAi-Code/archive/refs/tags/v0.10.0.zip) outside your app-data folder, and run `bash install-linux.sh` from that folder. This creates a user-local virtual environment, launcher and desktop entry. The app uses `~/.local/state/TalkToAiCode` or `XDG_STATE_HOME` for chats/settings. Install Ollama separately and pull a model before selecting Auto. A Secret Service desktop keyring is needed to remember API keys or OAuth tokens.
+- **macOS:** install Python 3.10+, extract the [0.10.0 source ZIP](https://github.com/ResearchForumOnline/TalkToAi-Code/archive/refs/tags/v0.10.0.zip), and run `bash install-macos.sh` from that folder. This creates a local virtual environment, `~/bin/talktoai-code` launcher, and `~/Applications/TalkToAi Code.app` launcher. Chats/settings use `~/Library/Application Support/TalkToAiCode`. Install Ollama separately and pull a model. Remembered keys and account tokens use macOS Keychain.
 
 Windows has a packaged x64 installer. Linux and macOS use source installers with per-user virtual environments; the [native Ubuntu and macOS install-and-launch smoke run](https://github.com/ResearchForumOnline/TalkToAi-Code/actions/runs/36245686313) passed using an offscreen GUI on clean GitHub runners. An interactive human workflow has not been confirmed on those hosts. Browser research, Chat/Code, local Ollama, project edits, shell commands, jobs and SSH use portable code paths. Windows accessibility PC Pilot and Windows startup shortcuts are Windows-only. Linux browser operation may need desktop libraries for Playwright Chromium; if its browser download fails, install them and rerun `python -m playwright install chromium` inside the app virtual environment.
 
@@ -218,6 +224,6 @@ The source installers copy only runtime modules and the public sample, avoiding 
 
 ### Keep going and research experiments
 
-Enable **Keep going** in Code for up to three passes of the selected step budget (maximum 192 steps). Progress checkpoints remain visible; Stop interrupts the task. Unresolved errors or repeated unchanged exploration pause the work. A repaired failure can continue after checks pass on the latest files. This does not run unattended after the app closes.
+Enable **Keep going** in Code and select a one, two or four-hour maximum. A session has at most twelve passes of the selected step budget (maximum 768 steps) and can finish or pause earlier. Progress checkpoints remain visible; Stop interrupts the task. Unresolved errors or repeated unchanged exploration pause the work. A repaired failure can continue after checks pass on the latest files. This does not run unattended after the app closes.
 
 Use **Research an experiment** to maintain a bounded project journal with hypotheses, reported metrics, next steps, and hashes of evidence files. See [research experiments](docs/RESEARCH-EXPERIMENTS.md) and the [measured model comparison](docs/MODEL-COMPARISON-0.6.0.md). Windows native controls use accessibility actions where available; acceptance testing fills and activates an isolated real Windows form.

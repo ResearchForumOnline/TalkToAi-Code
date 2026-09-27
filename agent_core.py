@@ -24,6 +24,7 @@ from agent_workflow import ToolCatalog, PLAN_TOOL, normalize_plan, previous_plan
 from process_jobs import ProcessJobs
 from workspace_outputs import read_batch, register_output
 from progress_guard import DiscoveryProgressGuard
+from reasoning_stream import ReasoningActivity
 from task_goals import normalize_goal, goal_context
 from tool_protocol import has_tool_markup, parse_qwen_tool_calls, VisibleTextStream
 from ethics_policy import verify_release_policy, policy_prompt, assert_mutable_path
@@ -298,7 +299,17 @@ def _http_stream(url,payload,cancel):
         threading.Thread(target=watch,daemon=True).start()
         conn.request('POST',parsed.path.rstrip('/')+'/api/chat',body=json.dumps(payload).encode(),headers={'Content-Type':'application/json'})
         response=conn.getresponse()
-        if response.status!=200:raise RuntimeError(f'Ollama HTTP {response.status}: '+response.read(1500).decode(errors='replace'))
+        if response.status!=200:
+            detail=response.read(1500).decode(errors='replace')
+            lower=detail.lower()
+            if (response.status==400 and payload.get('think') is True and
+                    ('think' in lower or 'reasoning' in lower) and
+                    ('support' in lower or 'invalid' in lower or 'unknown' in lower)):
+                completed.set();conn.close()
+                yield {'_thinking_unavailable':True}
+                yield from _http_stream(url,dict(payload,think=False),cancel)
+                return
+            raise RuntimeError(f'Ollama HTTP {response.status}: '+detail)
         while not cancel.is_set():
             line=response.readline()
             if not line:break
@@ -321,12 +332,20 @@ def stream_chat(url,payload,cancel):
         except Exception as exc:events.put(('error',exc))
         finally:events.put(('done',None))
     threading.Thread(target=reader,daemon=True).start()
+    last_event=time.monotonic()
+    last_heartbeat=last_event
     while True:
         if cancel.is_set():raise InterruptedError('Task stopped.')
         try:kind,value=events.get(timeout=.1)
-        except queue.Empty:continue
+        except queue.Empty:
+            now=time.monotonic()
+            if now-last_event>=15 and now-last_heartbeat>=15:
+                last_heartbeat=now
+                yield {'_heartbeat':True,'silent_seconds':round(now-last_event,1)}
+            continue
         if kind=='done':return
         if kind=='error':raise value
+        last_event=time.monotonic()
         yield value
 
 def _context_size(message):
@@ -941,8 +960,15 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
     verification=None
     last_compacted_count=0
     rounds=max(1,min(64,int(rounds)))
-    total_passes=3 if keep_going and not worker_mode and not improvement_mode else 1
+    extended_session=keep_going and not worker_mode and not improvement_mode
+    try:work_session_minutes=int(performance.get('work_session_minutes') or 0)
+    except (TypeError,ValueError):work_session_minutes=0
+    work_session_minutes=max(0,min(240,work_session_minutes))
+    if work_session_minutes and work_session_minutes<15:work_session_minutes=15
+    total_passes=(12 if work_session_minutes else 3) if extended_session else 1
     max_steps=rounds*total_passes
+    work_started=time.monotonic()
+    work_deadline=work_started+work_session_minutes*60 if extended_session and work_session_minutes else None
     if keep_going and not worker_mode and not improvement_mode:
         messages[0]['content']+=' For multi-step Keep going work, establish a task goal yourself using enable_tools goals and update_task_goal; the user need not fill a form. Preserve unmet criteria until completed or honestly blocked. Only revise the objective or remove criteria when the current user request changes scope, never merely to claim completion.'
     goal_base_prompt=messages[0]['content'].replace(goal_context(goal),'',1) if goal else messages[0]['content']
@@ -962,11 +988,17 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
             emit('goal_checkpoint',{'pass':max(1,min(total_passes,(max(1,steps)-1)//rounds+1)),
                  'total_passes':total_passes,'steps':steps,'changes':len(tools.changes),
                  'verification':verification,'state':state,'progress_observations':pass_progress,
+                 'elapsed_seconds':round(time.monotonic()-work_started,1),
+                 'session_minutes':work_session_minutes,
                  'blockers':list(blockers or [])})
     for step in range(max_steps):
         if cancel.is_set():
             goal_checkpoint('stopped',step)
             emit('status', 'Stopped')
+            return
+        if work_deadline and time.monotonic()>=work_deadline:
+            goal_checkpoint('paused',step,['Selected work session time reached; progress is saved'])
+            emit('status','Work session time reached; progress is saved. Send Continue to resume.')
             return
         if step and step%rounds==0:
             if not pass_progress or pass_errors or goal_validation_error or protocol_error or discovery_guard.paused:
@@ -995,21 +1027,41 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
         if compacted and len(messages)>last_compacted_count:
             emit('status','Continuing with a compact checkpoint; full conversation and tool results remain saved.')
             last_compacted_count=len(messages)
+        show_thinking=bool(performance.get('show_thinking',False)) and ACTIVE_PROVIDER is None
         payload = {'model': model, 'messages': window, 'tools': list(active_tools),
-                   'stream': True, 'think':False, 'keep_alive':'15m',
+                   'stream': True, 'think':show_thinking, 'keep_alive':'15m',
                    'options': {'num_ctx': num_ctx, 'num_predict': 1536, 'temperature': .1}}
         content, calls = '', []
         visible_stream=VisibleTextStream()
+        reasoning=ReasoningActivity(include_excerpt=show_thinking)
         started=time.monotonic();first=None;stats={}
+        emit('model_wait',{'step':step+1,'elapsed_seconds':0,'silent_seconds':0,
+                           'phase':'waiting_for_first_response'})
         try:
             for data in stream_chat(url,payload,cancel):
                 if cancel.is_set():
+                    reasoning_finished=reasoning.finish()
+                    if reasoning_finished:emit('reasoning',reasoning_finished)
                     goal_checkpoint('stopped',step)
                     emit('status', 'Stopped')
                     return
+                if data.get('_heartbeat'):
+                    emit('model_wait',{'step':step+1,'elapsed_seconds':round(time.monotonic()-started,1),
+                                       'silent_seconds':data['silent_seconds'],
+                                       'phase':'waiting_for_first_response' if first is None else 'waiting_for_next_output'})
+                    continue
+                if data.get('_thinking_unavailable'):
+                    emit('reasoning',{'source':'provider','active':False,'characters':0,
+                                      'label':'This model does not expose reasoning; continuing normally.'})
+                    emit('status','This model does not expose separate reasoning; continuing normally.')
+                    continue
                 if data.get('error'):
                     raise RuntimeError(data['error'])
                 message = data.get('message', {})
+                disclosed_reasoning=message.get('thinking','') if show_thinking else ''
+                if disclosed_reasoning:
+                    activity=reasoning.feed(disclosed_reasoning)
+                    if activity:emit('reasoning',activity)
                 delta = message.get('content', '')
                 if delta:
                     if first is None:first=time.monotonic()-started
@@ -1019,11 +1071,17 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
                 calls.extend(message.get('tool_calls', []))
                 if data.get('done'):stats=data
         except InterruptedError:
+            reasoning_finished=reasoning.finish()
+            if reasoning_finished:emit('reasoning',reasoning_finished)
             goal_checkpoint('stopped',step)
             emit('status','Stopped');return
         except Exception:
+            reasoning_finished=reasoning.finish()
+            if reasoning_finished:emit('reasoning',reasoning_finished)
             goal_checkpoint('paused',step)
             raise
+        reasoning_finished=reasoning.finish()
+        if reasoning_finished:emit('reasoning',reasoning_finished)
         # Images are for the immediately following vision turn only. The textual
         # tool result stays in history, without repeatedly shipping screenshot bytes.
         for message in messages:message.pop('images',None)

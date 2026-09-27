@@ -3,7 +3,7 @@
 ; %LOCALAPPDATA%\TalkToAiCode, so upgrades/uninstalls do not erase it.
 
 #define AppName "TalkToAi Code"
-#define AppVersion "0.9.0"
+#define AppVersion "0.10.0"
 #define AppExeName "TalkToAiCode.exe"
 
 [Setup]
@@ -17,7 +17,7 @@ DefaultDirName={localappdata}\Programs\TalkToAi Code
 DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
 OutputDir=dist-installer
-OutputBaseFilename=TalkToAi-Code-0.9.0-Windows-Setup
+OutputBaseFilename=TalkToAi-Code-0.10.0-Windows-Setup
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern

@@ -42,6 +42,32 @@ class WorkspaceUITests(unittest.TestCase):
         self.assertEqual(w.output.toPlainText(),'AMD: missing model <literal>')
         self.assertEqual(w.right.currentIndex(),2)
 
+    def test_active_run_has_immediate_receipt_and_readable_tool_output(self):
+        w=self.window
+        self.assertEqual(w.output.lineWrapMode(),QPlainTextEdit.NoWrap)
+        self.assertFalse(w.run_card.isVisible())
+        w.set_busy(True)
+        self.assertFalse(w.run_card.isHidden())
+        self.assertEqual(w.run_card_title.text(),'Request received')
+        self.assertIn('model has not replied yet',w.run_card_detail.text())
+        w.handle_event('model_wait',{'step':2,'elapsed_seconds':16})
+        self.assertEqual(w.run_card_title.text(),'Waiting for model')
+        self.assertIn('step 2',w.status.text())
+        w.set_busy(False)
+        self.assertTrue(w.run_card.isHidden())
+
+    def test_model_activity_requires_opt_in_and_provider_output(self):
+        w=self.window
+        activity={'source':'provider','active':True,'characters':16,'excerpt':'Reviewing files.'}
+        w.handle_event('reasoning',activity)
+        self.assertEqual(w.model_activity.toPlainText(),'')
+        with patch.object(w,'write_config'):
+            w.model_activity_action.trigger()
+        self.assertTrue(w.config['show_model_activity'])
+        w.handle_event('reasoning',activity)
+        self.assertIn('Reviewing files.',w.model_activity.toPlainText())
+        self.assertEqual(w.task.get('messages',[]),[])
+
     def test_targeting_selects_native_game_and_persists_amd_without_escalating_plan(self):
         w=self.window;w.task['project']=str(self.root)
         native=self.root/'blacksite_nightfall'/'native';native.mkdir(parents=True)
@@ -59,7 +85,7 @@ class WorkspaceUITests(unittest.TestCase):
         import json
         w=self.window
         godot=self.root/'godot';godot.write_text('fixture')
-        self.assertEqual(w.model_performance(),{'num_ctx':8192})
+        self.assertEqual(w.model_performance(),{'num_ctx':8192,'show_thinking':False,'work_session_minutes':120})
         def save(dialog):
             choice=dialog.findChild(QComboBox,'model_context_window')
             self.assertEqual(choice.currentData(),8192)
@@ -72,7 +98,7 @@ class WorkspaceUITests(unittest.TestCase):
             return QDialog.Accepted
         with patch.object(studio.QDialog,'exec',save),patch.object(w,'set_start_with_windows'),patch('search_provider.configured',return_value=False):
             w.settings()
-        self.assertEqual(w.model_performance(),{'num_ctx':16384})
+        self.assertEqual(w.model_performance(),{'num_ctx':16384,'show_thinking':False,'work_session_minutes':120})
         self.assertEqual(json.loads((self.root/'config.json').read_text())['num_ctx'],16384)
         self.assertEqual(json.loads((self.root/'config.json').read_text())['godot_executable'],str(godot.resolve()))
         self.assertEqual(json.loads((self.root/'config.json').read_text())['server_label'],'My GPU server')
@@ -88,7 +114,7 @@ class WorkspaceUITests(unittest.TestCase):
             dialog.findChild(QLineEdit,'server_label').setText('Cancelled label')
             return QDialog.Rejected
         with patch.object(studio.QDialog,'exec',cancel),patch('search_provider.configured',return_value=False):w.settings()
-        self.assertEqual(w.model_performance(),{'num_ctx':16384})
+        self.assertEqual(w.model_performance(),{'num_ctx':16384,'show_thinking':False,'work_session_minutes':120})
         self.assertEqual(w.server_name(),'My GPU server')
 
     def test_generic_server_labels_and_custom_model_names(self):
@@ -327,7 +353,7 @@ class WorkspaceUITests(unittest.TestCase):
         with patch('studio.time.monotonic',return_value=201):
             w.handle_event('tool',{'name':'run_command','args':{'command':'fixture'}});w.tick()
         self.assertIn('Running project command',w.performance_label.text())
-        self.assertIn('1 tools',w.performance_label.text());self.assertIn('0 tracked edits',w.performance_label.text())
+        self.assertIn('1 tools',w.performance_label.text());self.assertIn('0 editor-tool edits',w.performance_label.text())
         self.assertNotIn('No new output',w.performance_label.text())
         w.handle_event('delta','Planning a change');self.assertEqual(w.run_phase,'Model responding')
         w.set_busy(False)
@@ -438,7 +464,7 @@ class WorkspaceUITests(unittest.TestCase):
 
     def test_invalid_context_setting_falls_back_to_8k(self):
         self.window.config['num_ctx']='999999'
-        self.assertEqual(self.window.model_performance(),{'num_ctx':8192})
+        self.assertEqual(self.window.model_performance(),{'num_ctx':8192,'show_thinking':False,'work_session_minutes':120})
 
     def test_invalid_model_id_does_not_save_settings(self):
         w=self.window;original=dict(w.config)
