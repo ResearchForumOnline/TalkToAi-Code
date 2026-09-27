@@ -1,5 +1,6 @@
 """Bounded agent workflow helpers. No model calls or permission changes here."""
 import json
+import math
 import re
 
 
@@ -54,10 +55,52 @@ def previous_plan(history):
     return None
 
 
-def validate_calls(calls):
-    """Validate the entire batch before *any* tool runs; do not repair guesses."""
+def _validate_tool_argument(value, schema):
+    """Validate a native tool argument against the schema shown to the model."""
+    kind=schema.get('type')
+    if isinstance(kind,list):
+        for allowed in kind:
+            try:
+                _validate_tool_argument(value,dict(schema,type=allowed))
+                break
+            except ValueError:
+                continue
+        else:raise ValueError('Argument does not match any allowed type')
+        return
+    if kind=='object':
+        if not isinstance(value,dict):raise ValueError('Expected object argument')
+        properties=schema.get('properties',{})
+        if any(key not in value for key in schema.get('required',[])):
+            raise ValueError('Missing required argument')
+        if schema.get('additionalProperties') is not True and any(key not in properties for key in value):
+            raise ValueError('Unknown argument')
+        for key,item in value.items():
+            if key in properties:_validate_tool_argument(item,properties[key])
+    elif kind=='array':
+        if not isinstance(value,list):raise ValueError('Expected array argument')
+        if not schema.get('minItems',0)<=len(value)<=schema.get('maxItems',float('inf')):
+            raise ValueError('Array length outside schema')
+        for item in value:_validate_tool_argument(item,schema.get('items',{}))
+    elif kind=='string':
+        if not isinstance(value,str):raise ValueError('Expected string argument')
+        if not schema.get('minLength',0)<=len(value)<=schema.get('maxLength',float('inf')):
+            raise ValueError('String length outside schema')
+    elif kind=='boolean':
+        if not isinstance(value,bool):raise ValueError('Expected boolean argument')
+    elif kind in ('integer','number'):
+        if isinstance(value,bool) or not isinstance(value,(int,float)) or (kind=='integer' and not isinstance(value,int)):
+            raise ValueError('Expected numeric argument')
+        if not math.isfinite(value):raise ValueError('Numeric arguments must be finite')
+    if 'enum' in schema and value not in schema['enum']:
+        raise ValueError('Argument outside enum')
+
+
+def validate_calls(calls, enabled_tools=None):
+    """Validate a complete native batch before *any* tool runs."""
     if not isinstance(calls,list) or len(calls)>16:
         raise ValueError('Return at most 16 structured tool calls per batch')
+    schemas=({tool['function']['name']:tool['function'].get('parameters',{}) for tool in enabled_tools}
+             if enabled_tools is not None else None)
     result=[]
     for call in calls:
         if not isinstance(call,dict) or not isinstance(call.get('function'),dict):
@@ -67,6 +110,11 @@ def validate_calls(calls):
             raise ValueError('Each tool call needs a valid function name')
         if isinstance(args,str):args=json.loads(args)
         if not isinstance(args,dict):raise ValueError('Tool arguments must be a JSON object')
+        if schemas is not None:
+            if name not in schemas:
+                raise ValueError('Function is not enabled: '+name+'. Enable a tool set in a separate response first.')
+            try:_validate_tool_argument(args,schemas[name])
+            except ValueError as exc:raise ValueError(f'Invalid {name} arguments: {exc}') from exc
         item=dict(call);item['function']={'name':name,'arguments':args};result.append(item)
     return result
 

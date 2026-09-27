@@ -25,10 +25,10 @@ class WorkerTests(unittest.TestCase):
         names={t['function']['name'] for t in payloads[0]['tools']}
         self.assertFalse(names & {'write_file','run_command','computer','delegate_review','remote_run_command'})
         results=[m['content'] for m in payloads[1]['messages'] if m['role']=='tool']
-        self.assertIn('return 1',results)
-        self.assertEqual(sum('PermissionError' in r for r in results),2)
-        # Blocked write/delegation attempts remain unresolved failures even
-        # when the worker returns useful read-only findings.
+        # The complete native batch is rejected before its initial read, so
+        # neither a file edit nor an apparently useful partial result occurs.
+        self.assertEqual(results,[])
+        self.assertIn('none of it was executed',payloads[1]['messages'][-1]['content'])
         self.assertEqual(report['status'],'incomplete')
 
     def test_worker_with_successful_read_and_no_failed_actions_completes(self):

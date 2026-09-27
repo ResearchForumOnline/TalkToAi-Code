@@ -7,6 +7,7 @@ import unittest
 from unittest.mock import patch
 import agent_core as core
 from task_goals import normalize_goal, goal_context
+from agent_workflow import validate_calls
 
 
 def goal(status='pending'):
@@ -20,6 +21,15 @@ def response(name=None,args=None,text='Done.'):
 
 
 class GoalTests(unittest.TestCase):
+    def test_native_goal_schema_accepts_both_supported_criteria_forms(self):
+        entries=[{'text':'Score works','status':'pending'}]
+        for criteria in (entries,json.dumps(entries)):
+            with self.subTest(criteria_type=type(criteria).__name__):
+                args={'objective':'Repair score','criteria':criteria}
+                call={'function':{'name':'update_task_goal','arguments':args}}
+                self.assertEqual(validate_calls([call],core.GOAL_TOOLS)[0]['function']['arguments'],args)
+                self.assertEqual(normalize_goal(args)['next_action'],'')
+
     def run_sequence(self,sequence,saved=None,rounds=12,keep=True):
         events=[];payloads=[]
         def stream(_url,payload,_cancel):

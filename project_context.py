@@ -110,6 +110,23 @@ def resolve_project_target(selected, text, *, max_directories=800, max_depth=4, 
     return result
 
 SOURCE_EXTENSIONS={'.py','.gd','.cs','.js','.ts','.tsx','.jsx','.cpp','.c','.h','.hpp','.rs','.go','.java','.lua','.md','.toml','.json','.godot','.tscn','.yaml','.yml','.txt','.shader','.gdshader'}
+_MAP_DECLARATION = re.compile(
+    r'^\s*(?:class(?:_name)?\s+|(?:async\s+)?(?:def|func|function)\s+|'
+    r'(?:export\s+)?(?:class|function|const)\s+|'
+    r'(?:public|private|protected|internal)\s+.*(?:\(|class\s+))', re.I)
+_MAP_SENSITIVE_NAME = re.compile(r'^(?:secret|secrets|credential|credentials|token|tokens|password|passwords|key|keys)(?:[_.-]|$)', re.I)
+
+
+def _map_relevance(relative, source, words):
+    """Favor declared symbols over incidental text and path-name matches."""
+    path = relative.casefold()
+    body = source.casefold()
+    declarations = '\n'.join(line.casefold() for line in source.splitlines()
+                             if _MAP_DECLARATION.match(line))
+    path_hits = sum(word in path for word in words)
+    symbol_hits = sum(word in declarations for word in words)
+    body_hits = sum(word in body for word in words)
+    return 25 * symbol_hits + 8 * path_hits + 2 * body_hits
 
 def source_text(tools,relative):
     path=tools.path(relative)
@@ -137,12 +154,24 @@ def project_map(tools,query=''):
     words=re.findall(r'[a-zA-Z_]{3,}',query.lower())[:12]
     files=tools.files()
     files.sort(key=lambda p:(-sum(w in p.lower() for w in words),len(Path(p).parts),p))
-    output=[];size=0;seen=0
+    # A path-only ordering can miss a relevant symbol in a generically named
+    # file after the 60-file output cap. Read a bounded candidate set first,
+    # then rank its declarations. Keep the no-query path as cheap as before.
+    candidates=[];scanned_bytes=0;deadline=time.monotonic()+2.0
     for relative in files:
         if tools.cancel.is_set():raise InterruptedError('Stopped.')
+        if words and (scanned_bytes>=8_000_000 or time.monotonic()>=deadline):break
+        if any(_MAP_SENSITIVE_NAME.match(part) for part in Path(relative).parts):continue
         try:text=source_text(tools,relative)
         except (ValueError,PermissionError,OSError):continue
         if text is None:continue
+        scanned_bytes+=len(text.encode('utf-8'))
+        score=_map_relevance(relative,text,words) if words else 0
+        candidates.append((score,relative,text))
+        if not words and len(candidates)>=60:break
+    if words:candidates.sort(key=lambda item:(-item[0],len(Path(item[1]).parts),item[1]))
+    output=[];size=0;seen=0
+    for _,relative,text in candidates:
         seen+=1;symbols=[]
         if relative.endswith('.py'):
             try:

@@ -69,6 +69,31 @@ class FirstTurnToolTests(unittest.TestCase):
         _, events = self.first_turn('Check my latest Gmail inbox message', task_kind='chat')
         self.assertFalse(any(kind == 'tool' and value.get('automatic') and value.get('name') == 'browser' for kind, value in events))
 
+    def test_code_first_model_turn_receives_named_project_source(self):
+        payloads = []
+        events = []
+
+        def stream(_url, payload, _cancel):
+            payloads.append(copy.deepcopy(payload))
+            return iter([_done()])
+
+        with tempfile.TemporaryDirectory() as folder, \
+             patch.object(core, 'stream_chat', side_effect=stream), \
+             patch.object(core, 'model_supports_vision', return_value=False):
+            (Path(folder) / 'README.txt').write_text('One-room puzzle instructions.\n', encoding='utf-8')
+            (Path(folder) / 'main.py').write_text('print("one-room puzzle")\n', encoding='utf-8')
+            core.run_agent('fixture', 'fixture',
+                           [{'role': 'user', 'content': 'Inspect README.txt and main.py, then explain the project.'}],
+                           folder, False, threading.Event(), lambda kind, value: events.append((kind, value)),
+                           performance={'num_ctx': 8192})
+        self.assertEqual(len(payloads), 1)
+        self.assertEqual(payloads[0]['tools'], [])
+        system = payloads[0]['messages'][0]['content']
+        self.assertIn('Automatic first-turn project evidence', system)
+        self.assertIn('One-room puzzle instructions.', system)
+        self.assertIn('print(\\"one-room puzzle\\")', system)
+        self.assertTrue(any(kind == 'project_context' for kind, _ in events))
+
 
 if __name__ == '__main__':
     unittest.main()
