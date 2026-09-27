@@ -49,4 +49,18 @@ added. See [the complete boundary and research basis](https://github.com/Researc
 
 ## Verification
 
-Release verification is in progress. This working document is not a published release.
+- **332 tests passed on Windows**, with native desktop and localhost browser acceptance enabled.
+- The final packaged executable passed policy verification, Escape registration,
+  managed commands, bundled sample, batch reading, output hashing, browser
+  interaction, popup following, screenshot/image attachment and GUI startup.
+- Linux/macOS source installation, offscreen startup and regression checks passed:
+  https://github.com/ResearchForumOnline/TalkToAi-Code/actions/runs/36283940852
+- A real server-model trial repaired a disposable coding fixture and passed both
+  independent tests without changing the test file. It reached passing checks at
+  317.47 seconds, but continued work and hit a 420-second harness limit before a
+  final answer. The earlier trial failed. These limitations are retained in the
+  [live coding evidence](https://github.com/ResearchForumOnline/TalkToAi-Code/blob/main/docs/LIVE-CODING-0.9.0.md).
+
+This release improves concrete tool behavior and visibility. It does not establish
+AGI, ChatGPT parity, universal coding success, or fast CPU inference. No model
+weights or operating-system privileges were changed.
