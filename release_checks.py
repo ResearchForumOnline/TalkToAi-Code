@@ -52,6 +52,27 @@ def smoke(destination):
             second=json.loads(record_experiment(folder,'Fixture candidate','fixture','reported',{'steps':8}))
             comparison=json.loads(compare_experiments(folder,first['id'],second['id'],'steps'))
             result['research_comparison']=comparison['candidate_minus_baseline']==-2 and bool(comparison['warnings'])
+            from app_preferences import AppPreferenceManager
+            preference_config={}
+            preference_path=Path(folder,'preference-audit.jsonl')
+            preference_manager=AppPreferenceManager(preference_config,lambda:None,preference_path)
+            changed=preference_manager.change({'keep_going':False})
+            restored=preference_manager.rollback(changed['change_id'])
+            result['audited_preferences']=(changed['changed'] and restored['changed']
+                                          and preference_manager.inspect()['preferences']['keep_going'] is True)
+            from routing_evaluation import audit_routing_evaluation
+            routing_fixture={'schema':'talktoai.routing-evaluation.v1','dataset':'packaged fixture',
+                'split':'held_out','event_definition':'Review required under fixture rubric',
+                'rubric_version':'fixture-v1','baseline_version':'baseline','candidate_version':'candidate',
+                'cases':[{'id':'one','family':'fixture','actual_review_required':True,
+                    'baseline':{'route':'allow'},'candidate':{'route':'review'}}]}
+            Path(folder,'routing-fixture.json').write_text(json.dumps(routing_fixture),encoding='utf-8')
+            routing_result=json.loads(audit_routing_evaluation(folder,'routing-fixture.json'))
+            result['routing_audit']=(routing_result['baseline']['counts']['false_allow']==1
+                                     and routing_result['candidate']['counts']['false_allow']==0)
+            from candidate_apply import preview_application, apply_candidate, rollback_application
+            result['candidate_controls_imported']=all(callable(item) for item in
+                (preview_application,apply_candidate,rollback_application))
             from workspace_change_evidence import WorkspaceChangeTracker
             tracker=WorkspaceChangeTracker(folder)
             Path(folder,'fixture.py').write_text('value = 1\n',encoding='utf-8')
@@ -80,7 +101,7 @@ def smoke(destination):
             report=json.loads(browser.execute('click','Open report'))
             result['browser_popup']=report['url'].endswith('/report') and 'Packaged report ready' in report['page']
             browser.close();browser=None
-        result['passed']=all(result.get(key,False) for key in ('operating_policy','bundled_example','browser_interaction','browser_popup','browser_screenshot','vision_attachment','batch_read','output_registration','project_playbooks','research_comparison','source_change_evidence')) and (os.name!='nt' or (result.get('managed_process',False) and result.get('escape_hook_registration',False)))
+        result['passed']=all(result.get(key,False) for key in ('operating_policy','bundled_example','browser_interaction','browser_popup','browser_screenshot','vision_attachment','batch_read','output_registration','project_playbooks','research_comparison','source_change_evidence','audited_preferences','routing_audit','candidate_controls_imported')) and (os.name!='nt' or (result.get('managed_process',False) and result.get('escape_hook_registration',False)))
     except Exception as exc:result.update(passed=False,error=f'{type(exc).__name__}: {exc}')
     finally:
         if browser:browser.close()

@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -10,6 +11,38 @@ import skynet_mode
 
 
 class SkynetModeTests(unittest.TestCase):
+    @unittest.skipIf(os.name == 'nt', 'POSIX executable mode check')
+    def test_check_chmod_cannot_select_candidate(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            source = root / 'app.py'
+            source.write_text('value = 1\n', encoding='utf-8')
+            source.chmod(0o644)
+
+            def chmod_during_check(tools, name, args):
+                (tools.root / 'app.py').chmod(0o755)
+                return 'Exit 0\n1 test passed'
+
+            with patch.object(skynet_mode.ProjectTools, 'execute', chmod_during_check):
+                result, output, _ = skynet_mode._evaluate(root, threading.Event())
+            self.assertEqual(result['status'], 'blocked')
+            self.assertIn('source mode changes: app.py', output)
+            self.assertEqual(os.stat(source).st_mode & 0o777, 0o644)
+
+    def test_git_candidate_copies_safe_untracked_source_used_by_project(self):
+        with tempfile.TemporaryDirectory() as folder, tempfile.TemporaryDirectory() as destination:
+            root=Path(folder)
+            subprocess.run(['git','init','-q',str(root)],check=True,capture_output=True)
+            (root/'tracked.py').write_text('from feature import value\n',encoding='utf-8')
+            (root/'feature.py').write_text('value = 7\n',encoding='utf-8')
+            (root/'.gitignore').write_text('ignored.py\n',encoding='utf-8')
+            (root/'ignored.py').write_text('private = True\n',encoding='utf-8')
+            subprocess.run(['git','-C',str(root),'add','tracked.py','.gitignore'],check=True,capture_output=True)
+            manifest=skynet_mode._copy_candidate(root,Path(destination))
+            self.assertIn('feature.py',manifest)
+            self.assertEqual((Path(destination)/'feature.py').read_text(encoding='utf-8'),'value = 7\n')
+            self.assertNotIn('ignored.py',manifest)
+
     @staticmethod
     def metric_fixture(root):
         (root / 'app.py').write_text('error = 5\n', encoding='utf-8')
@@ -100,7 +133,7 @@ class SkynetModeTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'specific app or game folder'):
                     skynet_mode._source_paths(root)
 
-    def test_git_candidate_uses_tracked_source_only(self):
+    def test_git_candidate_includes_eligible_untracked_source(self):
         with tempfile.TemporaryDirectory() as folder, tempfile.TemporaryDirectory() as candidate:
             root = Path(folder)
             subprocess.run(['git', 'init', '-q'], cwd=root, check=True, capture_output=True)
@@ -108,7 +141,7 @@ class SkynetModeTests(unittest.TestCase):
             (root / 'untracked.py').write_text('value = 2\n', encoding='utf-8')
             subprocess.run(['git', 'add', 'tracked.py'], cwd=root, check=True, capture_output=True)
             manifest = skynet_mode._copy_candidate(root, Path(candidate))
-            self.assertEqual(list(manifest), ['tracked.py'])
+            self.assertEqual(list(manifest), ['tracked.py', 'untracked.py'])
 
     def test_candidate_is_bounded_and_excludes_credentials(self):
         with tempfile.TemporaryDirectory() as folder, tempfile.TemporaryDirectory() as candidate:

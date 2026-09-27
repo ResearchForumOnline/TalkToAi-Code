@@ -86,7 +86,7 @@ class AgentAutomationTests(unittest.TestCase):
         self.assertTrue(any(k=='artifact' and v.get('title')=='Report' for k,v in events))
         self.assertFalse(any(k=='verification' and v['status']=='passed' for k,v in events))
 
-    def run_sequence(self,root,sequence,act=True,text='Improve this project',tools=None,rounds=16,history=None):
+    def run_sequence(self,root,sequence,act=True,text='Improve this project',tools=None,rounds=16,history=None,performance=None):
         payloads=[];events=[]
         def stream(url,payload,cancel):
             payloads.append(copy.deepcopy(payload))
@@ -94,7 +94,7 @@ class AgentAutomationTests(unittest.TestCase):
             return iter([sequence.pop(0)])
         tools=tools or core.ProjectTools(root,act)
         with patch.object(core,'stream_chat',side_effect=stream),patch.object(core,'model_supports_vision',return_value=False),patch.object(core,'DESKTOP_ACCESS',False),patch.object(core,'ACTIVE_REMOTE_ALLOWED',False),patch.object(core,'REMOTE_PILOT',False):
-            core._run_agent('fixture','fixture',history or [{'role':'user','content':text}],root,act,threading.Event(),lambda k,v:events.append((k,v)),rounds,None,tools)
+            core._run_agent('fixture','fixture',history or [{'role':'user','content':text}],root,act,threading.Event(),lambda k,v:events.append((k,v)),rounds,performance,tools)
         return payloads,events
 
     def test_agent_loads_browser_tools_without_request_keywords(self):
@@ -106,6 +106,22 @@ class AgentAutomationTests(unittest.TestCase):
         names=lambda p:{t['function']['name'] for t in p['tools']}
         self.assertNotIn('browser',names(payloads[0]));self.assertIn('browser',names(payloads[1]))
         self.assertTrue(any(k=='result' and v=='Observed page' for k,v in events))
+
+    def test_mail_tools_follow_the_authorized_task_not_substrings(self):
+        histories=(
+            ([{'role':'user','content':'Refactor the blackmail game mechanic'}],False),
+            ([{'role':'user','content':'Read my Gmail inbox'},
+              {'role':'assistant','content':'I found the connector status.'},
+              {'role':'user','content':'Continue'}],True),
+            ([{'role':'user','content':'Read my Gmail inbox'},
+              {'role':'user','content':'Refactor the blackmail game mechanic'}],False),
+        )
+        for history,expected in histories:
+            with self.subTest(history=history[-1]['content']),tempfile.TemporaryDirectory() as root:
+                payloads,_=self.run_sequence(root,[response('Done.')],act=False,
+                                             history=history,performance={'num_ctx':32768})
+            names={tool['function']['name'] for tool in payloads[0]['tools']}
+            self.assertEqual('gmail_status' in names,expected)
 
     def test_plan_and_disabled_access_cannot_be_bypassed_with_catalog(self):
         with tempfile.TemporaryDirectory() as root:
@@ -161,6 +177,27 @@ class AgentAutomationTests(unittest.TestCase):
             _,events=self.run_sequence(root,[response(calls=[call('write_file',path='bad.txt',content='partial')],reason='length'),response('No action executed.')])
             self.assertFalse((Path(root)/'bad.txt').exists())
         self.assertFalse(any(k=='tool' for k,v in events))
+
+    def test_length_cutoff_increases_only_the_next_local_model_response(self):
+        with tempfile.TemporaryDirectory() as root,patch.object(core,'ACTIVE_PROVIDER',None):
+            payloads,events=self.run_sequence(root,[
+                response(calls=[call('list_files',path='')],reason='length'),
+                response(calls=[call('list_files',path='')]),
+                response('Finished after the complete tool result.')],
+                act=False,performance={'num_ctx':32768})
+        self.assertEqual([p['options']['num_predict'] for p in payloads],[1536,3072,1536])
+        self.assertEqual(sum(k=='message' and v.get('role')=='tool' for k,v in events),1)
+        self.assertTrue(any(k=='status' and 'allowing up to 3072 tokens' in v for k,v in events))
+
+    def test_length_cutoff_never_exceeds_available_context(self):
+        original=core.context_budget
+        def limited(num_ctx,system,active_tools,output_tokens=1536):
+            if output_tokens>1536:raise ValueError('Fixture context limit')
+            return original(num_ctx,system,active_tools,output_tokens)
+        with tempfile.TemporaryDirectory() as root,patch.object(core,'ACTIVE_PROVIDER',None),patch.object(core,'context_budget',side_effect=limited):
+            payloads,events=self.run_sequence(root,[response('Partial',reason='length'),response('Finished.')],act=False)
+        self.assertEqual([p['options']['num_predict'] for p in payloads],[1536,1536])
+        self.assertTrue(any(k=='status' and 'increase Model context' in v for k,v in events))
 
     def test_unfinished_plan_gets_a_follow_through_turn(self):
         pending=[{'step':'Inspect','status':'in_progress'}];done=[{'step':'Inspect','status':'completed'}]

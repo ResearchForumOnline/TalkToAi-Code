@@ -14,6 +14,7 @@ from pathlib import Path
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -71,7 +72,9 @@ def _eligible(relative: Path) -> bool:
 def _source_paths(root: Path):
     root = root.resolve()
     try:
-        proc = subprocess.run(['git', 'ls-files', '--cached', '-z'],
+        # A source checkout can depend on newly created, untracked code/assets.
+        # Include bounded, non-ignored untracked files in the frozen snapshot.
+        proc = subprocess.run(['git', 'ls-files', '--cached', '--others', '--exclude-standard', '-z'],
                               cwd=root, capture_output=True, timeout=20, check=True)
         names = [Path(os.fsdecode(part)) for part in proc.stdout.split(b'\0') if part]
     except (OSError, subprocess.SubprocessError):
@@ -129,6 +132,23 @@ def _copy_candidate(root: Path, candidate: Path):
     if not manifest:
         raise ValueError('No eligible source files found in the selected project.')
     return manifest
+
+
+def _source_modes(root: Path, names: set[str] | None = None) -> dict[str, int]:
+    """Capture the file modes used by candidate checks for later promotion."""
+    root = root.resolve()
+    modes = {}
+    for relative in _source_paths(root):
+        name = relative.as_posix()
+        if name == 'SKYNET-REPORT.json':
+            continue
+        path = root / relative
+        if path.is_symlink() or not path.is_file() or not path.resolve().is_relative_to(root):
+            continue
+        modes[name] = stat.S_IMODE(path.stat().st_mode)
+    if names is not None and set(modes) != names:
+        raise ValueError('Candidate source changed while capturing checked file modes.')
+    return modes
 
 
 def _changes(candidate: Path, original_hashes: dict[str, str]):
@@ -345,6 +365,7 @@ def _evaluate(candidate: Path, cancel, contract=None):
     with tempfile.TemporaryDirectory(prefix='TalkToAi-Skynet-Eval-') as directory:
         evaluation = Path(directory).resolve()
         before = _copy_candidate(candidate, evaluation)
+        before_modes = _source_modes(evaluation, set(before))
         try:
             output = ProjectTools(evaluation, True, cancel).execute('run_checks', {})
             result = check_evidence(output)
@@ -355,19 +376,29 @@ def _evaluate(candidate: Path, cancel, contract=None):
             output = str(exc)
             result = {'status': 'failed', 'summary': f'Check runner failed: {type(exc).__name__}: {exc}'}
         check_mutations = _changes(evaluation, before)
-        if check_mutations:
+        check_modes = _source_modes(evaluation)
+        mode_changes = sorted(name for name in set(before_modes) | set(check_modes)
+                              if before_modes.get(name) != check_modes.get(name))
+        if check_mutations or mode_changes:
             result = {'status': 'blocked', 'summary':
                       'The check run modified source in its disposable evaluation copy; its result cannot select a candidate.'}
             output += '\nEvaluation-time source changes: '+', '.join(item['path'] for item in check_mutations[:20])
+            if mode_changes:
+                output += '\nEvaluation-time source mode changes: '+', '.join(mode_changes[:20])
         measurement = None
         if contract and result['status'] == 'passed':
             measurement = _run_metric_contract(evaluation, contract, cancel)
             metric_mutations = _changes(evaluation, before)
-            if metric_mutations:
+            metric_modes = _source_modes(evaluation)
+            metric_mode_changes = sorted(name for name in set(before_modes) | set(metric_modes)
+                                         if before_modes.get(name) != metric_modes.get(name))
+            if metric_mutations or metric_mode_changes:
                 result = {'status': 'blocked', 'summary':
                           'The evaluator modified source in its disposable copy; its score cannot select a candidate.'}
                 measurement = {'status': 'blocked', 'summary': result['summary']}
                 output += '\nMetric-time source changes: '+', '.join(item['path'] for item in metric_mutations[:20])
+                if metric_mode_changes:
+                    output += '\nMetric-time source mode changes: '+', '.join(metric_mode_changes[:20])
         return result, output[-12000:], measurement
 
 
@@ -390,9 +421,12 @@ def run_improvement(url, model, project, goal, cancel, emit, performance=None, m
 
     candidate = _create_candidate()
     baseline = _copy_candidate(root, candidate)
+    if 'SKYNET-REPORT.json' in baseline:
+        raise ValueError('Rename the project-root SKYNET-REPORT.json before Skynet Mode; that name is reserved for candidate evidence.')
     frozen_baseline = _create_baseline()
     if _copy_candidate(candidate, frozen_baseline) != baseline:
         raise RuntimeError('Candidate source changed while capturing the baseline; retry after it is stable.')
+    baseline_modes = _source_modes(candidate, set(baseline))
     contract = _load_contract(candidate, baseline)
     emit('status', 'Skynet Mode: candidate copy ready; measuring baseline checks')
     baseline_check, baseline_output, baseline_metric = _evaluate(candidate, cancel, contract)
@@ -401,6 +435,7 @@ def run_improvement(url, model, project, goal, cancel, emit, performance=None, m
     best_candidate = None
     best_iteration = None
     best_metric = None
+    best_candidate_modes = None
     emit('status', f'Skynet Mode: baseline checks {baseline_check["status"]}; original project is unchanged')
     for index in range(max_iterations):
         if cancel.is_set():
@@ -488,6 +523,13 @@ def run_improvement(url, model, project, goal, cancel, emit, performance=None, m
                 best_candidate = candidate
                 best_iteration = index + 1
                 best_metric = measurement
+                selected_inventory = dict(baseline)
+                for item in _changes(candidate, baseline):
+                    if item['status'] == 'deleted':
+                        selected_inventory.pop(item['path'], None)
+                    else:
+                        selected_inventory[item['path']] = item['sha256']
+                best_candidate_modes = _source_modes(candidate, set(selected_inventory))
                 results[-1]['selected'] = True
                 for previous in results[:-1]:
                     previous.pop('selected', None)
@@ -497,10 +539,15 @@ def run_improvement(url, model, project, goal, cancel, emit, performance=None, m
 
     candidate = best_candidate or candidate
     changes = _changes(candidate, baseline)
+    candidate_inventory = dict(baseline)
+    for item in changes:
+        if item['status'] == 'deleted':candidate_inventory.pop(item['path'], None)
+        else:candidate_inventory[item['path']] = item['sha256']
+    candidate_modes = best_candidate_modes if best_candidate_modes is not None else _source_modes(candidate, set(candidate_inventory))
     policy_rejections = rejected_candidate_changes(root,changes)
     diff_path = candidate / 'SKYNET-CANDIDATE.diff'
     diff_path.write_text(_diff(frozen_baseline, candidate, changes), encoding='utf-8')
-    report = {'schema': 'talktoai.skynet.candidate.v3', 'created_utc': datetime.now(timezone.utc).isoformat(),
+    report = {'schema': 'talktoai.skynet.candidate.v4', 'created_utc': datetime.now(timezone.utc).isoformat(),
               'original_project': str(root), 'candidate_dir': str(candidate), 'goal': goal.strip(),
               'model': model, 'baseline_checks': baseline_check,
               'baseline_check_output': baseline_output[-12000:],
@@ -516,13 +563,19 @@ def run_improvement(url, model, project, goal, cancel, emit, performance=None, m
                                   else 'No measured improvement over baseline; inspect candidate reports.' if contract
                                   else 'No passing candidate; inspect the final unverified or failed copy.'),
               'changed_files': changes,
+              'baseline_inventory': baseline,
+              'candidate_inventory': candidate_inventory,
+              'baseline_modes': baseline_modes,
+              'candidate_modes': candidate_modes,
+              'baseline_hashes': {item['path']: baseline.get(item['path']) for item in changes},
               'test_files_changed': [item['path'] for item in changes if Path(item['path']).name.startswith('test_')
                                      or '/test/' in item['path'].lower() or '/tests/' in item['path'].lower()],
-              'diff_path': str(diff_path), 'cancelled': cancel.is_set(),
+              'diff_path': str(diff_path), 'diff_sha256': hashlib.sha256(diff_path.read_bytes()).hexdigest(),
+              'cancelled': cancel.is_set(),
               'rejected_policy_changes': policy_rejections,
               'policy_status': 'rejected' if policy_rejections else 'unchanged',
               'review_required': True,
-              'note': 'Candidate only. Checks run in a disposable source copy with current user permissions. Passing checks do not prove a quality improvement. Review diff and evidence before manually applying anything.'}
+              'note': 'Candidate only. Checks run in a disposable source copy with current user permissions. Passing checks do not prove a quality improvement. Review the diff and use the checked apply action if this candidate fits your project.'}
     report_path = candidate / 'SKYNET-REPORT.json'
     report_path.write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8')
     report['report_path'] = str(report_path)

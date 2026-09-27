@@ -1,6 +1,14 @@
 # TalkToAi Code — Your projects. Your AI. Your workspace.
 
-> **Latest release: 0.11.0** — [Download the Windows installer](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v0.11.0/TalkToAi-Code-0.11.0-Windows-Setup.exe) · [View release notes and checksums](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/tag/v0.11.0)
+> **Latest release: 0.12.0** — [Download the Windows installer](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v0.12.0/TalkToAi-Code-0.12.0-Windows-Setup.exe) · [View release notes and checksums](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/tag/v0.12.0)
+
+### 0.12.0: apply checked candidates, tune your workspace, audit decisions
+
+After Skynet Mode selects a candidate that passed the recorded checks, **Evidence → Apply checked Skynet candidate** shows the file plan and asks before changing the original project. The app rechecks the original and candidate hashes, keeps an original-file backup, and records an application manifest. **Restore last applied candidate** checks that the applied files have not changed before restoring them. A passing check or evaluator metric covers only what that check or metric measured; review the diff and run the project yourself. [Customize and improve](docs/CUSTOMIZE-AND-IMPROVE.md).
+
+In Code / Act, the agent can inspect and change a small allowlist of future app preferences, including Keep going, context size, browser choice, visible activity and Skynet iteration count. Every change is recorded and can be rolled back if later edits do not conflict. Access permissions, credentials, provider profiles, model IDs and weights stay outside this setting tool. [Agent preference controls](docs/AGENT-PREFERENCES.md).
+
+For a local model whose answer hits its output ceiling, the controller can allow a longer next response when context permits. A plain **Continue** on a mail task retains the earlier substantive request so the read-only Gmail or Zmail tools can be discovered again. The new [routing evaluation audit](docs/ROUTING-EVALUATION.md) compares two sets of decisions on the same project-local labelled cases: false allows, false reviews, deferrals, family breakdowns and optional probability forecast scores. Labels are supplied by the evaluation file; this is a descriptive audit, not an ethical verdict or permission rule. See [0.12.0 release notes](docs/RELEASE-0.12.0.md).
 
 ### 0.11.0: a project workbench with reusable evidence
 
@@ -93,7 +101,7 @@ An independent native desktop AI assistant from TalkToAI for coding, games and g
 
 ## Updates and saved settings
 
-### New in 0.4.0 preview: Chat, Code, connectors and Skynet Mode
+### Introduced in 0.4.0: Chat, Code, connectors and Skynet Mode
 
 Separate **Chat** and **Code** spaces retain their conversations across restarts. Chat starts in read-only Plan mode; select Act when you want authorized tools to take action. Pin, archive, branch or move conversations between spaces. The refreshed Windows interface places the native model selection and Skynet Mode within the Code workspace.
 
@@ -103,7 +111,7 @@ Optional **Gmail** and **Zmail** controls support read-only search and selected 
 
 The Server runtime can reconnect its loopback SSH tunnel, and coding-agent tool replies are paired to their call IDs. Browser tools are available for ordinary web research requests. A failed check no longer satisfies the agent's post-edit verification gate. See [0.4.0 release notes](RELEASE-0.4.0.md) for validation and limits.
 
-### New in 0.3.0 preview: jobs, deliverables and own-key OpenAI
+### Introduced in 0.3.0: jobs, deliverables and own-key OpenAI
 
 The current source adds a **Jobs** panel for turn-owned native processes,
 incremental output polling and cancellation, plus **batch project reads** with
@@ -182,10 +190,10 @@ In Act mode, try: **“Connect to my website server using my existing SSH config
 
 ### Platform installers
 
-- **Windows:** use the [0.11.0 Windows installer](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v0.11.0/TalkToAi-Code-0.11.0-Windows-Setup.exe). This is an unsigned desktop installer, not a Microsoft Store package. The standard per-user installer creates Start Menu/Desktop shortcuts and an uninstaller, and preserves local task data during upgrades.
+- **Windows:** use the [0.12.0 Windows installer](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v0.12.0/TalkToAi-Code-0.12.0-Windows-Setup.exe). This is an unsigned desktop installer, not a Microsoft Store package. The standard per-user installer creates Start Menu/Desktop shortcuts and an uninstaller, and preserves local task data during upgrades.
 - **Portable Windows:** use the [0.1.3 portable ZIP](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v0.1.3-preview/TalkToAi-Code-0.1.3-Windows-Portable.zip) when you do not want an installer.
-- **Linux:** install Python 3.10+ with `venv`, extract the [0.11.0 source ZIP](https://github.com/ResearchForumOnline/TalkToAi-Code/archive/refs/tags/v0.11.0.zip) outside your app-data folder, and run `bash install-linux.sh` from that folder. This creates a user-local virtual environment, launcher and desktop entry. The app uses `~/.local/state/TalkToAiCode` or `XDG_STATE_HOME` for chats/settings. Install Ollama separately and pull a model before selecting Auto. A Secret Service desktop keyring is needed to remember API keys or OAuth tokens.
-- **macOS:** install Python 3.10+, extract the [0.11.0 source ZIP](https://github.com/ResearchForumOnline/TalkToAi-Code/archive/refs/tags/v0.11.0.zip), and run `bash install-macos.sh` from that folder. This creates a local virtual environment, `~/bin/talktoai-code` launcher, and `~/Applications/TalkToAi Code.app` launcher. Chats/settings use `~/Library/Application Support/TalkToAiCode`. Install Ollama separately and pull a model. Remembered keys and account tokens use macOS Keychain.
+- **Linux:** install Python 3.10+ with `venv`, extract the [0.12.0 source ZIP](https://github.com/ResearchForumOnline/TalkToAi-Code/archive/refs/tags/v0.12.0.zip) outside your app-data folder, and run `bash install-linux.sh` from that folder. This creates a user-local virtual environment, launcher and desktop entry. The app uses `~/.local/state/TalkToAiCode` or `XDG_STATE_HOME` for chats/settings. Install Ollama separately and pull a model before selecting Auto. A Secret Service desktop keyring is needed to remember API keys or OAuth tokens.
+- **macOS:** install Python 3.10+, extract the [0.12.0 source ZIP](https://github.com/ResearchForumOnline/TalkToAi-Code/archive/refs/tags/v0.12.0.zip), and run `bash install-macos.sh` from that folder. This creates a local virtual environment, `~/bin/talktoai-code` launcher, and `~/Applications/TalkToAi Code.app` launcher. Chats/settings use `~/Library/Application Support/TalkToAiCode`. Install Ollama separately and pull a model. Remembered keys and account tokens use macOS Keychain.
 
 Windows has a packaged x64 installer. Linux and macOS use source installers with per-user virtual environments; the [native Ubuntu and macOS install-and-launch smoke run](https://github.com/ResearchForumOnline/TalkToAi-Code/actions/runs/36245686313) passed using an offscreen GUI on clean GitHub runners. An interactive human workflow has not been confirmed on those hosts. Browser research, Chat/Code, local Ollama, project edits, shell commands, jobs and SSH use portable code paths. Windows accessibility PC Pilot and Windows startup shortcuts are Windows-only. Linux browser operation may need desktop libraries for Playwright Chromium; if its browser download fails, install them and rerun `python -m playwright install chromium` inside the app virtual environment.
 

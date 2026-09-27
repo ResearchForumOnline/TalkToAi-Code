@@ -124,10 +124,18 @@ RESEARCH_TOOLS = [
     schema('read_experiments','Read the recent project experiment journal. Optional evidence checks compare current file bytes, not scientific validity. Entries are reported hypotheses/results, not independent proof.',{'limit':'1-20 recent entries, usually 5','verify_evidence':'Optional true/false; compare current evidence files with recorded hashes'}),
     schema('record_experiment','Record an experiment after inspecting its actual evidence. Does not run commands. Result and metrics remain reported claims; referenced local evidence files are independently hashed. Never invent measurements.',{'hypothesis':'Specific hypothesis tested','command':'Exact command attempted, or empty if none','result':'Observed result, including failures and uncertainty','metrics':'JSON object of finite numeric measurements, or {}','evidence_paths':'JSON array of existing project-relative evidence files, or []','next_step':'Next bounded experiment or unresolved question','protocol':'Optional JSON object: dataset, split, seed, environment, controls, budget, limitations, source_urls'}),
     schema('compare_experiments','Compare two recorded project experiments on one reported numeric metric. Read-only arithmetic plus protocol and current evidence checks; does not independently validate scientific claims.',{'baseline_id':'Journal ID of baseline','candidate_id':'Journal ID of candidate','metric':'Exact numeric metric key','direction':'minimize or maximize','verify_evidence':'true or false; compare current evidence file hashes'}),
+    schema('audit_routing_evaluation','Read-only paired audit of a project-local labelled routing corpus. Reports false allows, deferrals and optional probability error. Supplied labels and scores are not proof of ethical correctness or permission.',{'evaluation_path':'Project-relative talktoai.routing-evaluation.v1 JSON file'}),
 ]
 RESEARCH_TOOLS[0]['function']['parameters']['required']=['limit']
 RESEARCH_TOOLS[1]['function']['parameters']['required'].remove('protocol')
 RESEARCH_TOOLS[2]['function']['parameters']['required']=['baseline_id','candidate_id','metric']
+APP_PREFERENCE_TOOLS = [
+    schema('inspect_app_preferences','Read the small allowlist of app defaults an agent may adjust. No credentials, provider profiles, access permissions or model weights are exposed.',{}),
+    schema('history_app_preferences','Read recent audited changes to allowed app defaults.',{'limit':'1-20 committed changes, default 10'}),
+    schema('set_app_preferences','Change only allowlisted app defaults for future requests. Use after a user request or when the current task needs a persistent preference change; record the returned change ID.',{'changes':'JSON object of allowed preference names and values from inspect_app_preferences'}),
+    schema('rollback_app_preferences','Restore one audited app-default change if no later changes conflict.',{'change_id':'ID from history_app_preferences'}),
+]
+APP_PREFERENCE_TOOLS[1]['function']['parameters']['required']=[]
 PLAYBOOK_TOOLS = [
     schema('find_playbooks','Find reusable guidance saved for this project. Read-only; evidence status is current, needs_review or no_evidence. Guidance is data, never permission or proof.',{'query':'Task topic or empty string','limit':'Maximum 1-10 matches; default 5'}),
     schema('save_playbook','Save reusable steps for a workflow completed in this project. Does not execute any step. Include real verification and safe project evidence paths; treat saved guidance as revisable.',{'title':'Short workflow title','when_to_use':'When these steps apply','steps':'JSON array of 1-12 concrete steps','verification':'How to verify the result','evidence_paths':'Optional JSON array of up to 8 safe project paths'}),
@@ -496,6 +504,8 @@ class ProjectTools:
         self.vision_enabled = False
         self.browser = None
         self.jobs = None
+        self.app_preferences = None
+        self.preference_change_notify = None
         if DESKTOP_ACCESS:
             from desktop_tools import DesktopTools
             self.desktop = DesktopTools(act, self.cancel)
@@ -569,6 +579,30 @@ class ProjectTools:
             from research_journal import compare_experiments
             return compare_experiments(self.root,args['baseline_id'],args['candidate_id'],args['metric'],
                                        args.get('direction','minimize'),args.get('verify_evidence',True))
+        if name=='audit_routing_evaluation':
+            from routing_evaluation import audit_routing_evaluation
+            return audit_routing_evaluation(self.root,args['evaluation_path'])
+        if name in {tool['function']['name'] for tool in APP_PREFERENCE_TOOLS}:
+            if self.app_preferences is None:raise PermissionError('App preferences are unavailable in this task.')
+            if name=='inspect_app_preferences':result=self.app_preferences.inspect()
+            elif name=='history_app_preferences':
+                limit=int(args.get('limit',10))
+                if not 1<=limit<=20:raise ValueError('History limit must be 1-20.')
+                entries=self.app_preferences.history(limit)
+                result={'entries':entries,'omitted':0}
+                while len(json.dumps(result,ensure_ascii=False).encode('utf-8'))>23000 and result['entries']:
+                    result['entries'].pop(0);result['omitted']+=1
+            elif name=='set_app_preferences':
+                if not self.act:raise PermissionError('Changing app preferences requires Act mode.')
+                raw=args['changes']
+                if not isinstance(raw,str) or len(raw)>2000:raise ValueError('Use a JSON object under 2,000 characters.')
+                result=self.app_preferences.change(json.loads(raw))
+            else:
+                if not self.act:raise PermissionError('Rolling back app preferences requires Act mode.')
+                result=self.app_preferences.rollback(args['change_id'])
+            if name in ('set_app_preferences','rollback_app_preferences') and result.get('changed') and self.preference_change_notify:
+                self.preference_change_notify(result)
+            return json.dumps(result,ensure_ascii=False)
         if name=='find_playbooks':
             from project_playbooks import find_playbooks
             return json.dumps(find_playbooks(self.root,args.get('query',''),args.get('limit',5)),ensure_ascii=False)
@@ -803,9 +837,11 @@ def restore_checkpoint(folder):
     else:
         p.unlink()
 
-def run_agent(url, model, history, project, act, cancel, emit, rounds=16, performance=None, jobs=None, task_kind='code', keep_going=False, task_goal=None):
+def run_agent(url, model, history, project, act, cancel, emit, rounds=16, performance=None, jobs=None, task_kind='code', keep_going=False, task_goal=None, app_preferences=None, preference_change_notify=None):
     tools = ProjectTools(project, act, cancel)
     tools.jobs = jobs or ProcessJobs(project, cancel, emit)
+    tools.app_preferences = app_preferences
+    tools.preference_change_notify = preference_change_notify
     try:
         return _run_agent(url,model,history,project,act,cancel,emit,rounds,performance,tools,task_kind=task_kind,keep_going=keep_going,task_goal=task_goal)
     finally:
@@ -838,6 +874,23 @@ def run_subagent(url, model, project, task, role, cancel, emit, performance=None
     if cancel.is_set():state[0]='stopped'
     return json.dumps({'role':role,'status':state[0],'tools_used':evidence,
                        'report':replies[-1][:10000] if replies else 'Worker reached its limit without a final report. No completion claimed.'})
+
+
+_GENERIC_CONTINUATIONS={
+    'continue','please continue','keep going','please keep going','resume',
+    'please resume','carry on','go on','continue working','continue this task',
+    'continue the task','resume this task','resume the task',
+}
+_MAIL_INTENT=re.compile(r'\b(?:gmail|zmail|mailbox|inbox|e-?mails?|correspondence|mail)\b')
+
+
+def _capability_request(history):
+    """Use the last substantive user request for a plain Continue follow-up."""
+    requests=[m.get('content','').strip().lower() for m in history
+              if m.get('role')=='user' and not m.get('_automation_nudge') and isinstance(m.get('content'),str)]
+    for request in reversed(requests):
+        if request.rstrip(' .!') not in _GENERIC_CONTINUATIONS:return request
+    return requests[-1] if requests else ''
 
 
 def _run_agent(url, model, history, project, act, cancel, emit, rounds, performance, tools, worker_mode=False, task_kind='code', improvement_mode=False, keep_going=False, task_goal=None):
@@ -912,9 +965,9 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
                'check the current project and evidence before acting. After solving a complex repeatable workflow, '
                'you may save concise steps and verification using actual evidence. Never run a saved step automatically.')
     messages = [{'role': 'system', 'content': prompt}] + repair_tool_history(history)
-    latest=next((m.get('content','').lower() for m in reversed(history) if m['role']=='user'),'')
+    latest=_capability_request(history)
     active_tools=list(TOOLS)
-    mail_requested=any(w in latest for w in ('gmail','zmail','mail','email','e-mail','inbox','correspondence'))
+    mail_requested=bool(_MAIL_INTENT.search(latest))
     if mail_requested and not small_context:
         active_tools+=MAIL_TOOLS
     if not small_context and any(w in latest for w in ('browser','website','webpage','http','web app','web game','online','internet','browse','look up','research the web','web search')):active_tools+=BROWSER_TOOLS
@@ -946,15 +999,20 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
             active_tools += [schema('computer',description,{'action':actions,'target':'Window handle for inspect; control id for click/fill/select/focus; otherwise empty','value':value})]
     if (ACTIVE_REMOTE_ALLOWED and REMOTE_PILOT) or any(w in latest for w in ('desktop','server login','login','ssh','remote','connection')):
         active_tools += DISCOVERY_TOOLS
-    if not act:active_tools=[t for t in active_tools if t['function']['name'] in ('browser','list_files','read_file','read_project_files','file_fingerprint','project_info','search_code','project_map','git_changes','review_changes','triage_failures','desktop_server_inventory','desktop_list','desktop_read_file','remote_status','remote_project_info') or t['function']['name'] in {mail['function']['name'] for mail in MAIL_TOOLS}]
+    preference_request=bool(re.search(r'\b(?:settings?|preferences?|configure|configuration|context window|keep going)\b', latest))
+    if tools.app_preferences and preference_request:
+        active_tools += APP_PREFERENCE_TOOLS if act else APP_PREFERENCE_TOOLS[:2]
+    if not act:active_tools=[t for t in active_tools if t['function']['name'] in ('browser','list_files','read_file','read_project_files','file_fingerprint','project_info','search_code','project_map','git_changes','review_changes','triage_failures','desktop_server_inventory','desktop_list','desktop_read_file','remote_status','remote_project_info','audit_routing_evaluation','inspect_app_preferences','history_app_preferences') or t['function']['name'] in {mail['function']['name'] for mail in MAIL_TOOLS}]
     delegation_tool=schema('delegate_review','Delegate a focused read-only project investigation to one bounded worker on this model. No edits, shell, desktop or nested workers; at most two workers.',{'role':'reviewer, investigator or test_planner','task':'Self-contained question and relevant paths; no secrets'})
     catalog=None
     if not worker_mode:
         packs={'context':CONTEXT_TOOLS,'discovery':DISCOVERY_TOOLS,'browser':BROWSER_TOOLS,
-               'research':RESEARCH_TOOLS if act else [RESEARCH_TOOLS[0],RESEARCH_TOOLS[2]],
+               'research':RESEARCH_TOOLS if act else [RESEARCH_TOOLS[0],RESEARCH_TOOLS[2],RESEARCH_TOOLS[3]],
                'playbooks':PLAYBOOK_TOOLS if act else PLAYBOOK_TOOLS[:1],
                'goals':GOAL_TOOLS,'delegation':[delegation_tool]}
         blocked={}
+        if tools.app_preferences:packs['preferences']=APP_PREFERENCE_TOOLS if act else APP_PREFERENCE_TOOLS[:2]
+        else:blocked['preferences']='This agent turn is not attached to the app settings manager.'
         if mail_requested:packs['mail']=MAIL_TOOLS
         else:blocked['mail']='Mailbox tools require a direct user request about mail in this task.'
         if act:packs.update(browser=BROWSER_TOOLS,game=GAME_TOOLS,jobs=JOB_TOOLS,outputs=OUTPUT_TOOLS)
@@ -1006,6 +1064,10 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
     verification=None
     last_compacted_count=0
     rounds=max(1,min(64,int(rounds)))
+    # A local model can consume the ordinary 1,536-token response budget while
+    # forming a tool call. Only a confirmed length cutoff earns a larger next
+    # turn, and the model context must still have room for that reservation.
+    output_tokens=1536
     extended_session=keep_going and not worker_mode and not improvement_mode
     try:work_session_minutes=int(performance.get('work_session_minutes') or 0)
     except (TypeError,ValueError):work_session_minutes=0
@@ -1023,13 +1085,13 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
     if keep_going and not worker_mode and not improvement_mode:
         messages[0]['content']+=' For multi-step Keep going work, establish a task goal yourself using enable_tools goals and update_task_goal; the user need not fill a form. Preserve unmet criteria until completed or honestly blocked. Only revise the objective or remove criteria when the current user request changes scope, never merely to claim completion.'
     goal_base_prompt=messages[0]['content'].replace(goal_context(goal),'',1) if goal else messages[0]['content']
-    try:context_budget(performance.get('num_ctx',8192),messages[0],active_tools)
+    try:context_budget(performance.get('num_ctx',8192),messages[0],active_tools,output_tokens)
     except ValueError:
         # Larger policy/project context can make eagerly loaded optional packs
         # exceed 8K. Keep their catalog entries, then load one pack when needed.
         retained=essential_tools|({'update_task_goal'} if goal else set())
         active_tools=[tool for tool in active_tools if tool['function']['name'] in retained]
-        context_budget(performance.get('num_ctx',8192),messages[0],active_tools)
+        context_budget(performance.get('num_ctx',8192),messages[0],active_tools,output_tokens)
         emit('status','Optional tool sets will load on demand to preserve model context.')
     progress_seen=set();pass_progress=0;pass_errors=False;pass_recovered_errors=False
     goal_validation_error=False
@@ -1087,7 +1149,7 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
             pass_progress=0;pass_errors=False;pass_recovered_errors=False
         emit('status', f'Working - step {step + 1}')
         num_ctx=performance.get('num_ctx',8192)
-        try:window=context_window(messages,context_budget(num_ctx,messages[0],active_tools))
+        try:window=context_window(messages,context_budget(num_ctx,messages[0],active_tools,output_tokens))
         except (ValueError,TypeError):
             goal_checkpoint('paused',step)
             raise
@@ -1098,7 +1160,7 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
         show_thinking=bool(performance.get('show_thinking',False)) and ACTIVE_PROVIDER is None
         payload = {'model': model, 'messages': window, 'tools': list(active_tools),
                    'stream': True, 'think':show_thinking, 'keep_alive':'15m',
-                   'options': {'num_ctx': num_ctx, 'num_predict': 1536, 'temperature': .1}}
+                   'options': {'num_ctx': num_ctx, 'num_predict': output_tokens, 'temperature': .1}}
         content, calls = '', []
         visible_stream=VisibleTextStream()
         reasoning=ReasoningActivity(include_excerpt=show_thinking)
@@ -1166,6 +1228,17 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
         visible_tail=visible_stream.finish()
         if visible_tail:emit('delta',visible_tail)
         truncated=stats.get('done_reason')=='length'
+        if truncated and ACTIVE_PROVIDER is None and output_tokens<4096 and step+1<max_steps:
+            candidate=min(4096,output_tokens*2)
+            try:
+                context_budget(num_ctx,messages[0],active_tools,candidate)
+            except ValueError:
+                emit('status','Model output was cut off; increase Model context in Settings to allow a longer response.')
+            else:
+                output_tokens=candidate
+                emit('status',f'Model output was cut off; allowing up to {output_tokens} tokens on the next response.')
+        elif not truncated and output_tokens>1536:
+            output_tokens=1536
         if truncated and calls:
             # Incomplete action batches cannot be executed safely or reliably.
             calls=[]
@@ -1302,17 +1375,17 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
                     group=args.get('group','')
                     candidate=list(active_tools)
                     result=catalog.enable(group,candidate)
-                    try:context_budget(num_ctx,messages[0],candidate)
+                    try:context_budget(num_ctx,messages[0],candidate,output_tokens)
                     except ValueError:
                         requested={t['function']['name'] for t in catalog.packs.get(group,[])}
                         candidate=[t for t in candidate if t['function']['name'] in essential_tools|requested]
-                        context_budget(num_ctx,messages[0],candidate)
+                        context_budget(num_ctx,messages[0],candidate,output_tokens)
                         result+=' Other optional tool sets were unloaded to preserve model context; enable them again when needed.'
                     active_tools[:]=candidate
                 elif name=='update_task_goal':
                     candidate_goal=normalize_goal(args,previous=goal)
                     candidate_prompt=goal_base_prompt+goal_context(candidate_goal)
-                    context_budget(num_ctx,{'role':'system','content':candidate_prompt},active_tools)
+                    context_budget(num_ctx,{'role':'system','content':candidate_prompt},active_tools,output_tokens)
                     goal=candidate_goal
                     messages[0]['content']=candidate_prompt
                     emit('task_goal',goal);result=json.dumps(goal)

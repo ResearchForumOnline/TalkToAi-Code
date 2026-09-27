@@ -32,6 +32,7 @@ from updates import is_store_package, VERSION
 from amd_runtime import ensure_amd_tunnel
 from mail_connectors import gmail_connect, gmail_status, zmail_connect, zmail_status
 from skynet_mode import run_improvement
+from app_preferences import AppPreferenceManager
 from platform_paths import state_dir
 from project_context import resolve_project_target, requested_runtime, explicit_project_directory
 from control_overlay import ControlOverlay, CONTROL_TOOLS, safe_action_label
@@ -161,6 +162,7 @@ class Studio(QMainWindow):
             'access_mode': 'full_user',
             'pc_pilot': True,
         }
+        self.config_write_lock=threading.RLock()
         try:
             self.config.update(json.loads((HOME / 'config.json').read_text(encoding='utf-8-sig')))
         except (OSError, ValueError):
@@ -170,6 +172,8 @@ class Studio(QMainWindow):
             self.config.update(json.loads((STATE/'config.json').read_text(encoding='utf-8')))
         except (OSError, ValueError):
             pass
+        self.preferences_manager=AppPreferenceManager(self.config,self.persist_agent_preferences,
+            STATE/'app-preference-audit.jsonl')
         for key,environment in [('gmail_client_id','TALKTOAI_GMAIL_CLIENT_ID'),('zmail_client_id','TALKTOAI_ZMAIL_CLIENT_ID')]:
             if self.config.get(key) and not os.environ.get(environment):
                 os.environ[environment]=str(self.config[key])
@@ -382,6 +386,8 @@ class Studio(QMainWindow):
         self.artifact_details=QLabel('Register reports and build outputs here, or ask the agent to add its deliverables.');self.artifact_details.setWordWrap(True);self.artifact_details.setTextFormat(Qt.PlainText);al.addWidget(self.artifact_details)
         self.button('Add project output…',self.add_output,al)
         self.button('Reveal selected file',lambda:self.reveal_artifact(self.artifacts.currentItem()),al)
+        self.button('Apply checked Skynet candidate…',self.apply_skynet_candidate,al)
+        self.button('Restore last applied candidate…',self.restore_skynet_candidate,al)
         self.right.addTab(artifacts,'Evidence')
         progress=QWidget();progress_layout=QVBoxLayout(progress)
         self.context_summary=QLabel('Project overview appears when an agent task starts.');self.context_summary.setWordWrap(True);progress_layout.addWidget(self.context_summary)
@@ -1009,7 +1015,7 @@ class Studio(QMainWindow):
                 self.bus.event.emit('route',selected)
                 def job_event(kind,data):self.bus.event.emit(kind,dict(data,task_id=task_id))
                 self.job_manager=ProcessJobs(project,self.cancel,job_event)
-                run_agent(selected['url'],selected['model'],history,project,act,self.cancel,self.bus.event.emit,rounds=rounds,performance=performance,jobs=self.job_manager,task_kind=task_kind,keep_going=keep_going,task_goal=task_goal)
+                run_agent(selected['url'],selected['model'],history,project,act,self.cancel,self.bus.event.emit,rounds=rounds,performance=performance,jobs=self.job_manager,task_kind=task_kind,keep_going=keep_going,task_goal=task_goal,app_preferences=self.preferences_manager,preference_change_notify=lambda result:self.bus.event.emit('app_preferences_changed',result))
             except Exception as exc:self.bus.event.emit('error',str(exc))
             finally:
                 set_active_remote(None)
@@ -1028,9 +1034,10 @@ class Studio(QMainWindow):
             self.write_config()
 
     def toggle_model_activity(self,checked=False):
-        self.config['show_model_activity']=bool(checked)
-        self.model_activity_action.setChecked(bool(checked))
-        self.write_config()
+        with self.preferences_manager.lock:
+            self.config['show_model_activity']=bool(checked)
+            self.model_activity_action.setChecked(bool(checked))
+            self.write_config()
         if checked:
             self.right.setCurrentIndex(self.right.count()-1)
             self.status.setText('Model activity is enabled for the next model request when supported. It is shown live and not saved to chat history.')
@@ -1126,6 +1133,53 @@ class Studio(QMainWindow):
                 self.bus.event.emit('finished',None)
         threading.Thread(target=work,daemon=True).start()
 
+    def apply_skynet_candidate(self):
+        if self.busy or not self.task:return
+        from candidate_apply import preview_application, apply_candidate, CandidateApplyError
+        item=self.artifacts.currentItem()
+        selected=Path(item.data(Qt.UserRole)) if item else None
+        report_path=selected if selected and selected.name=='SKYNET-REPORT.json' else self.task.get('skynet_report_path')
+        if not report_path:
+            self.error('Select a Skynet report in Evidence or run Skynet Mode first.');return
+        if (str(Path(report_path).resolve())!=str(Path(self.task.get('skynet_report_path','')).resolve())
+                or not self.task.get('skynet_report_sha256')):
+            self.error('Run Skynet Mode in this conversation to create a checked 0.12 candidate report.');return
+        try:
+            plan=preview_application(report_path,self.task['project'],self.task['skynet_report_sha256'])
+        except (OSError,ValueError,KeyError,TypeError) as exc:self.error(exc);return
+        files='\n'.join(f"{item['status']}: {item['path']}" for item in plan['changes'][:25])
+        if len(plan['changes'])>25:files+=f"\n… and {len(plan['changes'])-25} more"
+        detail=(f"Apply the selected iteration {plan['selected_iteration']} to:\n{plan['project']}\n\n"
+                f"Evaluation: {plan['evaluation_mode']}\nChanges ({len(plan['changes'])}):\n{files}\n\n"
+                "The app will recheck original and candidate hashes and save an original-file backup. "
+                "Review the report and diff before applying.")
+        if QMessageBox.question(self,'Apply checked Skynet candidate',detail,QMessageBox.Yes|QMessageBox.No,QMessageBox.No)!=QMessageBox.Yes:return
+        try:result=apply_candidate(report_path,self.task['project'],self.task['skynet_report_sha256'])
+        except CandidateApplyError as exc:
+            self.task['last_candidate_application']=exc.manifest;self.persist();self.error(exc);return
+        except (OSError,ValueError,RuntimeError,KeyError,TypeError) as exc:self.error(exc);return
+        self.task['last_candidate_application']=result['manifest']
+        self.task['messages'].append({'role':'assistant','source':'app','content':
+            f"Applied {result['files']} checked candidate file(s) to the project.\n\nBackup: {result['manifest']}\n"
+            'Review and run the project before relying on the change. Restore last applied candidate is available in Evidence while its files remain unchanged.'})
+        self.persist();self.render();self.refresh_files();self.refresh_changes()
+
+    def restore_skynet_candidate(self):
+        if self.busy or not self.task:return
+        from candidate_apply import rollback_application
+        manifest=self.task.get('last_candidate_application')
+        if not manifest:
+            self.error('No applied candidate backup is recorded in this conversation.');return
+        detail=('Restore this candidate application from its original-file backup?\n\n'+str(manifest)+
+                '\n\nThe app checks that applied files are unchanged before restoring.')
+        if QMessageBox.question(self,'Restore applied candidate',detail,QMessageBox.Yes|QMessageBox.No,QMessageBox.No)!=QMessageBox.Yes:return
+        try:result=rollback_application(manifest,self.task['project'])
+        except (OSError,ValueError,RuntimeError,KeyError,TypeError) as exc:self.error(exc);return
+        self.task.pop('last_candidate_application',None)
+        self.task['messages'].append({'role':'assistant','source':'app','content':
+            f"Restored {result['files']} file(s) from candidate backup {result['manifest']}."})
+        self.persist();self.render();self.refresh_files();self.refresh_changes()
+
     def set_busy(self,busy):
         if busy and not self.busy:
             self.output.clear();self.status.setText('Starting new run…')
@@ -1185,6 +1239,13 @@ class Studio(QMainWindow):
             self.control_overlay.show_stopping();self.control_banner.setText('TalkToAi is stopping…\nWaiting for the current action to finish safely.')
 
     def handle_event(self,kind,data):
+        if kind=='app_preferences_changed':
+            duration=self.work_duration.findData(self.config.get('work_session_minutes',120))
+            if duration>=0:
+                self.work_duration.blockSignals(True);self.work_duration.setCurrentIndex(duration);self.work_duration.blockSignals(False)
+            self.model_activity_action.setChecked(bool(self.config.get('show_model_activity',False)))
+            self.status.setText('App defaults updated for future requests; see Settings for the current values.')
+            return
         if kind=='control_cancel':
             if self.busy and data is self.control_cancel_token:self.stop_task()
         elif kind=='delta':self.partial+=data;self.stream_dirty=True;self.observe_progress('Model responding')
@@ -1286,6 +1347,12 @@ class Studio(QMainWindow):
                 else:artifacts.append(data)
                 self.refresh_artifacts();self.persist()
         elif kind=='skynet_report':
+            self.task['skynet_report_path']=data['report_path']
+            try:
+                report_path=Path(data['report_path'])
+                self.task['skynet_report_sha256']=(hashlib.sha256(report_path.read_bytes()).hexdigest()
+                    if report_path.is_file() and report_path.stat().st_size<=1024*1024 else None)
+            except OSError:self.task['skynet_report_sha256']=None
             metric_summary=''
             if data.get('evaluation_mode')=='metric':
                 contract=data.get('evaluation_contract') or {}
@@ -1293,13 +1360,16 @@ class Studio(QMainWindow):
                 metric_summary=('Metric: '+str(contract.get('metric','unknown'))+' ('+str(contract.get('direction',''))+')\n'
                     +'Baseline: '+str(baseline.get('value') if baseline.get('status')=='measured' else 'unavailable')+'\n'
                     +'Selected: '+str(selected.get('value') if selected.get('status')=='measured' else 'none')+'\n')
-            summary=('Skynet Mode candidate ready: '+str(len(data.get('changed_files',[])))+' changed files.\n\n'
+            selected=bool(data.get('selected_iteration'))
+            summary=(('Skynet Mode checked candidate ready: ' if selected else 'Skynet Mode report ready; no candidate selected: ')
+                     +str(len(data.get('changed_files',[])))+' changed files.\n\n'
                      +'Baseline checks: '+str(data.get('baseline_checks',{}).get('status','unverified'))+'\n'
                      +'Selected iteration: '+str(data.get('selected_iteration') or 'none')+'\n'
                      +metric_summary
                      +str(data.get('selection_basis','Inspect recorded checks before applying.'))+'\n\n'
                      'Candidate: '+data['candidate_dir']+'\nDiff: '+data['diff_path']+'\nReport: '+data['report_path']+
-                     '\n\nReview the diff and checks before manually applying any changes to the original project.')
+                     +('\n\nReview the diff and checks, then use Apply checked Skynet candidate in Evidence to promote this selected copy with conflict checks and a backup.'
+                       if selected else '\n\nReview the checks and report. No candidate can be applied from this run; revise the goal or evaluator and run Skynet Mode again.'))
             self.task['messages'].append({'role':'assistant','content':summary})
             self.task.setdefault('artifacts',[]).append({'artifact':data['report_path'],'type':'report'})
             self.task.setdefault('artifacts',[]).append({'artifact':data['diff_path'],'type':'diff'})
@@ -1567,7 +1637,12 @@ class Studio(QMainWindow):
         layout.addLayout(actions);dialog.exec();self.refresh_connection_label()
 
     def write_config(self):
-        tmp=STATE/'config.json.tmp';tmp.write_text(json.dumps(self.config,indent=2),encoding='utf-8');tmp.replace(STATE/'config.json')
+        with self.config_write_lock:
+            snapshot=self.config.copy()
+            tmp=STATE/'config.json.tmp';tmp.write_text(json.dumps(snapshot,indent=2),encoding='utf-8');tmp.replace(STATE/'config.json')
+
+    def persist_agent_preferences(self):
+        self.write_config()
 
     def updates_dialog(self):
         from update_dialog import UpdateDialog

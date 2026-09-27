@@ -64,6 +64,32 @@ with the current user's permissions; the copied folder is not an OS sandbox.
 A malicious test can still affect files outside that folder if the operating
 system permits it.
 
+### Apply or restore a selected candidate
+
+The candidate remains separate until you choose **Apply checked Skynet
+candidate** in Evidence. Select its `SKYNET-REPORT.json` entry or use the most
+recent report recorded in the conversation. The app shows the selected
+iteration, evaluation mode and changed-file list before asking whether to
+apply it to the original project. Only a selected iteration with passing
+recorded checks can be applied. A metric contract, when present, must still
+show a finite improvement over the baseline.
+
+Before writing, the app checks that the original project files still match
+their recorded baseline hashes and that candidate files still match their
+checked hashes. It rejects protected policy and evaluator files, links,
+unsupported paths and changed files. The original bytes are backed up under
+`.talktoai-code/candidate-backups/`, with an application manifest that lists
+each changed path. Applying a candidate changes project source; it does not
+install a new TalkToAi Code build or promote model weights.
+
+Use **Restore last applied candidate** in Evidence to recover the original
+bytes. Restore checks that the applied files have not changed since the
+application and stops if they have, so later work is not overwritten. The
+backup and manifest remain for review. If an application is interrupted, its
+manifest records the pending path for manual inspection and bounded recovery.
+Review the resulting diff and run the project after applying; passing checks
+and a fixed evaluator do not establish broad quality or interactive gameplay.
+
 ### Optional measured evaluator
 
 A project can add tracked `SKYNET-EVALUATOR.json` at its root. The contract,
