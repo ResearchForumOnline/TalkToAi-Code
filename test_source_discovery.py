@@ -44,6 +44,16 @@ class SourceDiscoveryTests(unittest.TestCase):
         self.assertIn('Windows PowerShell',result)
         self.assertIn('list_files with pattern',result)
 
+    @unittest.skipUnless(os.name=='nt','Windows command failure classification')
+    def test_test_compiler_and_generic_failures_do_not_get_shell_syntax_hints(self):
+        with tempfile.TemporaryDirectory() as folder:
+            tools=core.ProjectTools(folder,act=True)
+            for output in ('AssertionError: expected ValueError was not raised','FAILED (failures=1)','error CS1002: expected semicolon','generic failure'):
+                result=tools.execute('run_command',{'command':"Write-Output '"+output+"'; exit 1"})
+                self.assertTrue(result.startswith('Exit 1'))
+                self.assertIn(output,result)
+                self.assertNotIn('[Shell recovery]',result)
+
     def test_phase_metrics_are_observed_not_invented(self):
         for extra,expected in [({'load_duration':26350000000,'prompt_eval_duration':1500000000,'eval_duration':950000000,'eval_count':16,'prompt_eval_count':120},{'load_seconds':26.35,'prompt_seconds':1.5,'generation_seconds':.95,'prompt_tokens':120}),({}, {})]:
             events=[]

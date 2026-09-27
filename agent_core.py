@@ -719,7 +719,10 @@ class ProjectTools:
                 size = output.tell()
                 output.seek(max(0, size - 20000))
                 result=f'Exit {process.returncode}\n'+output.read().decode('utf-8',errors='replace')
-                if process.returncode and os.name=='nt':
+                shell_diagnostic=re.search(
+                    r'^\s*\+\s*(?:CategoryInfo|FullyQualifiedErrorId)\s*:.*(?:ParserError|CommandNotFoundException|ParameterBindingException|InvalidEndOfLine|PositionalParameterNotFound|NamedParameterNotFound|AmbiguousParameter)',
+                    result,re.M)
+                if process.returncode and os.name=='nt' and shell_diagnostic:
                     result+='\n[Shell recovery] This command ran in Windows PowerShell, already in the selected project. '+\
                         'Do not use cmd dir /s or &&. For source discovery use list_files with pattern *.gd or *.tscn, '+\
                         'or PowerShell Get-ChildItem -Recurse -File -Filter \"*.gd\" | Select-Object -ExpandProperty FullName. '+\
