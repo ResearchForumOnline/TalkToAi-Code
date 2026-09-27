@@ -25,7 +25,7 @@ from ssh_tools import SSHProfile, SSHSession, load_profiles, save_profiles
 from providers import ProviderProfile, load_profiles as load_provider_profiles, save_profiles as save_provider_profiles
 from desktop_inventory import inspect_desktop
 from session_store import load_tasks, save_tasks, matches_task
-from task_starters import STARTERS
+from task_starters import STARTERS, STARTER_GROUPS
 from process_jobs import ProcessJobs
 from workspace_outputs import register_output
 from updates import is_store_package, VERSION
@@ -35,6 +35,8 @@ from skynet_mode import run_improvement
 from app_preferences import AppPreferenceManager
 from platform_paths import state_dir
 from project_context import resolve_project_target, requested_runtime, explicit_project_directory
+from task_navigation import natural_desktop_target
+from remote_intent import requests_remote_work
 from control_overlay import ControlOverlay, CONTROL_TOOLS, safe_action_label
 from control_cancel import EscapeCancel
 
@@ -310,8 +312,11 @@ class Studio(QMainWindow):
         self.code_actions=QWidget();shortcuts=QHBoxLayout(self.code_actions);shortcuts.setContentsMargins(0,0,0,0)
         for title,command in [('Inspect project','inspect project'),('Run tests','run tests'),('Open Desktop','open desktop')]:
             self.button(title,lambda checked=False,c=command:self.quick_command(c),shortcuts)
-        starter=QPushButton('Task starters');starter_menu=QMenu(starter)
-        for name in STARTERS:starter_menu.addAction(name,lambda checked=False,n=name:self.use_starter(n))
+        starter=QPushButton('Help me start');starter_menu=QMenu(starter)
+        starter.setToolTip('Choose an editable example. It fills the draft; nothing runs until you press Send.')
+        for group,names in STARTER_GROUPS:
+            starter_menu.addSection(group)
+            for name in names:starter_menu.addAction(name,lambda checked=False,n=name:self.use_starter(n))
         starter.setMenu(starter_menu);shortcuts.addWidget(starter)
         self.button('Models & APIs',self.providers_dialog,shortcuts)
         self.skynet_button=self.button('⚡ Skynet Mode',self.start_skynet,shortcuts)
@@ -332,7 +337,7 @@ class Studio(QMainWindow):
         self.control_banner.setStyleSheet('background:#173a35;color:#d9fff1;border:1px solid #65bea5;border-radius:7px;padding:8px;')
         self.control_banner.hide();chat.addWidget(self.control_banner)
         box = QFrame(); box.setObjectName('composer'); composer = QVBoxLayout(box)
-        self.prompt = Composer(); self.prompt.setPlaceholderText('Ask anything, or describe what to build…'); self.prompt.setFixedHeight(104); self.prompt.submitted.connect(self.send); composer.addWidget(self.prompt)
+        self.prompt = Composer(); self.prompt.setPlaceholderText('Describe the result you want, for example: find my game and fix its menu…'); self.prompt.setFixedHeight(104); self.prompt.submitted.connect(self.send); composer.addWidget(self.prompt)
         options = QHBoxLayout()
         self.route = QComboBox(); self.route.addItems(['Auto', 'Local', 'Server', 'Local large', 'API · optional provider']);self.refresh_route_labels();options.addWidget(self.route)
         self.mode = QComboBox(); self.mode.addItems(['Act', 'Plan']); self.mode.setToolTip('Act permits file edits and host commands. Plan only reads project files. Commands are not OS-sandboxed.'); options.addWidget(self.mode)
@@ -727,7 +732,7 @@ class Studio(QMainWindow):
         kind=self.task.get('kind','code')
         self.keep_going.blockSignals(True);self.keep_going.setChecked(bool(self.task.setdefault('keep_going',self.config.get('keep_going',False))));self.keep_going.blockSignals(False);self.keep_going.setVisible(kind=='code');self.work_duration.setVisible(kind=='code')
         self.mode.setCurrentText('Plan' if kind=='chat' or self.config.get('approval_policy')=='plan' else 'Act')
-        self.prompt.setPlaceholderText('Ask a question or work through an idea…' if kind=='chat' else 'Describe what to build or fix…')
+        self.prompt.setPlaceholderText('Ask a question or work through an idea…' if kind=='chat' else 'Describe the result you want, for example: find my game and fix its menu…')
         self.right.setVisible(kind=='code')
         self.code_actions.setVisible(kind=='code')
         self.partial=''; self.current_file=None; self.editor.clear(); self.output.clear()
@@ -757,7 +762,7 @@ class Studio(QMainWindow):
             if self.task.get('kind','code')=='chat':
                 parts=['# Start a conversation\n\nAsk a question, explore an idea, or plan your next move. Chat starts in **Plan** mode so it can read relevant files without changing them. Switch to **Act** if you want it to take action.\n\nPinned chats stay at the top of this space. Use the conversation menu to rename, branch, archive, or move a chat into Code.']
             else:
-                parts=['# Tell TalkToAi what you want done\n\nDescribe the outcome in ordinary words. In **Act**, TalkToAi can inspect the selected project, discover project folders on your Desktop when asked, look up relevant public documentation, edit code, and run checks. It shows the tools and results beside this chat.\n\nTry: **“Find my game on Desktop, improve the combat, and check it runs.”** Or **“Make me a playable game about a haunted station.”** For a saved SSH connection: **“Connect to my server and inspect my app.”**\n\nChoose **Plan** for read-only work. Server connections use your existing OpenSSH setup; you handle any password or two-factor prompt. Automatic web research uses generic queries and can be skipped by saying **“offline.”**']
+                parts=['# Tell TalkToAi what you want done\n\nDescribe a result in ordinary words. Start with **Help me start** for editable examples, or type your own request. TalkToAi can inspect the selected project, find project folders on your Desktop when asked, check relevant public documentation, edit code in **Act**, run project checks, and show actual tool results.\n\nTry **“Find my game on Desktop, improve its menu, and check it runs.”** Or **“Make a playable game about a haunted station.”** For an existing OpenSSH alias, try **“Connect to my server and inspect my app.”**\n\n**Plan** keeps work read-only. **Act** permits edits and commands using your account. Server authentication remains in OpenSSH; handle passwords and two-factor prompts yourself. Automatic web research uses generic topic queries; say **“offline”** to skip it. Review changed files and evidence before relying on a result.']
         scroll=self.transcript.verticalScrollBar();follow=scroll.value()>=scroll.maximum()-40;position=scroll.value()
         self.transcript.setMarkdown('\n\n---\n\n'.join(parts))
         if follow:self.transcript.moveCursor(QTextCursor.End)
@@ -976,14 +981,16 @@ class Studio(QMainWindow):
         keep_going=bool(self.keep_going.isChecked()) and task_kind=='code'
         task_goal=copy.deepcopy(self.current_task_goal())
         active_remote=self.active_remote()
-        requested_ssh=act and bool(re.search(r'\b(ssh|log ?in|connect)\b',text,re.I)) and bool(re.search(r'\b(server|host|ssh)\b|\.[a-z]{2,}',text,re.I))
+        requested_ssh=act and (requests_remote_work(text) or (
+            bool(re.search(r'\b(ssh|log ?in|connect)\b',text,re.I)) and
+            bool(re.search(r'\b(server|host|ssh)\b|\.[a-z]{2,}',text,re.I))))
         set_active_remote(active_remote if self.config.get('remote_enabled') and self.config.get('remote_pilot',True) else None)
         set_agent_preferences(
-            remote_allowed=requested_ssh or (bool(self.config.get('remote_enabled')) and self.config.get('approval_policy') == 'auto_remote' and bool(self.config.get('remote_pilot',True))),
+            remote_allowed=bool(self.config.get('remote_pilot',True)) and (requested_ssh or (bool(self.config.get('remote_enabled')) and self.config.get('approval_policy') == 'auto_remote')),
             auto_context=bool(self.config.get('auto_context', True)),
             desktop_access=self.config.get('access_mode','full_user')=='full_user',
             pc_pilot=bool(self.config.get('pc_pilot',True)),
-            remote_pilot=requested_ssh or bool(self.config.get('remote_pilot',True)),
+            remote_pilot=bool(self.config.get('remote_pilot',True)),
             web_browser=self.config.get('web_browser','auto'),
             web_search=self.config.get('web_search','auto'),
         )
@@ -1072,7 +1079,8 @@ class Studio(QMainWindow):
             if re.search(r'\balways\b',text,re.I):
                 self.config['preferred_route']='server';self.write_config()
         if self.task.get('kind','code')!='code':return True
-        target=resolve_project_target(self.task['project'],text)
+        target=(natural_desktop_target(text) if self.config.get('access_mode','full_user')=='full_user' and not explicit_project_directory(text) else None)
+        if target is None:target=resolve_project_target(self.task['project'],text)
         if target.get('error'):
             details='\n'.join(target['candidates'])
             self.error(target['error']+('\n\nCandidates:\n'+details if details else ''))
@@ -1706,10 +1714,12 @@ class Studio(QMainWindow):
 
 ## Start a coding task
 
-1. Click **Open project** or type `open score arena`.
+1. Say what you want done. For example: `Find my game on Desktop, fix the broken menu, and check it runs.` If you know the folder, **Open project** first. **Help me start** has editable examples, including game, app and server work.
 2. Choose **Auto** to use your available server/local models.
 3. Choose **Act** when you want edits, commands, tests or game launches. Choose **Plan** for read-only investigation.
-4. Describe the outcome, not a list of guessed commands. For example: `Inspect this Godot project, add a pause menu, run the import check, and capture evidence.`
+4. Press **Send**. Watch **Tools** for actual invocations and results, then review changed files and evidence. A model saying it ran a check is not the same as a recorded check result.
+
+You can also ask `Make a playable game about a haunted station` or `Connect to my saved server and inspect my app`. Finding a folder does not grant access to its credentials; remote work uses an existing OpenSSH alias and normal authentication. If more than one folder or host matches, choose the right one before changing anything.
 
 ## Steer a running task
 
@@ -1767,13 +1777,15 @@ Press **Ctrl+K** for searchable actions: project tools, models, API providers, e
 
 Search chats by title, project, draft or conversation text with **Ctrl+Shift+F**. Switch between **Active chats**, **Archived chats** and **All chats**. Right-click a chat or open **Chat ···** to rename, pin, branch, archive, restore or copy the last reply. Archiving never deletes a conversation. **Ctrl+F** searches the open conversation.
 
-**Task starters** provides editable prompts for coding, websites, games, debugging, release reviews and SSH inspection. Selecting one does not run a tool or model. Fill in its placeholders, check the project and mode, then Send. Existing drafts are never replaced by a starter.
+**Help me start** groups editable examples by outcome, project work, research and connections. Selecting one does not run a tool or model. Fill in its placeholders, check the project and mode, then Send. Existing drafts are never replaced by a starter.
 
 **More** holds project memory, API providers, ZeroThink linking, model choices, help and the app-data shortcut. Task history is saved atomically with a previous-save `studio.json.bak` recovery copy. Damaged history files are preserved and a valid backup is recovered on startup with a visible notice. This protects chat history, not project files, model weights or credentials; keep your normal backups too.
 
 ## Ask for an outcome; let the agent choose tools
 
 The agent receives a compact project overview when automatic context is enabled. It can load browser, game, code-navigation, desktop and SSH tool sets as needed, without requiring a special keyword in the original request. Existing Plan/Act and access settings still apply; loading a tool set never grants a new permission or performs an action on its own.
+
+For an inspection that needs several observations, the agent can group a bounded sequence of supported read-only queries and return each result in order. A chain uses the same Plan/Act and access settings as its individual tools, stops on an error or cancellation, and is shown in **Tools**. It cannot turn a read-only request into an edit or silently obtain credentials. Ask `Inspect this project and relevant public documentation, then tell me what you found` when you want that workflow before changing code.
 
 For multi-step work, the agent can maintain a saved checklist in **Steps**. It reviews unfinished items before finishing, and can continue automatically after an output-length limit up to twice within the normal turn budget. **Stop** still cancels the run. Use **Continue unfinished work** to resume a saved conversation; the agent must inspect current state before repeating actions.
 

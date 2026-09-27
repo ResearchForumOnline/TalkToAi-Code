@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from task_navigation import canonical_source, desktop_projects, research_query
+from task_navigation import canonical_source, desktop_projects, research_query, public_current_query, public_freshness_request
 
 
 class TaskNavigationTests(unittest.TestCase):
@@ -24,6 +24,17 @@ class TaskNavigationTests(unittest.TestCase):
     def test_primary_source_fallback(self):
         self.assertEqual(canonical_source(research_query('Make me a game', 'Godot')),
                          'https://docs.godotengine.org/en/stable/tutorials/performance/optimizing_3d_performance.html')
+
+    def test_public_current_chat_uses_fixed_official_query(self):
+        query=public_current_query('What is the latest Godot release?')
+        self.assertEqual(query,'site:godotengine.org Godot Engine latest release')
+        self.assertEqual(canonical_source(query),'https://godotengine.org/download/archive/')
+        self.assertTrue(public_freshness_request('What changed in AI research this week?'))
+
+    def test_private_and_offline_chat_do_not_auto_search(self):
+        self.assertIsNone(public_current_query('What is the latest Godot release for C:\\Users\\Alice\\secret project?'))
+        self.assertIsNone(public_current_query('What is the latest Godot release? offline'))
+        self.assertIsNone(public_current_query('What is the latest status of my server?'))
 
     def test_discovery_reads_manifests_not_contents(self):
         with tempfile.TemporaryDirectory() as temp:

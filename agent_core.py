@@ -29,7 +29,7 @@ from workspace_change_evidence import WorkspaceChangeTracker
 from task_goals import normalize_goal, goal_context
 from tool_protocol import has_tool_markup, parse_qwen_tool_calls, VisibleTextStream
 from ethics_policy import verify_release_policy, policy_prompt, assert_mutable_path
-from task_navigation import research_query, canonical_source, desktop_projects
+from task_navigation import research_query, canonical_source, desktop_projects, public_current_query, public_freshness_request
 
 SKIP = {'.git', '.godot', 'node_modules', '__pycache__', '.venv', 'venv', '.talktoai-code', 'Library', 'Temp', 'obj', 'bin', 'vendor', 'artifacts', 'build', 'dist'}
 ACTIVE_REMOTE = None
@@ -112,6 +112,7 @@ TOOLS += [
     schema('read_project_files', 'Read 1-8 UTF-8 project files with SHA-256. Prefer one file and limit 600 for small model contexts. Use next_offset and expected_sha256 for subsequent pages; errors are per file.', {'requests':'JSON array: [{"path":"src/main.py","offset":0,"limit":600}]. Optional limit bounds characters. Optional expected_sha256 verifies a continued page.'}),
     schema('edit_file', 'Replace one exact unique text occurrence in an existing file; checkpoint original.', {'path':'Relative path','old_text':'Exact unique text to replace','new_text':'Replacement text'}),
     schema('project_info', 'Detect project engine, test commands, installed engines and immediate child projects.', {}),
+    schema('invoke_chain', 'Run 1-6 read-only project or research tool calls sequentially in one request. Each underlying tool keeps its normal access checks. Stops on the first failure or Stop; returns each observed result and status. This cannot edit files, run commands, access mail, or connect to a server.', {'steps':'JSON array of objects: [{"tool":"project_info","args":{}},{"tool":"project_map","args":{"query":"player"}}]. Use only current-task read-only calls.'}),
 ]
 TOOLS[0]['function']['parameters']['required']=[]
 JOB_TOOLS = [
@@ -569,6 +570,9 @@ class ProjectTools:
     def execute(self, name, args):
         if self.cancel.is_set():
             raise InterruptedError('Task stopped.')
+        if name == 'invoke_chain':
+            from tool_chains import invoke_chain
+            return invoke_chain(self,args['steps'])
         if name=='read_experiments':
             from research_journal import read_experiments
             return read_experiments(self.root,args.get('limit','5'),verify_evidence=args.get('verify_evidence',False))
@@ -972,8 +976,8 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
     messages = [{'role': 'system', 'content': prompt}] + repair_tool_history(history)
     latest=_capability_request(history)
     auto_query=None
-    if not worker_mode and not improvement_mode and task_kind == 'code' and not cancel.is_set():
-        if DESKTOP_ACCESS and re.search(r'\bdesktop\b',latest) and re.search(r'\b(?:find|check|locate|look|project|folder|file|game|app)\b',latest):
+    if not worker_mode and not improvement_mode and not cancel.is_set():
+        if task_kind == 'code' and DESKTOP_ACCESS and re.search(r'\bdesktop\b',latest) and re.search(r'\b(?:find|check|locate|look|project|folder|file|game|app)\b',latest):
             emit('status','Finding project folders on Desktop and in Documents…')
             emit('tool',{'name':'desktop_projects','args':{},'automatic':True})
             try:
@@ -982,16 +986,20 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
                 messages[0]['content']+='\nDesktop project discovery (directory metadata only, not file contents): '+json.dumps(found,ensure_ascii=False)[:1800]
             except (OSError,ValueError) as exc:
                 emit('result','Desktop project discovery unavailable: '+str(exc)[:200])
-        try:research_engine=tools.info().get('engine','General') if AUTO_CONTEXT else 'General'
-        except (OSError,ValueError,TypeError):research_engine='General'
-        auto_query=research_query(latest,research_engine)
+        if task_kind == 'code':
+            try:research_engine=tools.info().get('engine','General') if AUTO_CONTEXT else 'General'
+            except (OSError,ValueError,TypeError):research_engine='General'
+            auto_query=research_query(latest,research_engine)
+        elif task_kind == 'chat':
+            auto_query=public_current_query(latest)
         if auto_query:
             emit('status','Checking current public documentation before coding…')
             emit('tool',{'name':'browser','args':{'action':'search','target':auto_query,'value':'auto'},'automatic':True})
             try:
                 result=json.loads(tools.execute('browser',{'action':'search','target':auto_query,'value':'auto'}))
                 allowed=('docs.godotengine.org','docs.unity3d.com','dev.epicgames.com',
-                         'developer.mozilla.org','docs.python.org')
+                         'developer.mozilla.org','docs.python.org','godotengine.org',
+                         'python.org','www.python.org','ollama.com','playwright.dev')
                 sources=[]
                 for link in result.get('links',[]):
                     link_url=link.get('url','')
@@ -1021,7 +1029,7 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
     mail_requested=bool(_MAIL_INTENT.search(latest))
     if mail_requested and not small_context:
         active_tools+=MAIL_TOOLS
-    if not small_context and (auto_query or any(w in latest for w in ('browser','website','webpage','http','web app','web game','online','internet','browse','look up','research the web','web search'))):active_tools+=BROWSER_TOOLS
+    if auto_query or (not small_context and any(w in latest for w in ('browser','website','webpage','http','web app','web game','online','internet','browse','look up','research the web','web search'))) or (task_kind=='chat' and public_freshness_request(latest)):active_tools+=BROWSER_TOOLS
     if AUTO_CONTEXT or any(w in latest for w in ('search','find','where','map','overview','inspect','review','git','refactor')):active_tools+=CONTEXT_TOOLS
     if not small_context and any(w in latest for w in ('game','godot','blender','screenshot')):active_tools+=GAME_TOOLS
     elif act:active_tools+=GAME_TOOLS[:1]
@@ -1053,7 +1061,7 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
     preference_request=bool(re.search(r'\b(?:settings?|preferences?|configure|configuration|context window|keep going)\b', latest))
     if tools.app_preferences and preference_request:
         active_tools += APP_PREFERENCE_TOOLS if act else APP_PREFERENCE_TOOLS[:2]
-    if not act:active_tools=[t for t in active_tools if t['function']['name'] in ('browser','list_files','read_file','read_project_files','file_fingerprint','project_info','search_code','project_map','git_changes','review_changes','triage_failures','desktop_server_inventory','desktop_projects','desktop_list','desktop_read_file','remote_status','remote_project_info','audit_routing_evaluation','inspect_app_preferences','history_app_preferences') or t['function']['name'] in {mail['function']['name'] for mail in MAIL_TOOLS}]
+    if not act:active_tools=[t for t in active_tools if t['function']['name'] in ('invoke_chain','browser','list_files','read_file','read_project_files','file_fingerprint','project_info','search_code','project_map','git_changes','review_changes','triage_failures','desktop_server_inventory','desktop_projects','desktop_list','desktop_read_file','remote_status','remote_project_info','audit_routing_evaluation','inspect_app_preferences','history_app_preferences') or t['function']['name'] in {mail['function']['name'] for mail in MAIL_TOOLS}]
     delegation_tool=schema('delegate_review','Delegate a focused read-only project investigation to one bounded worker on this model. No edits, shell, desktop or nested workers; at most two workers.',{'role':'reviewer, investigator or test_planner','task':'Self-contained question and relevant paths; no secrets'})
     catalog=None
     if not worker_mode:
@@ -1078,12 +1086,32 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
         # Permissions make capabilities discoverable, not mandatory prompt load.
         # Desktop/SSH schemas otherwise consume most of an 8K local context even
         # for a plain project edit. They remain available through enable_tools.
+        eager_names=set()
+        if DESKTOP_ACCESS and re.search(r'\b(?:desktop|documents)\b',latest):
+            eager_names.add('desktop_projects')
+            if re.search(r'\b(?:files?|folders?|read)\b',latest):
+                eager_names.update(('desktop_list','desktop_read_file'))
+        remote_intent=bool(re.search(r'\b(?:ssh|vps|remote|server|host)\b',latest)) and bool(re.search(r'\b(?:connect|log ?in|inspect|check|fix|edit|deploy|work on)\b',latest))
+        if remote_intent and ACTIVE_REMOTE_ALLOWED and REMOTE_PILOT:
+            eager_names.update(('desktop_server_inventory','remote_status','remote_project_info'))
+            if act:eager_names.add('connect_remote')
+        if mail_requested:
+            if re.search(r'\bgmail\b',latest):provider_names=('gmail_status','gmail_search','gmail_get_message')
+            elif re.search(r'\bzmail\b',latest):provider_names=('zmail_status','zmail_search_email','zmail_get_message')
+            else:provider_names=('gmail_status','gmail_search','zmail_status','zmail_search_email')
+            eager_names.update(provider_names)
         lazy_names={t['function']['name'] for group in ('desktop','ssh','discovery','context') for t in packs.get(group,[])}
-        active_tools=[t for t in active_tools if t['function']['name'] not in lazy_names or t['function']['name']=='search_code']
+        active_tools=[t for t in active_tools if t['function']['name'] not in lazy_names or t['function']['name'] in eager_names or t['function']['name']=='search_code']
+        known={t['function']['name'] for t in active_tools}
+        for tool in DESKTOP_TOOLS+DISCOVERY_TOOLS+REMOTE_TOOLS+MAIL_TOOLS:
+            name=tool['function']['name']
+            if name in eager_names and name not in known:
+                active_tools.append(tool);known.add(name)
         active_tools += [schema('enable_tools','Load an extra tool set when the task requires it, even if the original prompt did not mention those tools. No user click is needed. Available sets: '+', '.join(packs)+'. An empty group lists availability and limits. This never changes permissions or performs an operation.',{'group':'Exact set name, or empty string to inspect the catalog'}),PLAN_TOOL]
         messages[0]['content']+=' When a capability is needed but absent from the current tools, call enable_tools for the relevant available set and continue. Do not tell the user to perform a tool action you can carry out. For multi-step tasks use update_plan, keep one step in progress, and update completed or genuinely blocked steps based on evidence. The checklist is visible to the user. Never mark tests passed simply because a command ran.'
         messages[0]['content']+=' For sustained tasks enable goals and use update_task_goal to preserve the objective, acceptance criteria and next action across turns. These are reports; tool evidence must establish success.'
         messages[0]['content']+=' Prefer read_project_files to inspect several files in one call; continue truncated pages using their offsets and hashes. For long builds/tests or temporary local servers, enable jobs, start_process and poll_process; keep monitoring until exit, then inspect logs. Jobs are stopped at turn end and are not persistent hosting. For deliverables, enable outputs and register_output so users can find the actual files in Evidence. A registered file or process exit alone is not proof of correctness.'
+        messages[0]['content']+=' For related read-only queries, invoke_chain can run up to six existing tool calls in sequence and report each result; it does not grant new access or perform edits/commands. Use observed results before any subsequent edit.'
     if improvement_mode:
         permitted={'list_files','read_file','read_project_files','file_fingerprint','write_file_checked',
                    'write_file','edit_file','project_info','search_code','project_map','git_changes',
@@ -1452,6 +1480,11 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
                     result = tools.execute(name, args)
                 observed_result=result
                 command_failed=name in ('run_checks','run_command','desktop_run_command','remote_run_command') and any(int(code)!=0 for code in re.findall(r'^Exit (-?\d+)\s*$',result,re.M))
+                chain_status='completed'
+                if name=='invoke_chain':
+                    try:chain_status=json.loads(result).get('status','failed')
+                    except (ValueError,TypeError,AttributeError):chain_status='failed'
+                    command_failed=command_failed or chain_status!='completed'
                 if guard_result is None and not command_failed and name not in ('run_command','desktop_run_command','remote_run_command'):
                     guidance=discovery_guard.observe(name,args,result)
                     if guidance:
@@ -1464,7 +1497,7 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
                 if command_failed or (name=='run_checks' and check_evidence(result)['status']!='passed'):
                     pass_errors=True
                     failure_code=re.search(r'^Exit (-?\d+)\s*$',result,re.M)
-                    last_tool_error=(name+(': exit '+failure_code.group(1) if failure_code else ': check did not pass'))[:120]
+                    last_tool_error=(name+(': '+chain_status if name=='invoke_chain' else ': exit '+failure_code.group(1) if failure_code else ': check did not pass'))[:120]
                 elif guard_result is None and name not in ('enable_tools','update_plan','record_experiment','update_task_goal'):
                     observed=hashlib.sha256(json.dumps([name,args,observed_result],sort_keys=True,ensure_ascii=False).encode()).hexdigest()
                     if observed not in progress_seen:

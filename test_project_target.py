@@ -3,6 +3,7 @@ from pathlib import Path
 import tempfile
 import unittest
 from project_context import resolve_project_target, requested_runtime
+from task_navigation import natural_desktop_target
 
 
 class ProjectTargetTests(unittest.TestCase):
@@ -53,6 +54,25 @@ class ProjectTargetTests(unittest.TestCase):
 
     def test_existing_project_without_named_target_is_kept(self):
         self.assertEqual(resolve_project_target(self.root,'Add a pause menu')['root'],str(self.root))
+
+    def test_natural_desktop_name_selects_nested_manifest(self):
+        project=self.game('Desktop/Codex OpenAI/blacksite_nightfall/native','NIGHTFALL')
+        result=natural_desktop_target('Find my NIGHTFALL game on Desktop and improve it',self.root)
+        self.assertEqual(Path(result['root']),project)
+        self.assertNotIn('error',result)
+
+    def test_natural_desktop_tie_requires_choice(self):
+        self.game('Desktop/NIGHTFALL','NIGHTFALL')
+        self.game('Desktop/other/NIGHTFALL','NIGHTFALL')
+        result=natural_desktop_target('Find my NIGHTFALL game on Desktop',self.root)
+        self.assertIn('Multiple projects',result['error'])
+        self.assertEqual(len(result['candidates']),2)
+
+    def test_natural_target_ignores_vague_creation_and_private_folder(self):
+        self.game('Desktop/secrets/NIGHTFALL','NIGHTFALL')
+        self.assertIsNone(natural_desktop_target('Make me a game',self.root))
+        result=natural_desktop_target('Find my NIGHTFALL game on Desktop',self.root)
+        self.assertIn('Could not find',result['error'])
 
     def test_embedded_runtime_instruction_is_affirmative_only(self):
         self.assertEqual(requested_runtime('use server always, make my game better'),'server')

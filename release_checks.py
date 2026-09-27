@@ -41,6 +41,21 @@ def smoke(destination):
             from agent_core import ProjectTools
             tools=ProjectTools(folder,True)
             Path(folder,'report.txt').write_text('Packaged fixture evidence',encoding='utf-8')
+            chain=json.loads(tools.execute('invoke_chain',{'steps':json.dumps([
+                {'tool':'project_info'}, {'tool':'read_file','args':{'path':'report.txt'}}
+            ])}))
+            result['read_only_chain']=(chain['status']=='completed' and chain['completed']==2
+                                       and chain['steps'][1]['result']=='Packaged fixture evidence')
+            from remote_intent import requests_remote_work
+            result['remote_intent']=(requests_remote_work('Check my VPS project')
+                                     and not requests_remote_work('Use my server model to make a game'))
+            from task_navigation import natural_desktop_target
+            fixture_game=Path(folder,'Desktop','Work','nightfall','native')
+            fixture_game.mkdir(parents=True)
+            (fixture_game/'project.godot').write_text('[application]\nconfig/name="NIGHTFALL"\n',encoding='utf-8')
+            target=natural_desktop_target('Find my NIGHTFALL game on Desktop',home=folder)
+            result['named_project_target']=(Path(target.get('root',''))==fixture_game.resolve()
+                                            and not target.get('truncated'))
             result['batch_read']=json.loads(read_batch(tools,[{'path':'report.txt'}]))['files'][0]['complete']
             result['output_registration']=bool(json.loads(register_output(tools,'report.txt'))['sha256'])
             from project_playbooks import save_playbook, find_playbooks
@@ -101,7 +116,7 @@ def smoke(destination):
             report=json.loads(browser.execute('click','Open report'))
             result['browser_popup']=report['url'].endswith('/report') and 'Packaged report ready' in report['page']
             browser.close();browser=None
-        result['passed']=all(result.get(key,False) for key in ('operating_policy','bundled_example','browser_interaction','browser_popup','browser_screenshot','vision_attachment','batch_read','output_registration','project_playbooks','research_comparison','source_change_evidence','audited_preferences','routing_audit','candidate_controls_imported')) and (os.name!='nt' or (result.get('managed_process',False) and result.get('escape_hook_registration',False)))
+        result['passed']=all(result.get(key,False) for key in ('operating_policy','bundled_example','browser_interaction','browser_popup','browser_screenshot','vision_attachment','read_only_chain','remote_intent','named_project_target','batch_read','output_registration','project_playbooks','research_comparison','source_change_evidence','audited_preferences','routing_audit','candidate_controls_imported')) and (os.name!='nt' or (result.get('managed_process',False) and result.get('escape_hook_registration',False)))
     except Exception as exc:result.update(passed=False,error=f'{type(exc).__name__}: {exc}')
     finally:
         if browser:browser.close()

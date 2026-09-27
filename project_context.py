@@ -171,5 +171,7 @@ def git_changes(tools):
     output=[]
     for args in commands:
         result=subprocess.run(base+args,capture_output=True,text=True,timeout=15,creationflags=flags)
+        if result.returncode:
+            return 'Git query failed: exit '+str(result.returncode)+' for git '+args[0]+'\n'+(result.stderr or result.stdout)[:2000]
         output.append('git '+' '.join(args)+'\n'+(result.stdout+result.stderr)[:10000])
     return '\n'.join(output)

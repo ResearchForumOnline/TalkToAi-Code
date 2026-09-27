@@ -1,7 +1,10 @@
 from pathlib import Path
 import tempfile
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 from agent_core import ProjectTools
+from project_context import git_changes
 
 class ContextTests(unittest.TestCase):
     def test_map_and_search_are_bounded_and_exclude_credentials(self):
@@ -26,5 +29,13 @@ class ContextTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             result=ProjectTools(folder).execute('git_changes',{})
             self.assertTrue('not inside a Git repository' in result or 'not installed' in result)
+
+    def test_git_change_command_reports_nonzero_status(self):
+        with tempfile.TemporaryDirectory() as folder:
+            answers=[SimpleNamespace(returncode=0,stdout=folder,stderr=''),
+                     SimpleNamespace(returncode=128,stdout='',stderr='fatal: fixture failure')]
+            with patch('project_context.subprocess.run',side_effect=answers):
+                result=git_changes(ProjectTools(folder))
+            self.assertIn('Git query failed: exit 128 for git status',result)
 
 if __name__=='__main__':unittest.main()
