@@ -1,6 +1,29 @@
 # TalkToAi Code — Your projects. Your AI. Your workspace.
 
-> **Latest release: 8.2.0** — [Download the Windows installer](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v8.2.0/TalkToAi-Code-8.2.0-Windows-Setup.exe) · [Release notes and checksums](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/tag/v8.2.0) · [Linux/macOS source ZIP](https://github.com/ResearchForumOnline/TalkToAi-Code/archive/refs/tags/v8.2.0.zip).
+> **Latest update: 8.3.0** — [Windows release](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/tag/v8.3.0) · [Release notes](docs/RELEASE-8.3.0.md) · [Linux/macOS source ZIP](https://github.com/ResearchForumOnline/TalkToAi-Code/archive/refs/tags/v8.3.0.zip).
+
+### 8.3.0: useful work before you connect a model
+
+Open **Local tools** to inspect your project or create a working starter with **no model, API key or network request**. **Project quick check** combines project orientation, Python syntax findings, TODO comments and Git change names in one bounded report. Six focused tools cover project reports, finding files, locating declared code symbols, unfinished-work comments, Python syntax and Git status. They use fixed programs and parsers, show their scope and run even when your selected model is offline.
+
+You can also type **“What is in this project?”**, **“Find files matching *.gd”**, **“Show TODOs”** or **“Check Python syntax”**. Exact requests run locally; a broader request to inspect and change code retains the model workflow. Local reports have their own progress and saved history, keep paused coding checkpoints, and support Stop. Python syntax inspection parses source without importing it; it does not run project tests or prove the code works.
+
+In **Local tools → Create a project**, choose **Neon Drift**, an offline browser arcade game, or **Taskbox**, a Python command-line task manager. Act mode creates editable source in a fresh child folder and opens it as a new task. Existing folders are never replaced. Open the game's `index.html` directly in a browser. Taskbox needs a separately installed Python 3.10+; the Windows app's bundled runtime is not a general Python installation. These are fixed, working starter projects; custom game and app changes can continue through your selected model or your editor.
+
+The source also provides a standalone command interface:
+
+```sh
+python -m offline_assistant --project "/path/to/project" --command quick_check --json
+python -m offline_assistant --project "/path/to/project" --command find_files --query "*.gd"
+```
+
+Local scans are bounded by file, byte, result and time limits. Partial coverage and unavailable tools are reported explicitly. Symbol matching is structural or lexical, and TODO findings are comments; neither is a semantic bug review. See the [8.3.0 release notes](docs/RELEASE-8.3.0.md) for the command catalog and limits.
+
+![Actual Local tools dialog with seven offline actions](assets/screens/local-tools-0830.png)
+
+The Local tools interface above is rendered from the app with a disposable profile. The game below is an actual generated Neon Drift starter running in a browser. After creating it, type **open starter** to play; its source stays in the selected project.
+
+![Neon Drift offline starter running in a browser](assets/screens/neon-drift-0830.png)
 
 ### 8.2.0: a better first look at your project
 
@@ -24,7 +47,7 @@ On a **Chat** request about a current public Godot, Python, Ollama or Playwright
 
 ### Start with a result, not a settings tutorial
 
-Open a **Code** task, choose an available model route, and tell TalkToAi what you want done. **Help me start** groups editable requests by outcome; choosing one fills a draft and never runs a tool until you press **Send**. **Plan** is for read-only inspection. **Act** permits edits and commands with your signed-in account's permissions. The **Tools**, **Changes**, **Steps** and **Evidence** panes show what was invoked, changed, reported and checked.
+Open a project and use **Local tools** immediately, or choose an available model route for custom coding, research and conversation. **Help me start** groups editable requests by outcome; choosing one fills a draft and never runs a tool until you press **Send**. **Plan** is for read-only inspection. **Act** permits edits and commands with your signed-in account's permissions. The **Tools**, **Changes**, **Steps** and **Evidence** panes show what was invoked, changed, reported and checked.
 
 | Say this | What the agent can do |
 | --- | --- |
@@ -136,7 +159,7 @@ An independent native desktop AI assistant from TalkToAI for coding, games and g
 
 ## Install
 
-**Recommended for Windows:** use the [8.2.0 installer](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v8.2.0/TalkToAi-Code-8.2.0-Windows-Setup.exe). Run setup and open **TalkToAi Code** from Start. Python is bundled; you do not need the source setup below. Future releases can be checked from **About & updates** inside the app.
+**Recommended for Windows:** use the [8.3.0 installer](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v8.3.0/TalkToAi-Code-8.3.0-Windows-Setup.exe). Run setup and open **TalkToAi Code** from Start. Python is bundled; you do not need the source setup below. Future releases can be checked from **About & updates** inside the app.
 
 ## Updates and saved settings
 
@@ -229,10 +252,10 @@ In Act mode, try: **“Connect to my website server using my existing SSH config
 
 ### Platform installers
 
-- **Windows:** use the [8.2.0 Windows installer](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v8.2.0/TalkToAi-Code-8.2.0-Windows-Setup.exe). This is an unsigned desktop installer, not a Microsoft Store package. The standard per-user installer creates Start Menu/Desktop shortcuts and an uninstaller, and preserves local task data during upgrades.
+- **Windows:** use the [8.3.0 Windows installer](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v8.3.0/TalkToAi-Code-8.3.0-Windows-Setup.exe). This is an unsigned desktop installer, not a Microsoft Store package. The standard per-user installer creates Start Menu/Desktop shortcuts and an uninstaller, and preserves local task data during upgrades.
 - **Portable Windows:** use the [0.1.3 portable ZIP](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v0.1.3-preview/TalkToAi-Code-0.1.3-Windows-Portable.zip) when you do not want an installer.
-- **Linux:** install Python 3.10+ with `venv`, extract the [8.2.0 source ZIP](https://github.com/ResearchForumOnline/TalkToAi-Code/archive/refs/tags/v8.2.0.zip) outside your app-data folder, and run `bash install-linux.sh` from that folder. This creates a user-local virtual environment, launcher and desktop entry. The app uses `~/.local/state/TalkToAiCode` or `XDG_STATE_HOME` for chats/settings. Install Ollama separately and pull a model before selecting Auto. A Secret Service desktop keyring is needed to remember API keys or OAuth tokens.
-- **macOS:** install Python 3.10+, extract the [8.2.0 source ZIP](https://github.com/ResearchForumOnline/TalkToAi-Code/archive/refs/tags/v8.2.0.zip), and run `bash install-macos.sh` from that folder. This creates a local virtual environment, `~/bin/talktoai-code` launcher, and `~/Applications/TalkToAi Code.app` launcher. Chats/settings use `~/Library/Application Support/TalkToAiCode`. Install Ollama separately and pull a model. Remembered keys and account tokens use macOS Keychain.
+- **Linux:** install Python 3.10+ with `venv`, extract the [8.3.0 source ZIP](https://github.com/ResearchForumOnline/TalkToAi-Code/archive/refs/tags/v8.3.0.zip) outside your app-data folder, and run `bash install-linux.sh` from that folder. This creates a user-local virtual environment, launcher and desktop entry. The app uses `~/.local/state/TalkToAiCode` or `XDG_STATE_HOME` for chats/settings. Install Ollama separately and pull a model before selecting Auto. A Secret Service desktop keyring is needed to remember API keys or OAuth tokens.
+- **macOS:** install Python 3.10+, extract the [8.3.0 source ZIP](https://github.com/ResearchForumOnline/TalkToAi-Code/archive/refs/tags/v8.3.0.zip), and run `bash install-macos.sh` from that folder. This creates a local virtual environment, `~/bin/talktoai-code` launcher, and `~/Applications/TalkToAi Code.app` launcher. Chats/settings use `~/Library/Application Support/TalkToAiCode`. Install Ollama separately and pull a model. Remembered keys and account tokens use macOS Keychain.
 
 Windows has a packaged x64 installer. Linux and macOS use source installers with per-user virtual environments; the [native Ubuntu and macOS install-and-launch smoke run](https://github.com/ResearchForumOnline/TalkToAi-Code/actions/runs/36245686313) passed using an offscreen GUI on clean GitHub runners. An interactive human workflow has not been confirmed on those hosts. Browser research, Chat/Code, local Ollama, project edits, shell commands, jobs and SSH use portable code paths. Windows accessibility PC Pilot and Windows startup shortcuts are Windows-only. Linux browser operation may need desktop libraries for Playwright Chromium; if its browser download fails, install them and rerun `python -m playwright install chromium` inside the app virtual environment.
 

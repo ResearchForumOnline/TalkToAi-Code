@@ -93,6 +93,16 @@ def smoke(destination):
             Path(folder,'fixture.py').write_text('value = 1\n',encoding='utf-8')
             observed=tracker.observe('packaged fixture')
             result['source_change_evidence']=observed['count']==1 and observed['complete']
+            from offline_assistant import run_offline
+            local_report=run_offline(folder,command='python_syntax')
+            result['offline_program']=(local_report['status']=='completed'
+                and local_report.get('findings')==0 and local_report['metrics']['model_calls']==0
+                and local_report['metrics']['network_calls']==0)
+            from project_templates import create_project_template
+            starter=create_project_template(folder,'browser-game','offline-game')
+            result['offline_starter']=(starter['status']=='created'
+                and Path(starter['project_path'],'index.html').is_file()
+                and Path(starter['project_path'],'game.js').stat().st_size>1000)
             if os.name=='nt':
                 jobs=ProcessJobs(folder)
                 try:
@@ -116,7 +126,7 @@ def smoke(destination):
             report=json.loads(browser.execute('click','Open report'))
             result['browser_popup']=report['url'].endswith('/report') and 'Packaged report ready' in report['page']
             browser.close();browser=None
-        result['passed']=all(result.get(key,False) for key in ('operating_policy','bundled_example','browser_interaction','browser_popup','browser_screenshot','vision_attachment','read_only_chain','remote_intent','named_project_target','batch_read','output_registration','project_playbooks','research_comparison','source_change_evidence','audited_preferences','routing_audit','candidate_controls_imported')) and (os.name!='nt' or (result.get('managed_process',False) and result.get('escape_hook_registration',False)))
+        result['passed']=all(result.get(key,False) for key in ('offline_program','offline_starter','operating_policy','bundled_example','browser_interaction','browser_popup','browser_screenshot','vision_attachment','read_only_chain','remote_intent','named_project_target','batch_read','output_registration','project_playbooks','research_comparison','source_change_evidence','audited_preferences','routing_audit','candidate_controls_imported')) and (os.name!='nt' or (result.get('managed_process',False) and result.get('escape_hook_registration',False)))
     except Exception as exc:result.update(passed=False,error=f'{type(exc).__name__}: {exc}')
     finally:
         if browser:browser.close()

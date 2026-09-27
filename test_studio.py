@@ -3,6 +3,7 @@ import time
 from pathlib import Path
 from unittest.mock import patch
 import unittest
+from contextlib import ExitStack
 from PySide6.QtWidgets import QApplication
 import studio
 from PySide6.QtGui import QCloseEvent
@@ -10,6 +11,16 @@ from PySide6.QtGui import QCloseEvent
 class StudioTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):cls.app=QApplication.instance() or QApplication([])
+
+    def setUp(self):
+        self.stack=ExitStack();self.addCleanup(self.stack.close)
+        root=Path(self.stack.enter_context(tempfile.TemporaryDirectory()))
+        for key,value in [('HOME',root),('STATE',root),('SESSION',root/'studio.json'),('CONNECTIONS',root/'connections.json'),('PROVIDERS',root/'providers.json')]:
+            self.stack.enter_context(patch.object(studio,key,value))
+        for method in ('health','refresh_mail_status','install_tray'):
+            self.stack.enter_context(patch.object(studio.Studio,method))
+        self.stack.enter_context(patch.object(studio,'ensure_amd_tunnel',return_value=(True,'Isolated fixture')))
+        self.stack.enter_context(patch.object(studio,'ensure_local_model'))
 
     def test_controls_and_agent_events_persist(self):
         with tempfile.TemporaryDirectory() as folder, patch.object(studio,'SESSION',Path(folder)/'studio.json'):
@@ -23,7 +34,7 @@ class StudioTests(unittest.TestCase):
                 emit('metrics',{'tokens_per_second':9,'seconds':1,'step':1})
                 emit('status','Ready')
             with patch.object(studio,'choose_route',return_value={'url':'http://127.0.0.1:11435','model':'fixture','route':'server','reason':'test'}),patch.object(studio,'run_agent',side_effect=agent):
-                window.prompt.setPlainText('Inspect the project');window.send()
+                window.prompt.setPlainText('Inspect the project and explain its design');window.send()
                 deadline=time.monotonic()+3
                 while window.busy and time.monotonic()<deadline:self.app.processEvents();time.sleep(.01)
             self.assertFalse(window.busy)
@@ -52,7 +63,8 @@ class StudioTests(unittest.TestCase):
                 while window.busy and time.monotonic()<deadline:self.app.processEvents();time.sleep(.01)
                 model.assert_not_called()
             self.assertFalse(window.busy)
-            self.assertIn('General',window.task['messages'][-1]['content'])
+            self.assertIn('Understand this project',window.task['messages'][-1]['content'])
+            self.assertEqual(window.task['messages'][-1]['source'],'local')
             window.allow_quit=True;window.close();window.deleteLater();self.app.processEvents()
 
 if __name__=='__main__':unittest.main()
