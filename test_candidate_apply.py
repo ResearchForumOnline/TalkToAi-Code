@@ -171,6 +171,7 @@ class CandidateApplyTests(unittest.TestCase):
     def test_apply_and_restore_preserve_executable_mode(self):
         path=self.project/'app.py'; source=self.candidate/'app.py'
         path.chmod(0o755);source.chmod(0o755)
+        self.save()
         result=apply_candidate(self.report,self.project)
         self.assertEqual(stat.S_IMODE(path.stat().st_mode),0o755)
         rollback_application(result['manifest'],self.project)
