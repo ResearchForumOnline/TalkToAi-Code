@@ -18,7 +18,7 @@ Seven new credential tests cover exact loopback hosts, explicitly marked self-ho
 
 - Focused API/provider/document tests: **33 passed** locally, including all eight new regression tests.
 - Full local source suite: **568 discovered, 555 passed and 13 skipped** in 82.613 seconds.
-- Replacement Linux/macOS workflow: pending dispatch after committing the source repair. The original failed run remains available as evidence.
+- [Replacement Linux/macOS workflow 36747048491](https://github.com/ResearchForumOnline/TalkToAi-Code/actions/runs/36747048491): **both jobs passed** at source-repair commit `2d883550968e307566643cde3f3c41bb03181808`. Each operating system ran **451 tests: 446 passed and five skipped**. Ubuntu completed the regression step in 12.229 seconds; macOS completed it in 52.499 seconds. Install and offscreen application startup passed on both platforms. The original failed run remains available as evidence.
 - These checks do not establish a clean-device Windows installation, live API allowances or an installed-app upgrade.
 
 ## Downloads
