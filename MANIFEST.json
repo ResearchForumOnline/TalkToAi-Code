@@ -33,7 +33,7 @@
   },
   {
     "path": "README.md",
-    "sha256": "683ed2bbcd7c2e47debc60ce3a4e91a08d5d3d87013c21773728c572415a1489"
+    "sha256": "2e3a25d3e21035f3fa0919221853bc3311e8ac00c5f9cfd4cbcdd9b2c6c256e5"
   },
   {
     "path": "RELEASE-0.2.1.md",
@@ -364,6 +364,10 @@
     "sha256": "2558ccc5e53fcef29aa78ef5b18595e5a377717bcc9c7b8f0e0201b452261660"
   },
   {
+    "path": "docs/PORTABLE-8.5.0-FIX.md",
+    "sha256": "1b42f451c8bc7eced8d143c13faf8e024955db9aad33917da31a6ab09d037540"
+  },
+  {
     "path": "docs/PROJECT-PLAYBOOKS.md",
     "sha256": "981d9cc17e825b78ca4cde22305ca2756e906f9833b053b26b994f2d9b9f39b9"
   },
@@ -517,7 +521,7 @@
   },
   {
     "path": "providers.py",
-    "sha256": "509d060cfc0ce55c16fccb6f5dd933a37f9315a296928b41d48ffc15b3a57e28"
+    "sha256": "9feb54b6255d76e555052afa544755e2f7f58eef42c8897a78e3125709daf96e"
   },
   {
     "path": "reasoning_stream.py",
@@ -633,11 +637,11 @@
   },
   {
     "path": "test_api_integration.py",
-    "sha256": "6d3536bfb721108d5608ae04692cdebca26110216cfddd250a66048ab5cc9eb6"
+    "sha256": "a067b2abeeacad11acf5902cc02c11c8f52b87bd193e8024cd2d56db982b7c9d"
   },
   {
     "path": "test_api_router.py",
-    "sha256": "0c021daab0165eccdc1577b0861b7e6582aa63b92458ba166faa0893241ff6f5"
+    "sha256": "077afd2783dfbfad712ff1bc29ab20694528c101e08ef40b446078aa7714ee6e"
   },
   {
     "path": "test_app_capabilities.py",
@@ -881,7 +885,7 @@
   },
   {
     "path": "website/index.html",
-    "sha256": "287f4d973840289028c1850e5e1d02e274fc3863115e6d1f82923762d4203fa1"
+    "sha256": "0454fbe4eeea42f476cbe44941512ddefffb7a955ec2cc377d2943eb63f454cc"
   },
   {
     "path": "website/privacy/index.html",

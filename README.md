@@ -1,6 +1,8 @@
 # TalkToAi Code — Your projects. Your AI. Your workspace.
 
-> **Latest update: 8.5.0** - [Windows release](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/tag/v8.5.0) | [Release notes](docs/RELEASE-8.5.0.md) | [Linux/macOS source ZIP](https://github.com/ResearchForumOnline/TalkToAi-Code/archive/refs/tags/v8.5.0.zip).
+> **Latest update: 8.5.0** - [Windows release](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/tag/v8.5.0) | [Release notes](docs/RELEASE-8.5.0.md) | [Repaired Linux/macOS source ZIP](https://github.com/ResearchForumOnline/TalkToAi-Code/archive/refs/tags/v8.5.0-portable.1.zip).
+
+**Linux/macOS source repair:** use `v8.5.0-portable.1` for keyless local/self-hosted compatible endpoints on systems without a secure desktop keyring. The reviewed Windows 8.5.0 binaries and Microsoft Store package remain separate and unchanged. [Failure, repair and verification record](docs/PORTABLE-8.5.0-FIX.md).
 
 ### 8.5.0: private API vault and quota-aware routing
 

@@ -7,6 +7,8 @@ from contextlib import ExitStack, contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
+from unittest.mock import Mock
+from types import SimpleNamespace
 
 import agent_core
 from api_router import ApiRouter, ProviderPartialResponseError
@@ -42,6 +44,15 @@ class ProviderTransportIntegrationTests(unittest.TestCase):
         self.keys=patch('providers._SESSION_KEYS',{});self.keys.start();self.addCleanup(self.keys.stop)
     def profile(self,label,url):
         return ProviderProfile(label,url,'fixture-model',fallback_enabled=True,cost_tier='self_hosted',supports_vision=True)
+    def test_keyless_local_transport_with_unavailable_system_keyring(self):
+        backend=SimpleNamespace(get_keyring=lambda:type('PlaintextKeyring',(),{})(),get_password=Mock())
+        fixture_path=Path('fixture-provider.dpapi')
+        with provider_server('success') as (endpoint,requests):
+            with patch('providers.os.name','posix'),patch('providers.key_path',return_value=fixture_path),patch.dict('sys.modules',{'keyring':backend}):
+                events=list(agent_core._provider_stream(self.profile('fixture',endpoint),{'messages':[{'role':'user','content':'fixture'}],'stream':True},threading.Event()))
+        backend.get_password.assert_not_called()
+        self.assertEqual(len(requests),1);self.assertEqual(requests[0]['authorization'],'')
+        self.assertTrue(events[-1]['done']);self.assertEqual(events[-1]['api_usage']['total_tokens'],15)
     def test_real_http_429_switches_to_other_endpoint_and_reports_actual_usage(self):
         with provider_server('limited') as (first,first_requests),provider_server('success') as (second,second_requests):
             a=self.profile('primary',first);b=self.profile('alternate',second);router=ApiRouter()

@@ -1,8 +1,9 @@
 import tempfile
 import threading
 import unittest
+from types import SimpleNamespace
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock,patch
 from providers import ProviderProfile,save_profiles,load_profiles,_secure_keyring
 from api_router import ApiRouter,ProviderHTTPError,ProviderPartialResponseError,retry_delay
 
@@ -96,5 +97,74 @@ class ApiRouterTests(unittest.TestCase):
     def test_retry_after_date(self):
         self.assertEqual(retry_delay('Thu, 01 Jan 1970 00:02:00 GMT',now=0),120)
         self.assertEqual(retry_delay('bad'),60)
+
+class PortableProviderKeyTests(unittest.TestCase):
+    def setUp(self):
+        import providers
+        self.providers=providers
+        self.key_path=Path('fixture-provider.dpapi')
+        self.session=patch('providers._SESSION_KEYS',{});self.session.start();self.addCleanup(self.session.stop)
+        self.path=patch('providers.key_path',return_value=self.key_path);self.path.start();self.addCleanup(self.path.stop)
+
+    def backend(self, secure=False):
+        backend=type('SecureFixture' if secure else 'PlaintextKeyring',(),{})()
+        return SimpleNamespace(get_keyring=lambda:backend,get_password=Mock(return_value=''),
+                               set_password=Mock(),errors=SimpleNamespace(KeyringError=RuntimeError))
+
+    def test_keyless_local_routes_work_without_a_secure_keyring(self):
+        for endpoint in ('http://127.0.0.1:1234/v1','http://localhost:1234/v1','http://[::1]:1234/v1'):
+            profile=ProviderProfile('local fixture',endpoint,'fixture-model')
+            backend=self.backend()
+            with patch('providers.os.name','posix'),patch.dict('sys.modules',{'keyring':backend}):
+                self.assertEqual(self.providers.api_key(profile),'')
+            backend.get_password.assert_not_called()
+
+    def test_marked_self_hosted_no_key_route_does_not_read_insecure_store(self):
+        profile=ProviderProfile('self hosted fixture','https://self-hosted.invalid/v1','fixture-model',cost_tier='self_hosted')
+        backend=self.backend()
+        with patch('providers.os.name','posix'),patch.dict('sys.modules',{'keyring':backend}):
+            self.assertEqual(self.providers.api_key(profile),'')
+        backend.get_password.assert_not_called()
+
+    def test_missing_keyring_allows_keyless_local_and_marked_self_hosted_only(self):
+        profiles=(ProviderProfile('local fixture','http://127.0.0.1:1234/v1','fixture-model'),
+                  ProviderProfile('self hosted fixture','https://self-hosted.invalid/v1','fixture-model',cost_tier='self_hosted'))
+        with patch('providers.os.name','posix'),patch.dict('sys.modules',{'keyring':None}):
+            for profile in profiles:self.assertEqual(self.providers.api_key(profile),'')
+            external=ProviderProfile('external fixture','https://external.invalid/v1','fixture-model')
+            with self.assertRaisesRegex(ValueError,'secure system credential store'):
+                self.providers.api_key(external)
+
+    def test_unmarked_external_and_cloud_routes_still_require_secure_lookup(self):
+        for endpoint,tier in (('https://external.invalid/v1','unknown'),('https://cloud.invalid/v1','free'),
+                              ('https://localhost.external.invalid/v1','unknown')):
+            profile=ProviderProfile('cloud fixture',endpoint,'fixture-model',cost_tier=tier)
+            backend=self.backend()
+            with patch('providers.os.name','posix'),patch.dict('sys.modules',{'keyring':backend}):
+                with self.assertRaisesRegex(ValueError,'secure system credential store'):
+                    self.providers.api_key(profile)
+            backend.get_password.assert_not_called()
+
+    def test_session_key_works_without_system_keyring(self):
+        profile=ProviderProfile('cloud fixture','https://cloud.invalid/v1','fixture-model',cost_tier='free')
+        self.providers._SESSION_KEYS[self.providers.key_identity(profile)]='dummy-session-fixture-key'
+        with patch('providers.os.name','posix'),patch.dict('sys.modules',{'keyring':None}):
+            self.assertEqual(self.providers.api_key(profile),'dummy-session-fixture-key')
+
+    def test_usable_secure_keyring_preserves_saved_local_authentication(self):
+        profile=ProviderProfile('local fixture','http://127.0.0.1:1234/v1','fixture-model')
+        backend=self.backend(secure=True);backend.get_password.return_value='dummy-local-fixture-key'
+        with patch('providers.os.name','posix'),patch.dict('sys.modules',{'keyring':backend}):
+            self.assertEqual(self.providers.api_key(profile),'dummy-local-fixture-key')
+        backend.get_password.assert_called_once()
+
+    def test_remembering_key_still_rejects_an_insecure_backend(self):
+        profile=ProviderProfile('local fixture','http://127.0.0.1:1234/v1','fixture-model',cost_tier='self_hosted')
+        backend=self.backend()
+        with patch('providers.os.name','posix'),patch.dict('sys.modules',{'keyring':backend}):
+            with self.assertRaisesRegex(ValueError,'secure system credential store'):
+                self.providers.store_api_key(profile,'dummy-local-fixture-key',remember=True)
+        backend.set_password.assert_not_called()
+        self.assertNotIn(self.providers.key_identity(profile),self.providers._SESSION_KEYS)
 
 if __name__=='__main__':unittest.main()

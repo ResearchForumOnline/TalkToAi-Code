@@ -128,10 +128,19 @@ def api_key(profile):
             key=win32crypt.CryptUnprotectData(path.read_bytes(),None,None,None,0)[1].decode()
         except Exception:raise ValueError('Saved provider key could not be decrypted. Enter it again in API providers.') from None
     if not key and os.name!='nt':
-        import keyring
-        _secure_keyring(keyring)
-        try:key=keyring.get_password(key_namespace(),key_identity(profile)) or ''
-        except keyring.errors.KeyringError:key=''
+        # A keyless local/self-hosted service does not require a desktop keyring.
+        # Never read an insecure backend, or relax key storage for cloud profiles.
+        keyless_allowed=(profile.cost_tier=='self_hosted' or
+                         urlsplit(profile.base_url).hostname in {'localhost','127.0.0.1','::1'})
+        try:
+            import keyring
+            _secure_keyring(keyring)
+        except (ImportError,ValueError):
+            if not keyless_allowed:
+                raise ValueError('A secure system credential store is unavailable. Use session-only keys.') from None
+        else:
+            try:key=keyring.get_password(key_namespace(),key_identity(profile)) or ''
+            except keyring.errors.KeyringError:key=''
     if profile.is_openai and not key:
         raise ValueError('OpenAI API key is missing. Enter one in API providers or set OPENAI_API_KEY, then restart the app.')
     if profile.is_groq and not key:
