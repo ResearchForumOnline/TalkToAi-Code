@@ -30,7 +30,7 @@ from process_jobs import ProcessJobs
 from workspace_outputs import register_output
 from updates import is_store_package, VERSION
 from amd_runtime import ensure_amd_tunnel
-from mail_connectors import gmail_connect, gmail_status, zmail_connect, zmail_status
+from mail_connectors import gmail_connect, gmail_status
 from skynet_mode import run_improvement
 from app_preferences import AppPreferenceManager
 from platform_paths import state_dir
@@ -41,6 +41,8 @@ from control_overlay import ControlOverlay, CONTROL_TOOLS, safe_action_label
 from control_cancel import EscapeCancel
 from offline_assistant import recognize_request, run_offline
 from offline_workbench import LocalToolsDialog, format_report
+from attachment_ingest import MAX_FILES, MAX_TOTAL_CHARS, read_attachment, attachment_context
+from conversation_export import format_conversation, save_conversation
 from project_templates import create_project_template
 
 
@@ -112,6 +114,26 @@ class Bus(QObject):
 
 class Composer(QPlainTextEdit):
     submitted = Signal()
+    filesDropped = Signal(object)
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAcceptDrops(True)
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls() and all(url.isLocalFile() for url in event.mimeData().urls()):
+            event.acceptProposedAction()
+        else:
+            super().dragEnterEvent(event)
+    def dragMoveEvent(self, event):
+        if event.mimeData().hasUrls() and all(url.isLocalFile() for url in event.mimeData().urls()):
+            event.acceptProposedAction()
+        else:
+            super().dragMoveEvent(event)
+    def dropEvent(self, event):
+        if event.mimeData().hasUrls() and all(url.isLocalFile() for url in event.mimeData().urls()):
+            self.filesDropped.emit([url.toLocalFile() for url in event.mimeData().urls()])
+            event.acceptProposedAction()
+        else:
+            super().dropEvent(event)
     def keyPressEvent(self, event):
         if event.key() in (Qt.Key_Return, Qt.Key_Enter) and not event.modifiers() & Qt.ShiftModifier:
             self.submitted.emit()
@@ -144,6 +166,7 @@ class Studio(QMainWindow):
         self.reasoning_excerpt=''
         self.tool_events=[]
         self.pending_prompt=''
+        self.attachments=[]
         self.allow_quit=False
         self.tray=None
         self.job_manager=None
@@ -165,6 +188,7 @@ class Studio(QMainWindow):
             'active_ssh_alias': '',
             'active_ssh_path': '',
             'active_provider': '',
+            'preferred_route': 'provider',
             'access_mode': 'full_user',
             'pc_pilot': True,
         }
@@ -180,7 +204,7 @@ class Studio(QMainWindow):
             pass
         self.preferences_manager=AppPreferenceManager(self.config,self.persist_agent_preferences,
             STATE/'app-preference-audit.jsonl')
-        for key,environment in [('gmail_client_id','TALKTOAI_GMAIL_CLIENT_ID'),('zmail_client_id','TALKTOAI_ZMAIL_CLIENT_ID')]:
+        for key,environment in [('gmail_client_id','TALKTOAI_GMAIL_CLIENT_ID')]:
             if self.config.get(key) and not os.environ.get(environment):
                 os.environ[environment]=str(self.config[key])
         self.provider_profiles = load_provider_profiles(PROVIDERS)
@@ -193,7 +217,7 @@ class Studio(QMainWindow):
         self.build()
         if self.config.get('preferred_route') in ('local','server','local_large'):
             self.route.setCurrentIndex(('auto','local','server','local_large').index(self.config['preferred_route']))
-        if self.config.get('preferred_route')=='provider' and self.active_provider():self.route.setCurrentIndex(4)
+        if self.config.get('preferred_route')=='provider':self.route.setCurrentIndex(4)
         if self.config.get('approval_policy')=='plan':self.mode.setCurrentText('Plan')
         self.refresh_tasks()
         if self.task_list.count():
@@ -288,10 +312,9 @@ class Studio(QMainWindow):
         self.button('About & updates', self.updates_dialog, side)
         self.button('⌁  Connections', self.connections_dialog, side)
         self.gmail_button = self.button('Connect Gmail', lambda:self.connect_mail('Gmail'), side)
-        self.zmail_button = self.button('Connect Zmail', lambda:self.connect_mail('Zmail'), side)
         self.mail_status_label = QLabel('Mail: checking connections…');self.mail_status_label.setWordWrap(True);self.mail_status_label.setObjectName('muted');side.addWidget(self.mail_status_label)
         more=QPushButton('More  ·  tools && help');more_menu=QMenu(more)
-        for title,callback in [('Actions · Ctrl+K',self.command_palette),('Project memory · Ctrl+Shift+M',self.memory_dialog),('Project instructions · AGENTS.md',self.instructions_dialog),('Back up conversations',self.backup_conversations),('API providers',self.providers_dialog),('Link ZeroThink account & vault',self.link_zerothink),('Model choices and storage',self.models_dialog),('FAQ / How to · F1',self.faq_dialog),('Open app data folder',lambda:QDesktopServices.openUrl(QUrl.fromLocalFile(str(STATE))))]:
+        for title,callback in [('Actions · Ctrl+K',self.command_palette),('Project memory · Ctrl+Shift+M',self.memory_dialog),('Project instructions · AGENTS.md',self.instructions_dialog),('Back up conversations',self.backup_conversations),('Private API vault',self.providers_dialog),('Model choices and storage',self.models_dialog),('FAQ / How to · F1',self.faq_dialog),('Open app data folder',lambda:QDesktopServices.openUrl(QUrl.fromLocalFile(str(STATE))))]:
             more_menu.addAction(title,callback)
         more_menu.addAction('Operating policy',self.operating_policy_dialog)
         more_menu.addAction('Project workbench · playbooks & experiments',self.project_workbench)
@@ -324,7 +347,7 @@ class Studio(QMainWindow):
             starter_menu.addSection(group)
             for name in names:starter_menu.addAction(name,lambda checked=False,n=name:self.use_starter(n))
         starter.setMenu(starter_menu);shortcuts.addWidget(starter)
-        self.button('Models & APIs',self.providers_dialog,shortcuts)
+        self.button('Private API vault',self.providers_dialog,shortcuts)
         self.skynet_button=self.button('⚡ Skynet Mode',self.start_skynet,shortcuts)
         self.skynet_button.setToolTip('Create and check a bounded improvement candidate in a separate copy. Review the diff before applying it.')
         chat.addWidget(self.code_actions)
@@ -343,7 +366,17 @@ class Studio(QMainWindow):
         self.control_banner.setStyleSheet('background:#173a35;color:#d9fff1;border:1px solid #65bea5;border-radius:7px;padding:8px;')
         self.control_banner.hide();chat.addWidget(self.control_banner)
         box = QFrame(); box.setObjectName('composer'); composer = QVBoxLayout(box)
-        self.prompt = Composer(); self.prompt.setPlaceholderText('Describe the result you want, for example: find my game and fix its menu…'); self.prompt.setFixedHeight(104); self.prompt.submitted.connect(self.send); composer.addWidget(self.prompt)
+        self.prompt = Composer(); self.prompt.setPlaceholderText('Describe the result you want, for example: find my game and fix its menu…'); self.prompt.setFixedHeight(104); self.prompt.submitted.connect(self.send); self.prompt.filesDropped.connect(self.attach_files); composer.addWidget(self.prompt)
+        attachment_row=QHBoxLayout()
+        self.attach_button=self.button('＋ Attach files',self.choose_attachments,attachment_row)
+        self.attach_button.setToolTip('Add up to five local text, code, CSV, JSON, or text PDF files as bounded context for the next message. Extracted text is sent to the selected model route and saved in local chat history. Drag files onto the composer too.')
+        self.attachment_label=QLabel('No files attached');self.attachment_label.setObjectName('muted');self.attachment_label.setTextFormat(Qt.PlainText)
+        attachment_row.addWidget(self.attachment_label,1)
+        self.remove_attachment_button=self.button('Remove selected',self.remove_attachment,attachment_row)
+        self.clear_attachments_button=self.button('Clear',self.clear_attachments,attachment_row)
+        composer.addLayout(attachment_row)
+        self.attachment_list=QListWidget();self.attachment_list.setMaximumHeight(70);self.attachment_list.hide();composer.addWidget(self.attachment_list)
+        self.refresh_attachments()
         options = QHBoxLayout()
         self.route = QComboBox(); self.route.addItems(['Auto', 'Local', 'Server', 'Local large', 'API · optional provider']);self.refresh_route_labels();options.addWidget(self.route)
         self.mode = QComboBox(); self.mode.addItems(['Act', 'Plan']); self.mode.setToolTip('Act permits file edits and host commands. Plan only reads project files. Commands are not OS-sandboxed.'); options.addWidget(self.mode)
@@ -362,7 +395,7 @@ class Studio(QMainWindow):
         self.mode_hint=QLabel();self.mode_hint.setObjectName('muted');self.mode_hint.setWordWrap(True)
         def show_mode():self.mode_hint.setText('Act: the agent can edit files and run project commands.' if self.mode.currentText()=='Act' else 'Plan: read-only research and planning. Select Act to build or edit your project.')
         self.mode.currentTextChanged.connect(show_mode);show_mode();chat.addWidget(self.mode_hint)
-        hint=QLabel('Enter to send  ·  Shift+Enter for a new line  ·  Ctrl+O to open a project'); hint.setObjectName('muted'); chat.addWidget(hint)
+        hint=QLabel('Enter to send  ·  Shift+Enter for a new line  ·  Drag files onto the message  ·  Ctrl+O to open a project'); hint.setObjectName('muted'); chat.addWidget(hint)
         self.performance_label=QLabel('Auto prefers a verified coding route, then falls back when unavailable.');self.performance_label.setObjectName('muted');chat.addWidget(self.performance_label)
         self.performance_label.setWordWrap(True)
         split.addWidget(center)
@@ -618,9 +651,36 @@ class Studio(QMainWindow):
                 QApplication.clipboard().setText(message['content']);self.status.setText('Last reply copied');return
         self.status.setText('No assistant reply to copy yet')
 
+    def copy_conversation(self):
+        if not self.task:return
+        QApplication.clipboard().setText(format_conversation(self.task))
+        self.status.setText('Conversation copied')
+
+    def export_conversation(self):
+        if not self.task:return
+        name=re.sub(r'[\\/:*?"<>|\x00-\x1f]', '_',self.task.get('title','Conversation')).strip(' ._')[:80] or 'Conversation'
+        path,_=QFileDialog.getSaveFileName(self,'Export conversation',name+'.md','Markdown (*.md)')
+        if not path:return
+        try:
+            saved=save_conversation(self.task,path)
+            self.status.setText('Conversation saved to '+str(saved))
+        except (OSError,ValueError) as exc:self.error(exc)
+
+    def reuse_last_prompt(self):
+        if self.busy or not self.task:return
+        for message in reversed(self.task['messages']):
+            if message.get('role')=='user':
+                original=message.get('typed_content') or (message.get('content') or '').split('\n\nAttached local documents selected by the user.',1)[0]
+                if original.strip():
+                    self.prompt.setPlainText(original.strip())
+                    self.prompt.setFocus()
+                    self.status.setText('Last prompt copied into the composer. Review it before sending; reattach any files you need.')
+                    return
+        self.status.setText('No earlier prompt to reuse')
+
     def make_chat_menu(self):
         menu=QMenu(self)
-        for title,callback in [('Rename',self.rename_task),('Unpin' if self.task.get('pinned') else 'Pin to top',self.toggle_pin_task),('Move to Code' if self.task.get('kind')=='chat' else 'Move to Chat',self.move_task_workspace),('Branch conversation',self.fork_task),('Restore from archive' if self.task.get('archived') else 'Archive conversation',self.toggle_archive_task),('Copy last reply',self.copy_last_reply),('Find in conversation · Ctrl+F',self.find_in_chat),('Export task report',self.export_task)]:
+        for title,callback in [('Rename',self.rename_task),('Unpin' if self.task.get('pinned') else 'Pin to top',self.toggle_pin_task),('Move to Code' if self.task.get('kind')=='chat' else 'Move to Chat',self.move_task_workspace),('Branch conversation',self.fork_task),('Restore from archive' if self.task.get('archived') else 'Archive conversation',self.toggle_archive_task),('Reuse last prompt',self.reuse_last_prompt),('Copy last reply',self.copy_last_reply),('Copy conversation',self.copy_conversation),('Export conversation',self.export_conversation),('Find in conversation · Ctrl+F',self.find_in_chat),('Export task report',self.export_task)]:
             action=menu.addAction(title,callback)
             if self.busy and callback!=self.find_in_chat:action.setEnabled(False)
         return menu
@@ -687,9 +747,9 @@ class Studio(QMainWindow):
         if self.busy:self.status.setText('Use Steer or Stop while a task is running.');return
         dialog=QDialog(self);dialog.setWindowTitle('Actions');dialog.resize(600,480);layout=QVBoxLayout(dialog)
         query=QLineEdit();query.setPlaceholderText('Find an action…');layout.addWidget(query);items=QListWidget();layout.addWidget(items)
-        actions=[('New chat',lambda:self.new_in_workspace('chat')),('New code task',lambda:self.new_in_workspace('code')),('Open project',self.choose_project),('Open Desktop',lambda:self.quick_command('open desktop')),('Inspect project',lambda:self.quick_command('inspect project')),('Run tests',lambda:self.quick_command('run tests')),('Launch game',lambda:self.quick_command('launch game')),('Capture screenshot',lambda:self.quick_command('take a screenshot')),('Map project',lambda:self.quick_command('map project')),('Rename task',self.rename_task),('Pin or unpin task',self.toggle_pin_task),('Move chat between Chat and Code',self.move_task_workspace),('Branch conversation',self.fork_task),('Export task report',self.export_task),('Settings',self.settings),('SSH connections',self.connections_dialog),('API providers',self.providers_dialog),('Model choices and storage',self.models_dialog),('FAQ / How to',self.faq_dialog)]
+        actions=[('New chat',lambda:self.new_in_workspace('chat')),('New code task',lambda:self.new_in_workspace('code')),('Open project',self.choose_project),('Open Desktop',lambda:self.quick_command('open desktop')),('Inspect project',lambda:self.quick_command('inspect project')),('Run tests',lambda:self.quick_command('run tests')),('Launch game',lambda:self.quick_command('launch game')),('Capture screenshot',lambda:self.quick_command('take a screenshot')),('Map project',lambda:self.quick_command('map project')),('Rename task',self.rename_task),('Pin or unpin task',self.toggle_pin_task),('Move chat between Chat and Code',self.move_task_workspace),('Branch conversation',self.fork_task),('Export task report',self.export_task),('Settings',self.settings),('SSH connections',self.connections_dialog),('Private API vault',self.providers_dialog),('Model choices and storage',self.models_dialog),('FAQ / How to',self.faq_dialog)]
         actions += [('Project memory · Ctrl+Shift+M',self.memory_dialog),('Project instructions · AGENTS.md',self.instructions_dialog),('About & updates',self.updates_dialog),('Open app data folder',lambda:QDesktopServices.openUrl(QUrl.fromLocalFile(str(STATE)))),('Open project folder',lambda:QDesktopServices.openUrl(QUrl.fromLocalFile(self.task['project'])))]
-        actions += [('Archive or restore conversation',self.toggle_archive_task),('Search chats · Ctrl+Shift+F',self.focus_task_search),('Find in conversation · Ctrl+F',self.find_in_chat),('Copy last reply',self.copy_last_reply)]
+        actions += [('Archive or restore conversation',self.toggle_archive_task),('Search chats · Ctrl+Shift+F',self.focus_task_search),('Find in conversation · Ctrl+F',self.find_in_chat),('Reuse last prompt',self.reuse_last_prompt),('Copy last reply',self.copy_last_reply),('Copy conversation',self.copy_conversation),('Export conversation',self.export_conversation),('Attach local files',self.choose_attachments)]
         actions += [('Starter: '+name,lambda n=name:self.use_starter(n)) for name in STARTERS]
         actions += [('Open example game · Score Arena',lambda:self.quick_command('open score arena'))]
         actions += [('Project workbench · playbooks and experiments',self.project_workbench)]
@@ -732,6 +792,7 @@ class Studio(QMainWindow):
     def select_task(self,row):
         if self.busy or row<0 or row>=self.task_list.count(): return
         if self.task:self.task['draft']=self.prompt.toPlainText()
+        self.attachments=[];self.refresh_attachments()
         item=self.task_list.item(row)
         task_id=item.data(Qt.UserRole) if item else None
         self.task=next((task for task in self.tasks if task.get('id')==task_id), None)
@@ -756,7 +817,7 @@ class Studio(QMainWindow):
         parts=[];hidden_protocol=False
         for m in self.task['messages']:
             if m['role']=='tool': continue
-            content=(m.get('content') or '').strip()
+            content=(m.get('display_content',m.get('content')) or '').strip()
             if m['role']=='assistant' and m.get('source')!='local':
                 content,hidden=conversation_prose(content);hidden_protocol=hidden_protocol or hidden
             if content:parts.append(('## You' if m['role']=='user' else '## TalkToAi Code')+'\n\n'+content)
@@ -971,8 +1032,6 @@ class Studio(QMainWindow):
             self.start_local_request(text,request);return True
         if normalized in ('help','faq','how to','/help'):
             self.prompt.clear();self.faq_dialog();return True
-        if normalized in ('link zerothink','login zerothink','sign in to zerothink','link agentzero'):
-            self.prompt.clear();self.link_zerothink();return True
         if normalized=='check my desktop for server logins':normalized='check desktop for server logins'
         if normalized in ('open connections','ssh connections','manage connections'):
             self.prompt.clear();self.connections_dialog();return True
@@ -1041,8 +1100,53 @@ class Studio(QMainWindow):
             self.task['changes']+=tools.changes;self.task['verification']={'status':'stale','summary':'File edited; rerun relevant checks.'};self.refresh_plan(); self.persist(); self.refresh_changes(); self.status.setText('File saved · checkpoint created')
         except Exception as exc:self.error(exc)
 
+    def choose_attachments(self):
+        paths,_=QFileDialog.getOpenFileNames(self,'Attach local documents',str(Path.home()),
+            'Documents (*.txt *.md *.markdown *.csv *.tsv *.json *.yaml *.yml *.xml *.html *.css *.js *.jsx *.ts *.tsx *.py *.rs *.go *.java *.c *.cpp *.h *.hpp *.cs *.sh *.ps1 *.toml *.ini *.cfg *.log *.sql *.tex *.pdf);;All files (*)')
+        if paths:self.attach_files(paths)
+
+    def attach_files(self,paths):
+        if not self.task:return
+        errors=[]
+        for path in paths:
+            if len(self.attachments)>=MAX_FILES:
+                errors.append('Up to five files can be attached to one message.');break
+            try:
+                item=read_attachment(path)
+                if any(existing['sha256']==item['sha256'] for existing in self.attachments):
+                    raise ValueError('This file is already attached.')
+                if sum(len(existing['content']) for existing in self.attachments)+len(item['content'])>MAX_TOTAL_CHARS:
+                    raise ValueError('These files exceed the 20,000 character context limit. Remove a file first.')
+                self.attachments.append(item)
+            except (OSError,ValueError) as exc:
+                errors.append(Path(path).name+': '+str(exc))
+        self.refresh_attachments()
+        if errors:QMessageBox.warning(self,'Attachment could not be added','\n'.join(errors[:8]))
+        if self.attachments:self.status.setText(f'{len(self.attachments)} file(s) ready as context for the next message. Extracted text will be sent to the selected model route.')
+
+    def refresh_attachments(self):
+        if not hasattr(self,'attachment_list'):return
+        self.attachment_list.clear()
+        for item in self.attachments:
+            note=' · truncated excerpt' if item['truncated'] else ''
+            self.attachment_list.addItem(f"{item['name']} · {item['kind']} · {len(item['content']):,} characters{note}")
+        count=len(self.attachments)
+        self.attachment_label.setText((f'{count}/{MAX_FILES} attached · {sum(len(a["content"]) for a in self.attachments):,}/{MAX_TOTAL_CHARS:,} characters · sent to selected model route' if count else 'No files attached'))
+        self.attachment_list.setVisible(bool(count))
+        self.remove_attachment_button.setEnabled(bool(count))
+        self.clear_attachments_button.setEnabled(bool(count))
+
+    def remove_attachment(self):
+        index=self.attachment_list.currentRow()
+        if index>=0:
+            self.attachments.pop(index);self.refresh_attachments()
+
+    def clear_attachments(self):
+        self.attachments.clear();self.refresh_attachments()
+
     def send(self):
         text=self.prompt.toPlainText().strip()
+        if not text and self.attachments:text='Please analyze the attached file(s).'
         if not text:return
         if self.busy:
             self.pending_prompt=(self.pending_prompt+'\n\n'+text).strip()
@@ -1050,12 +1154,23 @@ class Studio(QMainWindow):
             self._request_stop(clear_pending=False)
             self.status.setText('Steering queued · finishing the current tool safely')
             return
-        if self.natural_control(text):return
+        if not self.attachments and self.natural_control(text):return
+        if self.route.currentIndex()==4 and not self.active_provider():
+            self.status.setText('Add an API key and choose a model in your private vault to begin. Your draft is kept.')
+            self.providers_dialog()
+            if not self.active_provider():return
         text=self.prompt.toPlainText().strip()
+        if not text and self.attachments:text='Please analyze the attached file(s).'
         if not self.prepare_task_target(text):return
         try:ProjectTools(self.task['project'])
         except Exception as exc:self.error(exc);return
-        self.prompt.clear(); self.task['messages'].append({'role':'user','content':text})
+        user_message={'role':'user','content':text}
+        if self.attachments:
+            context,summaries=attachment_context(self.attachments)
+            user_message['content']=text+context
+            user_message['typed_content']=text
+            user_message['display_content']=text+'\n\nAttached: '+', '.join(summaries)+'\n\nExtracted text was sent to the selected model route as reference material.'
+        self.prompt.clear();self.clear_attachments();self.task['messages'].append(user_message)
         self.task['draft']=''
         if self.task['title']=='New task':self.task['title']=text.splitlines()[0][:45];self.title.setText(self.task['title']);self.refresh_tasks()
         self.execution_kind='model'
@@ -1087,8 +1202,8 @@ class Studio(QMainWindow):
                 except (OSError,ValueError):benchmarks={}
                 if preference=='provider':
                     profile=self.active_provider()
-                    if not profile:raise ValueError('No API provider is configured. Open API providers and add an OpenAI-compatible endpoint.')
-                    set_active_provider(profile)
+                    if not profile:raise ValueError('No API provider is configured. Open the private API vault and add a provider.')
+                    set_active_provider(profile,self.provider_profiles)
                     selected={'route':'provider','url':profile.base_url,'model':profile.model,'reason':'explicit API selection; provider billing and limits apply'}
                 else:
                     set_active_provider(None)
@@ -1212,7 +1327,7 @@ class Studio(QMainWindow):
                     profile=self.active_provider()
                     if not profile:raise ValueError('Configure an API provider first.')
                     selected={'route':'provider','url':profile.base_url,'model':profile.model,'reason':'explicit API selection; provider billing applies'}
-                    set_active_provider(profile)
+                    set_active_provider(profile,self.provider_profiles)
                 else:
                     if preference in ('local','local_large'):
                         model=self.config['local_model'] if preference=='local' else self.config.get('local_large_model',self.config['local_model'])
@@ -1521,12 +1636,16 @@ class Studio(QMainWindow):
             step=re.search(r'\bstep\s+(\d+)\b',str(data),re.I)
             if step:self.observe_progress('Waiting for model',int(step.group(1)))
             elif str(data).lower().startswith(('retrying','repairing')):self.observe_progress('Retrying model response')
+        elif kind=='api_route':
+            self.route_description='API · '+data['label']+' · '+data['model']
+            self.observe_progress('Using '+data['label'])
+            self.task.setdefault('api_routes',[]).append({'provider':data['label'],'model':data['model'],'fallback':data['fallback']})
         elif kind=='health':self.health_label.setText(data)
         elif kind=='runtime_diagnostics':
             self.output.setPlainText(data);self.right.setCurrentIndex(2);self.status.setText('Model diagnostics complete; see Tools for recovery steps')
         elif kind=='mail_status':self.mail_status_label.setText(data)
         elif kind=='mail_connect_done':
-            self.gmail_button.setEnabled(True);self.zmail_button.setEnabled(True)
+            self.gmail_button.setEnabled(True)
             self.status.setText(data)
             self.refresh_mail_status()
         elif kind=='error':
@@ -1606,7 +1725,7 @@ class Studio(QMainWindow):
     def refresh_mail_status(self):
         def work():
             labels=[]
-            for name,status_fn in [('Gmail',gmail_status),('Zmail',zmail_status)]:
+            for name,status_fn in [('Gmail',gmail_status)]:
                 try:
                     state=status_fn()
                     state_text='connected' if state['connected'] else 'setup needed' if not state['configured'] else 'not connected'
@@ -1617,20 +1736,21 @@ class Studio(QMainWindow):
         threading.Thread(target=work,daemon=True).start()
 
     def connect_mail(self, name):
-        key,environment=(('gmail_client_id','TALKTOAI_GMAIL_CLIENT_ID') if name=='Gmail' else ('zmail_client_id','TALKTOAI_ZMAIL_CLIENT_ID'))
+        if name!='Gmail':raise ValueError('Unknown mail connector.')
+        key,environment='gmail_client_id','TALKTOAI_GMAIL_CLIENT_ID'
         if not os.environ.get(environment):
-            explanation=('Google Desktop OAuth client ID' if name=='Gmail' else 'registered Zmail public OAuth client ID')
+            explanation='Google Desktop OAuth client ID'
             client_id,accepted=QInputDialog.getText(self,'Connect '+name,'Enter your '+explanation+':')
             if not accepted:return
             client_id=client_id.strip()
             if not client_id or len(client_id)>500:
                 self.status.setText(name+' needs a valid public OAuth client ID.');return
             self.config[key]=client_id;self.write_config();os.environ[environment]=client_id
-        self.gmail_button.setEnabled(False);self.zmail_button.setEnabled(False)
+        self.gmail_button.setEnabled(False)
         self.status.setText('Opening '+name+' sign-in in your browser…')
         def work():
             try:
-                (gmail_connect if name=='Gmail' else zmail_connect)(timeout=120)
+                gmail_connect(timeout=120)
                 result=name+' connected with read-only mail access.'
             except Exception as exc:
                 result=name+' connection failed: '+str(exc)
@@ -1669,16 +1789,6 @@ class Studio(QMainWindow):
         if self.busy:return
         from provider_dialog import ProviderDialog
         ProviderDialog(self,PROVIDERS).exec()
-
-    def link_zerothink(self):
-        if self.busy:return
-        from zerothink_link import link_dialog
-        profile=link_dialog(self)
-        if profile:
-            self.provider_profiles=[p for p in self.provider_profiles if p.label!=profile.label]+[profile]
-            save_provider_profiles(PROVIDERS,self.provider_profiles)
-            self.config['active_provider']=profile.label;self.write_config();self.route.setCurrentIndex(4)
-            self.status.setText('ZeroThink linked · vault provider selected')
 
     def connections_dialog(self):
         if self.busy:return
@@ -1800,7 +1910,6 @@ class Studio(QMainWindow):
 
 - **Auto** uses your configured server/local models. It never switches to a paid API automatically.
 - **Settings → Research browser** chooses Edge, Chrome, Firefox or Chromium, with fallback if the preferred browser cannot start. **Preferred web search** can use free browser search engines or your own Serper key. Serper searches may consume account credits. Open original pages before citing them.
-- **More → Link ZeroThink account & vault** pairs your account and opens its provider vault. Provider access and quota depend on your ZeroThink account.
 - If the server connection fails, Auto tries to start your installed local Ollama service and use your configured local model. It does not download a model in Auto mode.
 - **Models & APIs → Groq API** connects your own Groq key. Provider limits apply; no OpenAI account is needed for that route.
 - After an error your latest request returns to the composer. Change the model or repair the connection, then send again. Check existing changes first because a failed task may have completed some actions.
@@ -1833,11 +1942,11 @@ Configure an SSH profile in **Connections** to use Remote Pilot. Select **Act** 
 
 ## Models and API providers
 
-**Auto** chooses among your available local/server models and never falls back to an API. **Local** uses your local Ollama model. **Server** uses your configured server Ollama model, with SSH tunnelling when configured. The dropdown shows your configured model names. Say `use server always` to remember that route; this chooses where inference runs, while files stay in the selected project. **API** is optional: open **More → API providers**, choose **OpenAI API**, paste your own key or use `OPENAI_API_KEY`, then fetch models and select one supporting Chat Completions and function tools. Save the profile, then click **Use selected API**. You can explicitly make API your startup default; fresh installations stay local-first.
+**Auto** chooses among your available local/server models and never falls back to an API. **Local** uses your local Ollama model. **Server** uses your configured server Ollama model, with SSH tunnelling when configured. The dropdown shows your configured model names. Say `use server always` to remember that route; this chooses where inference runs, while files stay in the selected project. **API** is the guided route for fresh installations. Open **Private API vault**, choose Groq, Gemini, OpenRouter, Cerebras or a compatible endpoint, enter your own key, fetch models and choose a model supporting Chat Completions and function tools. Save and use the profile. Existing saved runtime choices are preserved. Local and Server remain available without API keys.
 
 OpenAI API billing is separate from this app. No subscription, API credit or free tier is included. A model-list response verifies metadata access, not inference/tool capability. The app uses `max_completion_tokens` for direct OpenAI requests and leaves sampling defaults alone. Each response has a configurable token ceiling, but a task can make multiple requests: this is not a currency cap. Reported token usage may be incomplete after cancellation and is not an invoice.
 
-Keys can remain in memory for this session, come from an environment variable, or be remembered in Windows user encryption, macOS Keychain or a Linux desktop keyring. Keys are never put in conversation/profile JSON. **Forget saved key** removes the app-held key without changing external environment variables. Project context and tool results are sent to the provider you explicitly select; review what you share. Other compatible endpoints and ZeroThink remain optional.
+Keys can remain in memory for this session, come from an environment variable, or be remembered in Windows user encryption, macOS Keychain or a Linux desktop keyring. Keys are never put in conversation/profile JSON. **Forget saved key** removes the app-held key without changing external environment variables. Project context and tool results are sent to the provider you explicitly select; review what you share. For automatic switching, enable fallback on the selected profile and on every alternative you permit to receive task context. Alternatives must be marked free or self-hosted. The app respects quota cooldowns and never replays a partial response on another provider. A free label is your account declaration; your provider controls actual prices and limits.
 
 ## Games and evidence
 
@@ -1851,7 +1960,7 @@ In Act mode ask: `Use the browser to open http://localhost:3000, test the Start 
 
 In **Act** mode with **Desktop / user access** and **PC Pilot** enabled, simply state the outcome: `Open my game, test the main menu, take evidence screenshots, and report what works.` PC Pilot operates its own Windows tools: it lists windows, inspects the correct app, clicks/fills/selects controls, waits for transitions, and verifies the result after each input. You do not need to manually call tools or click through its normal workflow. **Stop** terminates the computer worker; a delivered input is not undone. Each computer call has a 20-second limit. Please do not use the mouse while the agent is operating an app.
 
-This is an original open-source-based integration, not Codex's proprietary skill. Accessibility-based actions work without a vision model. Local Qwen3.5 can additionally inspect the immediately following screenshot; custom game canvases and inaccessible controls may still expose little useful information. Password fields are excluded from the control listing. It cannot bypass Windows permissions, a locked desktop, logins, passwords, security prompts, payments or final external submissions.
+This is an original open-source-based integration, not Codex's proprietary skill. Accessibility-based actions work without a vision model. A configured local or API vision model can additionally inspect the immediately following screenshot; custom game canvases and inaccessible controls may still expose little useful information. Password fields are excluded from the control listing. It cannot bypass Windows permissions, a locked desktop, logins, passwords, security prompts, payments or final external submissions.
 
 ## Subagents for coding and games
 
@@ -1875,7 +1984,7 @@ Search chats by title, project, draft or conversation text with **Ctrl+Shift+F**
 
 **Help me start** groups editable examples by outcome, project work, research and connections. Selecting one does not run a tool or model. Fill in its placeholders, check the project and mode, then Send. Existing drafts are never replaced by a starter.
 
-**More** holds project memory, API providers, ZeroThink linking, model choices, help and the app-data shortcut. Task history is saved atomically with a previous-save `studio.json.bak` recovery copy. Damaged history files are preserved and a valid backup is recovered on startup with a visible notice. This protects chat history, not project files, model weights or credentials; keep your normal backups too.
+**More** holds project memory, API providers, model choices, help and the app-data shortcut. Task history is saved atomically with a previous-save `studio.json.bak` recovery copy. Damaged history files are preserved and a valid backup is recovered on startup with a visible notice. This protects chat history, not project files, model weights or credentials; keep your normal backups too.
 
 ## Ask for an outcome; let the agent choose tools
 

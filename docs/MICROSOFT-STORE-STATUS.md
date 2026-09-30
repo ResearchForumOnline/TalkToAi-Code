@@ -1,4 +1,19 @@
-# Microsoft Store submission status (2026-09-23)
+# Microsoft Store submission status (2026-09-30)
+
+## Update certified and published: TalkToAi Code 8.5.0
+
+Partner Center accepted and validated `TalkToAi-Code-1.4.0.0-x64.msix`, then accepted Submission 2 (`1152921505702005188`) for certification on 30 September 2026. Microsoft passed certification. The publisher selected **Publish now** under the owner's release authorization. Partner Center subsequently confirmed **Your latest product is available in the Store**, with Store presence on Submission 2. This establishes certification and public Store availability of app 8.5.0 / package 1.4.0.0. An installed-app upgrade on the owner's PC has not been verified.
+
+- Package bytes: `106041730`
+- SHA-256: `E5286857614ECC4BFDB4E7CA2EC910C4847CFE3F0B9C10AECE1A5E2D1D50BAF0`
+- Product/publisher identities and x64 minimum Windows 10.0.19041.0 remain unchanged.
+- English US listing and additional reviewer instructions updated for private API vault, approved free/self-hosted failover, API screenshot vision, local tools and Escape cancellation. No guaranteed free token allowance is claimed.
+- 560 source tests discovered: 547 passed, 13 skipped; real loopback HTTP quota/partial-stream tests use dummy keys. PyInstaller Store executable `--self-test` exited 0. MakeAppx succeeded. These checks do not establish live API entitlement or a Store-signed installation/upgrade.
+- Evidence: `.verification/store-submitted-0850.png` and `.verification/packaged-release-check-0850.json`.
+
+Current Store presence of the preceding release is confirmed in Partner Center. The dated record below describes its initial submission; its then-pending status is historical.
+
+## Historical initial submission (2026-09-23)
 
 TalkToAi Code - AI Coding Studio was **submitted for Microsoft Store certification** on 2026-09-23. Partner Center showed **In certification**, with pre-processing in progress. It is **not yet certified or publicly available**. Publishing is on **manual hold**: even if certification passes, it will not go live until the publisher selects **Publish now**.
 

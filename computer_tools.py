@@ -13,6 +13,20 @@ class ComputerTools:
         self.project=Path(project);self.cancel=cancel;self.desktop=desktop
         self.window=None;self.controls={};self.observed=0;self.handles=set()
         self.window_bounds=None;self.pixel_observed=0;self.pixel_bounds=None
+        self.window_handle=None;self.window_identity=None
+
+    def _validate_window(self):
+        if self.cancel.is_set():raise InterruptedError('Computer control stopped.')
+        if (not self.window or not self.window.is_visible() or not self.window.is_enabled()
+                or self.window.handle != self.window_handle):
+            raise ValueError('The observed window is now hidden, disabled or replaced. List windows and inspect again.')
+        identity=getattr(self.window.element_info, 'runtime_id', None)
+        if self.window_identity is not None and (tuple(identity) if isinstance(identity,(tuple,list)) else identity) != self.window_identity:
+            raise ValueError('The observed window was replaced. List windows and inspect again.')
+        rect=self.window.rectangle()
+        if (rect.left,rect.top,rect.right,rect.bottom)!=self.window_bounds:
+            raise ValueError('The window moved or resized after inspection. Inspect again before acting.')
+        return rect
 
     def connect(self):
         if self.desktop is None:
@@ -35,6 +49,12 @@ class ComputerTools:
             self.observed=0;self.controls={}
             self.window_bounds=None;self.pixel_observed=0;self.pixel_bounds=None
             self.window=self.desktop.window(handle=int(target)).wrapper_object()
+            if not self.window.is_visible() or not self.window.is_enabled():
+                self.window=None
+                raise ValueError('The listed window is now hidden or disabled. List windows again.')
+            self.window_handle=self.window.handle
+            identity=getattr(self.window.element_info, 'runtime_id', None)
+            self.window_identity=tuple(identity) if isinstance(identity,(tuple,list)) else None
             entries=[];snapshot=uuid.uuid4().hex[:12]
             for control in self.window.descendants()[:250]:
                 try:
@@ -60,6 +80,7 @@ class ComputerTools:
             return f'Waited {seconds:g} seconds. Inspect the window again.'
         if not self.window or time.monotonic()-self.observed>90:
             raise ValueError('Inspect the target window first; observations expire after 90 seconds or one input.')
+        rect=self._validate_window()
         if action=='screenshot':
             rect=self.window.rectangle()
             bounds=(rect.left,rect.top,rect.right,rect.bottom)
@@ -73,11 +94,11 @@ class ComputerTools:
                                'coordinate_system':'window-relative x,y',
                                'note':'Use point coordinates only from this screenshot. It expires after 30 seconds or a window move. Inspect after input; screenshot alone does not prove a task result.'})
         control=self.controls.get(str(target))
-        if action not in ('click','fill','select','focus','key','click_point'):raise ValueError('Unknown computer action.')
-        if action in ('click','fill','select','focus') and control is None:raise ValueError('Use a control id from the latest inspect result.')
+        if action not in ('click','fill','select','focus','key','scroll','click_point'):raise ValueError('Unknown computer action.')
+        if (action in ('click','fill','select','focus') or (action=='scroll' and target)) and control is None:raise ValueError('Use a control id from the latest inspect result.')
         self.observed=0
         if self.cancel.is_set():raise InterruptedError('Computer control stopped.')
-        if action in ('click','fill','select','focus'):
+        if action in ('click','fill','select','focus') or (action=='scroll' and control is not None):
             # UI providers can change between observation and delivery. Do not
             # turn a stale target into an input to an inaccessible/replaced field.
             if not control.is_visible() or not control.is_enabled():
@@ -100,9 +121,29 @@ class ComputerTools:
         elif action=='focus':control.set_focus()
         elif action=='key':
             keys={'enter':'{ENTER}','escape':'{ESC}','tab':'{TAB}','up':'{UP}','down':'{DOWN}',
-                  'left':'{LEFT}','right':'{RIGHT}','ctrl+s':'^s','ctrl+a':'^a','ctrl+z':'^z','f5':'{F5}'}
+                  'left':'{LEFT}','right':'{RIGHT}','home':'{HOME}','end':'{END}',
+                  'pageup':'{PGUP}','pagedown':'{PGDN}','shift+tab':'+{TAB}',
+                  'ctrl+f':'^f','ctrl+tab':'^{TAB}','ctrl+shift+tab':'^+{TAB}',
+                  'alt+left':'%{LEFT}','ctrl+home':'^{HOME}','ctrl+end':'^{END}',
+                  'ctrl+s':'^s','ctrl+a':'^a','ctrl+z':'^z','f5':'{F5}'}
             if value.lower() not in keys:raise ValueError('Supported keys: '+', '.join(keys))
             self.window.type_keys(keys[value.lower()],set_foreground=True)
+        elif action=='scroll':
+            # Use the observed UI Automation scroll pattern, never global mouse wheel input.
+            try:
+                direction,amount,count_text=(part.strip().lower() for part in value.split(','))
+                count=int(count_text)
+            except (AttributeError,TypeError,ValueError):
+                raise ValueError('Scroll value must be direction,amount,count; e.g. down,line,3.') from None
+            if direction not in ('up','down','left','right') or amount not in ('line','page') or not 1<=count<=5:
+                raise ValueError('Scroll requires up/down/left/right, line/page and count 1 to 5.')
+            recipient=control if control is not None else self.window
+            for _ in range(count):
+                self._validate_window()
+                if not recipient.is_visible() or not recipient.is_enabled():
+                    raise ValueError('The observed scroll target is now hidden or disabled. Inspect again.')
+                if self.cancel.is_set():raise InterruptedError('Computer control stopped.')
+                recipient.scroll(direction,amount,count=1,retry_interval=0)
         else:
             if not self.pixel_observed or time.monotonic()-self.pixel_observed>30:
                 raise ValueError('Take a fresh screenshot of the inspected window before a point click.')

@@ -76,7 +76,6 @@ class WorkflowHelperTests(unittest.TestCase):
             'desktop_run_command':{'command':'pwd'},
             'browser':{'action':'inspect'},
             'gmail_search':{'query':'label:inbox'},
-            'zmail_search_email':{'query':'inbox'},
             'save_playbook':{'title':'Example','when_to_use':'When asked','steps':'[]','verification':'Check it'},
         }
         for name,args in cases.items():

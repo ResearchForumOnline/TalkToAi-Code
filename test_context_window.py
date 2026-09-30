@@ -192,7 +192,7 @@ class ContextWindowTests(unittest.TestCase):
                 patch.object(core,'model_supports_vision',return_value=False), \
                 patch.object(core,'DESKTOP_ACCESS',True),patch.object(core,'PC_PILOT',True), \
                 patch.object(core,'REMOTE_PILOT',True),patch.object(core,'ACTIVE_REMOTE_ALLOWED',True):
-            core.run_agent('http://fixture','fixture',[{'role':'user','content':'Inspect gmail zmail and research the web'}],
+            core.run_agent('http://fixture','fixture',[{'role':'user','content':'Inspect gmail and research the web'}],
                            folder,True,threading.Event(),lambda *_:None,rounds=6)
         self.assertEqual(len(payloads),5)
         for p in payloads:

@@ -1,0 +1,3 @@
+# MANIFEST.json records exact committed bytes, including existing line endings.
+# Preserve those bytes on Windows, macOS and Linux checkouts.
+* -text

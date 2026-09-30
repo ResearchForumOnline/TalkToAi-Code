@@ -56,7 +56,7 @@ $manifest = @"
   <Properties>
     <DisplayName>TalkToAi Code - AI Coding Studio</DisplayName>
     <PublisherDisplayName>$PublisherDisplayName</PublisherDisplayName>
-    <Description>Local-first coding and game-development AI workspace</Description>
+    <Description>Private API vault, coding and computer-use workspace</Description>
     <Logo>Assets\icon-50.png</Logo>
   </Properties>
   <Resources><Resource Language="en-US" /></Resources>

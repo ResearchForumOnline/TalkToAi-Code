@@ -1,6 +1,20 @@
 # TalkToAi Code — Your projects. Your AI. Your workspace.
 
-> **Latest update: 8.3.0** — [Windows release](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/tag/v8.3.0) · [Release notes](docs/RELEASE-8.3.0.md) · [Linux/macOS source ZIP](https://github.com/ResearchForumOnline/TalkToAi-Code/archive/refs/tags/v8.3.0.zip).
+> **Latest update: 8.5.0** - [Windows release](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/tag/v8.5.0) | [Release notes](docs/RELEASE-8.5.0.md) | [Linux/macOS source ZIP](https://github.com/ResearchForumOnline/TalkToAi-Code/archive/refs/tags/v8.5.0.zip).
+
+### 8.5.0: private API vault and quota-aware routing
+
+The current source adds Groq, Gemini, OpenRouter and Cerebras setup presets with direct links to their own key and limit pages. Fresh installations guide users to their private API vault; saved local/server settings remain available. API keys remain session-only or encrypted in the operating system credential store, separately from conversation and provider metadata.
+
+Enable automatic fallback on the selected profile and on approved alternatives. After a quota, rate-limit or temporary connection failure before any output, the app tries an eligible free or self-hosted alternative, records the selected provider and respects cooldowns. It does not rotate keys inside one endpoint to work around a provider quota, choose a paid fallback, or replay partial text/tool responses. Free eligibility and billing remain controlled by the provider account; no fixed monthly token allowance is included.
+
+Configured API vision models can receive the immediately following captured screenshot. Text models retain accessibility control. Windows tools now support bounded scrolling and more navigation keys, verify the observed window has not moved or been replaced, and retain visible control status plus Escape/Stop cancellation. Legacy ZeroThink and Zmail adapters are removed. [API setup](MAIL-CONNECTORS.md) covers the separately optional Gmail connector.
+
+### 8.4.0: attach documents and take your conversation with you
+
+The composer now has **Attach files** and accepts local file drops. Select up to five text, code, CSV, JSON or selectable-text PDF files for one message, review their names and extracted-text lengths, then remove or clear them before Send. Each file is limited to 2 MB and 12,000 extracted characters, with 20,000 characters across a message. Truncation is labelled. Scanned PDFs without selectable text and images are not supported by this text route. The selected files are read locally; their extracted text is included in the user message sent to the selected model route and saved in local task history. This is document context, not a separate binary upload. Review files before attaching them.
+
+**Conversation -> Copy conversation / Export conversation** gives you a readable Markdown transcript of visible user and assistant messages. Tool activity and technical evidence remain in the existing task report. **Reuse last prompt** returns the last user request to the composer without executing it, so you can edit before sending again. [8.4.0 release notes](docs/RELEASE-8.4.0.md) explain limits and the release checks.
 
 ### 8.3.0: useful work before you connect a model
 
@@ -70,7 +84,7 @@ After Skynet Mode selects a candidate that passed the recorded checks, **Evidenc
 
 In Code / Act, the agent can inspect and change a small allowlist of future app preferences, including Keep going, context size, browser choice, visible activity and Skynet iteration count. Every change is recorded and can be rolled back if later edits do not conflict. Access permissions, credentials, provider profiles, model IDs and weights stay outside this setting tool. [Agent preference controls](docs/AGENT-PREFERENCES.md).
 
-For a local model whose answer hits its output ceiling, the controller can allow a longer next response when context permits. A plain **Continue** on a mail task retains the earlier substantive request so the read-only Gmail or Zmail tools can be discovered again. The new [routing evaluation audit](docs/ROUTING-EVALUATION.md) compares two sets of decisions on the same project-local labelled cases: false allows, false reviews, deferrals, family breakdowns and optional probability forecast scores. Labels are supplied by the evaluation file; this is a descriptive audit, not an ethical verdict or permission rule. See [0.12.0 release notes](docs/RELEASE-0.12.0.md).
+For a local model whose answer hits its output ceiling, the controller can allow a longer next response when context permits. A plain **Continue** on a mail task retains the earlier substantive request so the read-only Gmail tools can be discovered again. The new [routing evaluation audit](docs/ROUTING-EVALUATION.md) compares two sets of decisions on the same project-local labelled cases: false allows, false reviews, deferrals, family breakdowns and optional probability forecast scores. Labels are supplied by the evaluation file; this is a descriptive audit, not an ethical verdict or permission rule. See [0.12.0 release notes](docs/RELEASE-0.12.0.md).
 
 ### 0.11.0: a project workbench with reusable evidence
 
@@ -82,7 +96,7 @@ In a disposable live coding fixture, the configured 30B server model ran for 258
 
 ### 0.10.0: clearer live work and longer coding sessions
 
-After Send, the app immediately shows **Request received** while it connects to the selected runtime. This is app status, not an invented model reply. During inference it shows the model step and elapsed wait; Stop and Steer remain available. **More → Show model activity** can display a short, live excerpt only when an Ollama model supplies a separate reasoning stream. The option applies to the next request, is off by default, and may slow generation. Reasoning activity is not saved as a chat message; API providers and models without that stream retain normal progress status.
+After Send, the app immediately shows **Request received** while it connects to the selected runtime. This is app status, not an invented model reply. During inference it shows the model step and elapsed wait; Stop and Steer remain available. **More → Show model activity** can display a short, live excerpt only when the selected model supplies a separate reasoning stream. The option applies to the next request, is off by default, and may slow generation. Reasoning activity is not saved as a chat message; Models without that stream retain normal progress status.
 
 Code's **Keep going** now offers a selected one, two or four-hour maximum, with bounded model steps and work passes. It can stop earlier for completion, cancellation, repeated discovery, unresolved failures or lack of new evidence. The Tools panel keeps long command and source output readable with horizontal scrolling. See [0.10.0 release notes](docs/RELEASE-0.10.0.md) for limits and verification.
 
@@ -121,7 +135,7 @@ A deterministic discovery guard detects repeated unchanged searches, provides re
 Skynet candidates now preserve supported Godot and Unity source and small assets, including nested source ZIP projects. Use project `AGENTS.md` for coding conventions and acceptance criteria. See [Customize and improve](docs/CUSTOMIZE-AND-IMPROVE.md) for project guidance and editing TalkToAi Code's own source.
 
 
-**Microsoft Store:** The separate MSIX edition was submitted for certification on 23 September 2026 with a manual publication hold at the last recorded check. See [submission status](docs/MICROSOFT-STORE-STATUS.md) and verify the current Store state separately. The installer above is the GitHub release.
+**Microsoft Store:** The separate 8.5.0 MSIX edition (package 1.4.0.0) passed certification and Partner Center confirmed the latest product is available in the Store on 30 September 2026. See [submission status](docs/MICROSOFT-STORE-STATUS.md) for the dated evidence. An installed upgrade on the owner's PC has not been verified. The installer above is the separate GitHub release.
 
 ![TalkToAi Code connects a coding workspace to a game world](assets/talktoai-code-hero.png)
 
@@ -169,7 +183,7 @@ Separate **Chat** and **Code** spaces retain their conversations across restarts
 
 **Skynet Mode** is an opt-in, bounded candidate improvement workflow. It copies eligible project source to a separate temporary folder, makes up to two focused improvement passes with the selected model, runs detected checks and records a diff and JSON report. It never replaces the original project or installs an update automatically. Project checks still run with the signed-in user's permissions; review the report, changed tests and source before applying anything.
 
-Optional **Gmail** and **Zmail** controls support read-only search and selected message/thread reads after each user configures a separate OAuth client and signs in. Tokens stay in Windows Credential Manager, macOS Keychain or a Linux desktop keyring. The app does not include shared credentials or a mail send tool. See [mail connector setup](MAIL-CONNECTORS.md).
+Optional **Gmail** controls support read-only search and selected message/thread reads after the user configures an OAuth client and signs in. Tokens stay in Windows Credential Manager, macOS Keychain or a Linux desktop keyring. The app does not include shared credentials or a mail send tool. See [mail connector setup](MAIL-CONNECTORS.md).
 
 The Server runtime can reconnect its loopback SSH tunnel, and coding-agent tool replies are paired to their call IDs. Browser tools are available for ordinary web research requests. A failed check no longer satisfies the agent's post-edit verification gate. See [0.4.0 release notes](RELEASE-0.4.0.md) for validation and limits.
 
@@ -181,11 +195,10 @@ SHA-256/continuation offsets and **registered deliverables** in Evidence.
 Build/test output is distinct from claims of test coverage. Jobs stop at turn
 end; this is not a persistent hosting daemon.
 
-**More → API providers → OpenAI API** configures direct OpenAI access using
+**Private API vault → OpenAI API** configures direct OpenAI access using
 **each user's own key and account**. No developer/shared API key is provided.
-Local/open-weight inference remains the default, and Auto never falls back to a
-paid provider. Users who prefer API-only use can explicitly select their saved
-profile and make it their startup default. Other compatible endpoints remain
+Fresh installs guide users through their own API vault; existing runtime choices stay saved. Local/Open-weight inference remains available, and the local Auto route never falls back to a paid API. Users select their saved
+profile and can make it their startup default. Other compatible endpoints remain
 supported, including a local-server preset.
 
 Paste a key for this session, reference an environment variable, or opt into
@@ -228,7 +241,7 @@ Automation still depends on the model. The deterministic test suite covers the c
 - **Recover saved chats:** atomic saves keep a validated previous-save `studio.json.bak`. If history is damaged, the app preserves the unreadable file and recovers the valid backup with a visible notice. This is local chat recovery, not a substitute for project or off-device backups.
 - **Start with a useful request:** seven editable starters cover coding, websites, games, debugging, release review, SSH inspection and unfinished work. They do not execute automatically or replace existing drafts; edit the placeholders and press Send.
 - **A bundled game to learn with:** Game → Open example game (or `open score arena`) creates an editable Score Arena copy under the app's persistent data folder. Reopening it preserves your changes. Install Godot separately to run it.
-- **Less sidebar clutter:** More groups project memory, API providers, ZeroThink linking, model choices and help. Settings, Connections and About & updates remain immediately visible.
+- **Less sidebar clutter:** More groups project memory, API providers, model choices and help. Settings, Connections and About & updates remain immediately visible.
 - **Reliability fixes:** new/branched chats select correctly even with pinned conversations, refreshing the chat list preserves the current file editor, and local model choices save with user settings.
 
 Drafts autosave after a short typing pause. Ctrl+, opens Settings. Ctrl+K includes project memory, update checks and shortcuts to the project and app-data folders.
@@ -258,14 +271,6 @@ In Act mode, try: **“Connect to my website server using my existing SSH config
 - **macOS:** install Python 3.10+, extract the [8.3.0 source ZIP](https://github.com/ResearchForumOnline/TalkToAi-Code/archive/refs/tags/v8.3.0.zip), and run `bash install-macos.sh` from that folder. This creates a local virtual environment, `~/bin/talktoai-code` launcher, and `~/Applications/TalkToAi Code.app` launcher. Chats/settings use `~/Library/Application Support/TalkToAiCode`. Install Ollama separately and pull a model. Remembered keys and account tokens use macOS Keychain.
 
 Windows has a packaged x64 installer. Linux and macOS use source installers with per-user virtual environments; the [native Ubuntu and macOS install-and-launch smoke run](https://github.com/ResearchForumOnline/TalkToAi-Code/actions/runs/36245686313) passed using an offscreen GUI on clean GitHub runners. An interactive human workflow has not been confirmed on those hosts. Browser research, Chat/Code, local Ollama, project edits, shell commands, jobs and SSH use portable code paths. Windows accessibility PC Pilot and Windows startup shortcuts are Windows-only. Linux browser operation may need desktop libraries for Playwright Chromium; if its browser download fails, install them and rerun `python -m playwright install chromium` inside the app virtual environment.
-
-## ZeroThink / AgentZero account and vault
-
-Open **More → Link ZeroThink account**, choose your vault provider and exact model ID, and complete the normal web sign-in and device approval. The desktop remembers its own session using Windows DPAPI. Provider keys remain in the server vault. Do not copy your Google password or vault keys into chat. `link zerothink` also opens the dialog. The existing account/device API is used; no server auth change is required.
-
-The vault adapter is experimental: it requests a structured JSON reply from the selected model and validates the whole tool batch before execution. Invalid replies fail without executing that batch. Model tool reliability varies. Local/Server routes use native Ollama tool calls. The adapter's mock protocol, Windows token encryption and URL checks were tested; a real signed-in vault inference has not yet been verified. Account entitlements and provider quotas still apply. APIs are not guaranteed free; no paid provider is selected automatically.
-
-Use your account's device controls to revoke access. Closing the linking dialog cancels polling; an already issued session may need revocation in the account.
 
 ## Working
 
@@ -304,7 +309,7 @@ Use the Research with sources starter or ask for a web search. Browser search re
 
 ### Search choices in 0.6.0
 
-Settings lets you prefer Edge, Chrome, Firefox or Playwright Chromium, with a browser fallback if the first one cannot start. Web search tries DuckDuckGo, Bing, Google and Brave. Add your own Serper key in Settings and select Serper to use its structured search results; those searches may use Serper account credits. Search results include source URLs, and the agent should open originals before citing them. More > Link ZeroThink account & vault already pairs your account with its provider vault; provider/model access requires account setup.
+Settings lets you prefer Edge, Chrome, Firefox or Playwright Chromium, with a browser fallback if the first one cannot start. Web search tries DuckDuckGo, Bing, Google and Brave. Add your own Serper key in Settings and select Serper to use its structured search results; those searches may use Serper account credits. Search results include source URLs, and the agent should open originals before citing them. Local and self-hosted server inference remain the default routes; this app has no TalkToAI-hosted model account.
 
 ### Linux and macOS source install in 0.6.0
 

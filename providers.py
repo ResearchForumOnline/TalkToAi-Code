@@ -12,9 +12,14 @@ from urllib.parse import urlsplit
 
 
 class ProviderProfile:
-    def __init__(self, label: str, base_url: str, model: str, api_key_env: str = "", kind='compatible', engine='groq', max_output_tokens=2048):
-        if kind not in ('compatible','zerothink'):raise ValueError('Unknown provider kind')
+    def __init__(self, label: str, base_url: str, model: str, api_key_env: str = "", kind='compatible', engine='groq', max_output_tokens=2048, fallback_enabled=False, cost_tier="unknown", priority=100, supports_vision=False):
+        if kind != 'compatible':raise ValueError('Unknown provider kind')
         self.kind=kind;self.engine=engine
+        self.fallback_enabled = fallback_enabled is True
+        if cost_tier not in {"unknown", "free", "self_hosted", "paid"}:raise ValueError("Unknown provider cost tier")
+        self.cost_tier=cost_tier
+        self.supports_vision=supports_vision is True
+        self.priority=max(0,min(1000,int(priority)))
         self.label = str(label or "Provider").strip()[:80]
         self.base_url = str(base_url or "").strip().rstrip("/")
         self.model = str(model or "").strip()[:200]
@@ -22,7 +27,6 @@ class ProviderProfile:
         parsed = urlsplit(self.base_url)
         if parsed.username or parsed.password or parsed.query or parsed.fragment:
             raise ValueError('Provider URL must not contain credentials, query parameters or fragments.')
-        if kind=='zerothink' and (self.base_url!='https://zerothink.talktoai.org' or engine not in ('groq','nvidia','openai','xai','gemini')):raise ValueError('Invalid ZeroThink account route')
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             raise ValueError("Provider URL must be an http:// or https:// OpenAI-compatible endpoint.")
         if not self.model:
@@ -43,15 +47,22 @@ class ProviderProfile:
     def is_groq(self):return self.kind=='compatible' and self.base_url=='https://api.groq.com/openai/v1'
 
     def as_dict(self):
-        return {"label": self.label, "base_url": self.base_url, "model": self.model, "api_key_env": self.api_key_env, 'kind':self.kind,'engine':self.engine,'max_output_tokens':self.max_output_tokens}
+        return {"label": self.label, "base_url": self.base_url, "model": self.model, "api_key_env": self.api_key_env, 'kind':self.kind,'engine':self.engine,'max_output_tokens':self.max_output_tokens,'fallback_enabled':self.fallback_enabled,'cost_tier':self.cost_tier,'priority':self.priority,'supports_vision':self.supports_vision}
 
 
 def load_profiles(path: Path):
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-        return [ProviderProfile(x.get("label", ""), x["base_url"], x["model"], x.get("api_key_env", ""),x.get('kind','compatible'),x.get('engine','groq'),x.get('max_output_tokens',2048)) for x in data if isinstance(x, dict)]
-    except (OSError, ValueError, KeyError, TypeError):
+    except (OSError, ValueError):
         return []
+    if not isinstance(data,list):return []
+    profiles=[]
+    for x in data:
+        if not isinstance(x,dict) or x.get('kind','compatible')!='compatible':continue
+        try:
+            profiles.append(ProviderProfile(x.get("label", ""), x["base_url"], x["model"], x.get("api_key_env", ""),x.get('kind','compatible'),x.get('engine','groq'),x.get('max_output_tokens',2048),x.get('fallback_enabled',False),x.get('cost_tier','unknown'),x.get('priority',100),x.get('supports_vision',False)))
+        except (ValueError,KeyError,TypeError):continue
+    return profiles
 
 
 def save_profiles(path: Path, profiles):
@@ -68,9 +79,15 @@ def key_identity(profile):
     return hashlib.sha256((profile.base_url+'\0'+profile.api_key_env).encode()).hexdigest()
 
 
+def key_namespace():
+    from updates import is_store_package
+    return 'TalkToAi Code Store provider' if is_store_package() else 'TalkToAi Code provider'
+
+
 def key_path(profile):
     from platform_paths import state_dir
-    return state_dir()/'provider-keys'/(key_identity(profile)+'.dpapi')
+    from updates import is_store_package
+    return state_dir(store=is_store_package())/'provider-keys'/(key_identity(profile)+'.dpapi')
 
 
 def store_api_key(profile, key, remember=False):
@@ -88,7 +105,8 @@ def store_api_key(profile, key, remember=False):
             temporary=path.with_suffix('.tmp');temporary.write_bytes(encrypted);temporary.replace(path)
         else:
             import keyring
-            keyring.set_password('TalkToAi Code provider',key_identity(profile),key)
+            _secure_keyring(keyring)
+            keyring.set_password(key_namespace(),key_identity(profile),key)
     _SESSION_KEYS[key_identity(profile)]=key
 
 
@@ -97,7 +115,7 @@ def forget_api_key(profile):
     if os.name=='nt':key_path(profile).unlink(missing_ok=True)
     else:
         import keyring
-        try:keyring.delete_password('TalkToAi Code provider',key_identity(profile))
+        try:keyring.delete_password(key_namespace(),key_identity(profile))
         except keyring.errors.PasswordDeleteError:pass
 
 
@@ -111,7 +129,8 @@ def api_key(profile):
         except Exception:raise ValueError('Saved provider key could not be decrypted. Enter it again in API providers.') from None
     if not key and os.name!='nt':
         import keyring
-        try:key=keyring.get_password('TalkToAi Code provider',key_identity(profile)) or ''
+        _secure_keyring(keyring)
+        try:key=keyring.get_password(key_namespace(),key_identity(profile)) or ''
         except keyring.errors.KeyringError:key=''
     if profile.is_openai and not key:
         raise ValueError('OpenAI API key is missing. Enter one in API providers or set OPENAI_API_KEY, then restart the app.')
@@ -123,8 +142,8 @@ def api_key(profile):
 
 
 def http_error(status):
-    advice={400:'Check the model and its support for Chat Completions and function tools.',401:'Check your API key.',403:'Check account/model access.',404:'Check the endpoint and model name.',429:'Check provider quota, billing or rate limits.'}
-    return f'Provider HTTP {status}. '+advice.get(status,'Check provider availability and settings. No automatic provider fallback was attempted.')
+    advice={400:'Check the model and its support for Chat Completions and function tools.',401:'Check your API key.',402:'Provider quota or billing limit reached.',403:'Check account/model access.',404:'Check the endpoint and model name.',429:'Check provider quota, billing or rate limits.'}
+    return f'Provider HTTP {status}. '+advice.get(status,'Check provider availability and settings.')
 
 
 def list_models(profile):
@@ -157,3 +176,29 @@ def configure_request(profile, request, options):
         request['max_tokens']=profile.max_output_tokens
         request['temperature']=options.get('temperature',.1)
     return request
+
+
+def _secure_keyring(keyring):
+    """Refuse plaintext/null keyring backends; never fall back to a file of keys."""
+    backend=keyring.get_keyring()
+    name=type(backend).__module__+'.'+type(backend).__name__
+    if any(marker in name.lower() for marker in ('plaintext','null','fail')):
+        raise ValueError('A secure system credential store is unavailable. Use session-only keys.')
+    # Chained backends may include insecure file stores, even with a positive priority.
+    children=getattr(backend,'backends',())
+    if any(any(marker in (type(child).__module__+'.'+type(child).__name__).lower() for marker in ('plaintext','null','fail')) for child in children):
+        raise ValueError('Configure a secure system keyring or use session-only keys.')
+
+def vault_status(profile):
+    """Report secret location only, without retrieving or returning any key."""
+    if key_identity(profile) in _SESSION_KEYS:return 'Session key available'
+    if profile.api_key_env and os.environ.get(profile.api_key_env):return 'Environment key available'
+    if os.name=='nt' and key_path(profile).is_file():return 'Encrypted system key saved'
+    return 'System keyring or no saved key' if os.name!='nt' else 'No saved key'
+
+
+def key_ready(profile):
+    """Boolean readiness; does not return secrets or transmit requests."""
+    if profile.cost_tier=='self_hosted':return True
+    try:return bool(api_key(profile)) or urlsplit(profile.base_url).hostname in {'localhost','127.0.0.1','::1'}
+    except (ValueError,ImportError):return False

@@ -24,9 +24,29 @@ class WorkspaceUITests(unittest.TestCase):
         self.escape_hook=self.stack.enter_context(patch('studio.EscapeCancel')).return_value
         self.escape_hook.arm.return_value=False
         self.window=studio.Studio()
+        self.window.route.setCurrentIndex(0)  # Existing tests exercise isolated local routing.
 
     def tearDown(self):
         self.window.allow_quit=True;self.window.close();self.window.deleteLater();self.app.processEvents();self.stack.close()
+
+    def test_attached_text_is_visible_by_name_and_sent_in_model_history(self):
+        w=self.window;w.task['project']=str(self.root)
+        document=self.root/'notes.md';document.write_text('Project rule: explain this fixture.',encoding='utf-8')
+        w.attach_files([str(document)])
+        self.assertIn('notes.md',w.attachment_list.item(0).text())
+        w.prompt.setPlainText('Summarize the attached note')
+        with patch('studio.threading.Thread') as worker,patch('studio.choose_route',return_value={'route':'local','url':'http://127.0.0.1:11434','model':'fixture','reason':'test'}),patch('studio.ensure_local_model'),patch('studio.run_agent'):
+            w.send()
+        message=w.task['messages'][-1]
+        self.assertIn('Project rule: explain this fixture.',message['content'])
+        self.assertIn('untrusted reference material',message['content'])
+        self.assertNotIn('Project rule:',message['display_content'])
+        self.assertIn('notes.md',message['display_content'])
+        self.assertEqual(w.attachment_list.count(),0)
+        stored=load_tasks(studio.SESSION)[0][0]['messages'][-1]
+        self.assertEqual(stored['content'],message['content'])
+        worker.return_value.start.assert_called_once()
+        w.set_busy(False)
 
     def test_export_includes_saved_work_checkpoint(self):
         w=self.window;w.task['project']=str(self.root)
@@ -640,6 +660,7 @@ class WorkspaceUITests(unittest.TestCase):
             self.assertEqual(dialog.url.text(),'https://api.openai.com/v1')
             self.assertEqual(dialog.env.text(),'OPENAI_API_KEY')
             dialog.model.setEditText('user-chosen-model')
+            dialog.default_api.setChecked(False)  # Explicitly keep local startup for this fixture.
             dialog.save_profile()
             self.assertEqual(w.route.currentIndex(),0);self.assertEqual(w.config['preferred_route'],'auto')
             self.assertTrue(w.active_provider().is_openai)

@@ -21,4 +21,4 @@ $appShortcut.Arguments='"'+(Join-Path $appRoot 'studio.py')+'"'
 $appShortcut.WorkingDirectory=$appRoot
 $appShortcut.Description='TalkToAi Code native desktop assistant'
 $appShortcut.Save()
-Write-Host 'Installed. Open TalkToAi Code from your desktop. Choose a project and local model, or link ZeroThink.'
+Write-Host 'Installed. Open TalkToAi Code from your desktop. Choose a project and a local, self-hosted server or API model.'

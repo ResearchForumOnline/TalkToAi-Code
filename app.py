@@ -50,7 +50,7 @@ class Handler(BaseHTTPRequestHandler):
                 if len(items)>=500: break
             self.send_json({'project':str(base),'files':items}); return
         if self.path == '/api/status':
-            c=load_config(); self.send_json({'brand':'TalkToAi Code','project':c['project'],'engine':engine_summary(c['project']),'local':ollama_ready('http://127.0.0.1:11434'),'server':ollama_ready('http://127.0.0.1:11435'),'identity_url':'https://agentzero.talktoai.org/','openzero_url':'https://openzero.talktoai.org/','legacy_workbench_url':'https://zerothink.talktoai.org/'}); return
+            c=load_config(); self.send_json({'brand':'TalkToAi Code','project':c['project'],'engine':engine_summary(c['project']),'local':ollama_ready('http://127.0.0.1:11434'),'server':ollama_ready('http://127.0.0.1:11435')}); return
         self.send_error(404); return
     def do_POST(self):
         try:

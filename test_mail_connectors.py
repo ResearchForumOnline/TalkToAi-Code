@@ -29,25 +29,6 @@ class MailConnectorTests(unittest.TestCase):
         self.assertEqual(len(result["body"][0]["text"]), 12000)
         self.assertTrue(result["untrusted_content"])
 
-    def test_zmail_blocks_any_write_tool_before_accessing_token(self):
-        def forbidden_token():
-            raise AssertionError("token must not be loaded")
-        connector = mail.ZmailReadConnector(forbidden_token)
-        with self.assertRaises(PermissionError):
-            connector.call("zmail_send_draft", {"id": "draft"})
-
-    def test_zmail_initializes_then_calls_exact_read_tool(self):
-        with patch.object(mail, "_json_request", side_effect=[
-            {"result": {"protocolVersion": "2025-06-18"}},
-            {"result": {"content": [{"type": "text", "text": "mock"}]}}]) as request:
-            result = mail.ZmailReadConnector(lambda: "mock-token").call(
-                "zmail_search_email", {"query": "from:example.test", "limit": 1})
-        self.assertTrue(result["untrusted_content"])
-        self.assertEqual(request.call_count, 2)
-        self.assertEqual(request.call_args_list[0].kwargs["payload"]["method"], "initialize")
-        self.assertEqual(request.call_args_list[1].kwargs["payload"]["method"], "tools/call")
-        self.assertEqual(request.call_args_list[1].kwargs["payload"]["params"]["name"], "zmail_search_email")
-
 
 if __name__ == "__main__":
     unittest.main()

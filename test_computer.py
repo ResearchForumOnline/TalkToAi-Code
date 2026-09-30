@@ -146,3 +146,68 @@ class ComputerTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.engine.execute('click_point','',point)
         self.window.click_input.assert_not_called()
+
+    def test_scroll_delivers_bounded_pattern_steps_and_consumes_snapshot(self):
+        self.inspect();self.engine.execute('scroll',self.control_id,'down,line,3')
+        self.assertEqual(self.control.scroll.call_count,3)
+        self.control.scroll.assert_called_with('down','line',count=1,retry_interval=0)
+        self.window.click_input.assert_not_called()
+        with self.assertRaisesRegex(ValueError,'Inspect the target'):
+            self.engine.execute('scroll',self.control_id,'down,line,1')
+
+    def test_scroll_invalid_count_or_direction_never_delivers_input(self):
+        for value in ('down,line,0','down,line,6','down,line,500','diagonal,line,2','up,pixel,1','down,line,1.5','down,line'):
+            self.inspect()
+            with self.assertRaises(ValueError):self.engine.execute('scroll',self.control_id,value)
+        self.control.scroll.assert_not_called()
+        self.window.scroll.assert_not_called()
+
+    def test_scroll_cancel_between_steps_stops_without_repeating(self):
+        self.inspect();self.control.scroll.side_effect=lambda *a,**kw:self.cancel.set()
+        with self.assertRaises(InterruptedError):self.engine.execute('scroll',self.control_id,'down,page,5')
+        self.assertEqual(self.control.scroll.call_count,1)
+
+    def test_scroll_unsupported_pattern_never_falls_back_to_mouse(self):
+        self.inspect();self.control.scroll.side_effect=AttributeError('Not scrollable')
+        with self.assertRaises(AttributeError):self.engine.execute('scroll',self.control_id,'down,line,2')
+        self.assertEqual(self.control.scroll.call_count,1)
+        self.window.click_input.assert_not_called()
+        self.control.wheel_mouse_input.assert_not_called()
+
+    def test_window_scroll_rechecks_visibility_between_steps(self):
+        self.inspect();self.window.scroll.side_effect=lambda *a,**kw:setattr(self.window.is_visible,'return_value',False)
+        with self.assertRaisesRegex(ValueError,'hidden'):
+            self.engine.execute('scroll','','right,line,3')
+        self.assertEqual(self.window.scroll.call_count,1)
+
+    def test_hidden_or_replaced_window_blocks_keys_and_scroll(self):
+        self.inspect();self.window.is_visible.return_value=False
+        with self.assertRaisesRegex(ValueError,'hidden'):self.engine.execute('key','','pageup')
+        self.window.type_keys.assert_not_called()
+        self.window.is_visible.return_value=True
+        self.inspect();self.window.handle=456
+        with self.assertRaisesRegex(ValueError,'replaced'):self.engine.execute('scroll','','down,page,1')
+        self.window.scroll.assert_not_called()
+
+    def test_changed_window_runtime_identity_blocks_input(self):
+        self.window.element_info.runtime_id=[1,2,3];self.inspect()
+        self.window.element_info.runtime_id[2]=4
+        with self.assertRaisesRegex(ValueError,'replaced'):self.engine.execute('key','','home')
+        self.window.type_keys.assert_not_called()
+
+    def test_moved_window_blocks_keyboard_navigation(self):
+        self.inspect();self.window.rectangle.return_value.left=10
+        with self.assertRaisesRegex(ValueError,'moved or resized'):self.engine.execute('key','','ctrl+f')
+        self.window.type_keys.assert_not_called()
+
+    def test_navigation_keys_are_exact_and_clipboard_shortcuts_rejected(self):
+        for value,expected in [('home','{HOME}'),('end','{END}'),('pageup','{PGUP}'),
+                               ('pagedown','{PGDN}'),('shift+tab','+{TAB}'),('ctrl+f','^f'),
+                               ('alt+left','%{LEFT}'),('ctrl+tab','^{TAB}')]:
+            self.inspect();self.engine.execute('key','',value)
+            self.window.type_keys.assert_called_with(expected,set_foreground=True)
+        before=self.window.type_keys.call_count
+        for value in ('ctrl+c','ctrl+v'):
+            self.inspect()
+            with self.assertRaisesRegex(ValueError,'Supported keys'):self.engine.execute('key','',value)
+        self.assertEqual(self.window.type_keys.call_count,before)
