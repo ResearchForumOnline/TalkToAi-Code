@@ -1,4 +1,10 @@
-# Microsoft Store submission status (2026-09-30)
+# Microsoft Store submission status
+
+## 23 October 2026: 8.6.0 candidate prepared
+
+App version **8.6.0**, package **1.5.0.0**, has been prepared from the current reviewed source using the same existing product and publisher identities. The candidate includes Meta setup, the automatic OpenRouter free router and strict free-only policy described in [8.6.0 release preparation](RELEASE-8.6.0.md). The fresh executable's runtime self-test passed, all 55 frozen project modules matched source, and MakeAppx created the candidate with validation enabled.
+
+This preparation record does not establish Partner Center acceptance, submission, certification, public availability or an installed upgrade. The previous published package described below remains the last publication recorded here until those separate steps are verified.
 
 ## Update certified and published: TalkToAi Code 8.5.0
 

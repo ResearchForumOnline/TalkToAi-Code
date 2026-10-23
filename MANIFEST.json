@@ -33,7 +33,7 @@
   },
   {
     "path": "README.md",
-    "sha256": "fd514b05cbf636d6f5fd4e4f21f4e4be0d5af9a4540c61c02ffb7f02eb53b1b5"
+    "sha256": "3a4876800e0979043af6ad7f070b46a63a5609ab61dbb304d2a87c61db646b0d"
   },
   {
     "path": "RELEASE-0.2.1.md",
@@ -149,11 +149,11 @@
   },
   {
     "path": "THIRD-PARTY-NOTICES.md",
-    "sha256": "75490828c72a05cb9ed7d804c9edac42d78ef2bf2464e71f4b715f768a1f2980"
+    "sha256": "521542ed84eb34ecf180e7e27600aa869f1d4f92f7c909a10a641ef191aa17c8"
   },
   {
     "path": "TalkToAi-Code.iss",
-    "sha256": "b07dc190e14e4862980d1241980cef5beffa5deceb449bb303712998fefbff42"
+    "sha256": "653706c402b5fd13d9a7f882c73d03bec1829783d9728553dbe1bc8eded2161d"
   },
   {
     "path": "agent_core.py",
@@ -353,7 +353,7 @@
   },
   {
     "path": "docs/MICROSOFT-STORE-STATUS.md",
-    "sha256": "ddde40c41eaef7de4f3a02c1b1def30d3a99372d5d414c1c6ab23d8d90f58cce"
+    "sha256": "d46bde9a24ddb5ca2d61174ceb4dd5c182a2d84e19b8e07d559923b0784b4c7a"
   },
   {
     "path": "docs/MODEL-COMPARISON-0.6.0.md",
@@ -434,6 +434,10 @@
   {
     "path": "docs/RELEASE-8.5.0.md",
     "sha256": "4dd77788e8233f44c20181886736f0897972cd88477c4071b677a616c6606374"
+  },
+  {
+    "path": "docs/RELEASE-8.6.0.md",
+    "sha256": "0d933a29f790e3ff3816ce776eb9c048deefc6bf22470d99747e5dcd1a1bc2f6"
   },
   {
     "path": "docs/RESEARCH-EXPERIMENTS.md",
@@ -533,7 +537,7 @@
   },
   {
     "path": "release_checks.py",
-    "sha256": "db53e0af0cb55dc38de0d377c0ad63cd8ff20b13285bb1e4a710a2f9f36c3c57"
+    "sha256": "10e830ff6e8fe48a628e86c04a59bf72a565ecb4ab604e24cebe8c24d5fdb3d7"
   },
   {
     "path": "remote_intent.py",
@@ -593,7 +597,7 @@
   },
   {
     "path": "scripts/package-runtime-notices.py",
-    "sha256": "9e5bc4d87db7c29cadb95f001f60332d4d9d87c3c4806ca7c3e928d6af254a04"
+    "sha256": "a758252ba34f112fbbf4440dec9943a71b6dda71c8bb9c191093705aefd4e6cf"
   },
   {
     "path": "search_provider.py",
@@ -613,7 +617,11 @@
   },
   {
     "path": "store/build-msix.ps1",
-    "sha256": "a644931aa941fe345dd3077d0c29191d406928b493df3d30233ffad5dcfd3c09"
+    "sha256": "6c172241eef73209774b5b6bdc428f32da1d60e503bb46111cc4c4bc3ba84305"
+  },
+  {
+    "path": "store/build-payload.ps1",
+    "sha256": "23c645b9013c455c30d43d2438a7628639724dd3cd2da7ce4c4d7aef7e47b21e"
   },
   {
     "path": "studio.py",
@@ -889,7 +897,7 @@
   },
   {
     "path": "updates.py",
-    "sha256": "89a0eac161d28cbedf5c26d66cae33f7aeec1a64546383acf3ce899a9521b7c4"
+    "sha256": "4eef1aefb3728ad25fb206e74d086df7ef25d20c43f962491344a7d7c9522fc5"
   },
   {
     "path": "website/index.html",

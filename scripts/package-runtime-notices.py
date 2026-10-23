@@ -7,7 +7,7 @@ import sys
 import urllib.request
 
 stage = Path(__file__).resolve().parent.parent
-payload = stage / 'dist-studio-v6' / 'TalkToAiCode'
+payload = Path(sys.argv[1]).resolve() if len(sys.argv)>1 else stage / 'dist-studio-v6' / 'TalkToAiCode'
 notices = payload / 'LICENSES'
 notices.mkdir(exist_ok=True)
 for name in ['LICENSE', 'THIRD-PARTY-NOTICES.md']:

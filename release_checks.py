@@ -27,6 +27,12 @@ def smoke(destination):
             result['computer_dependency']='Windows-only PC Pilot; portable browser checks remain available'
         from ethics_policy import verify_release_policy
         result['operating_policy']=verify_release_policy()['status']=='verified'
+        from providers import ProviderProfile, configure_request
+        free_profile=ProviderProfile('Packaged free fixture','https://openrouter.ai/api/v1','openrouter/free',cost_tier='free',free_only=True)
+        free_request=configure_request(free_profile,{'models':['paid/fixture'],'plugins':[{'id':'web'}]}, {})
+        result['free_provider_policy']=(free_request['model']=='openrouter/free'
+            and free_request['provider']['max_price']=={'prompt':0,'completion':0,'request':0,'image':0}
+            and free_request['provider']['require_parameters'] and 'models' not in free_request and 'plugins' not in free_request)
         if os.name=='nt':
             from control_cancel import EscapeCancel
             escape=EscapeCancel()
@@ -126,7 +132,7 @@ def smoke(destination):
             report=json.loads(browser.execute('click','Open report'))
             result['browser_popup']=report['url'].endswith('/report') and 'Packaged report ready' in report['page']
             browser.close();browser=None
-        result['passed']=all(result.get(key,False) for key in ('offline_program','offline_starter','operating_policy','bundled_example','browser_interaction','browser_popup','browser_screenshot','vision_attachment','read_only_chain','remote_intent','named_project_target','batch_read','output_registration','project_playbooks','research_comparison','source_change_evidence','audited_preferences','routing_audit','candidate_controls_imported')) and (os.name!='nt' or (result.get('managed_process',False) and result.get('escape_hook_registration',False)))
+        result['passed']=all(result.get(key,False) for key in ('free_provider_policy','offline_program','offline_starter','operating_policy','bundled_example','browser_interaction','browser_popup','browser_screenshot','vision_attachment','read_only_chain','remote_intent','named_project_target','batch_read','output_registration','project_playbooks','research_comparison','source_change_evidence','audited_preferences','routing_audit','candidate_controls_imported')) and (os.name!='nt' or (result.get('managed_process',False) and result.get('escape_hook_registration',False)))
     except Exception as exc:result.update(passed=False,error=f'{type(exc).__name__}: {exc}')
     finally:
         if browser:browser.close()
