@@ -4,6 +4,8 @@
 
 **Linux/macOS source repair:** use `v8.5.0-portable.1` for keyless local/self-hosted compatible endpoints on systems without a secure desktop keyring. The reviewed Windows 8.5.0 binaries and Microsoft Store package remain separate and unchanged. [Failure, repair and verification record](docs/PORTABLE-8.5.0-FIX.md).
 
+**Latest source update (23 October 2026):** the private API vault now includes **Meta Model API** and a ready-to-use **OpenRouter free router** preset. `openrouter/free` automatically selects an available free model supporting the request. The preset enables **Require free-only routing**: automatic alternatives must be approved OpenRouter free models or your self-hosted endpoints. OpenRouter requests enforce zero prompt, completion, request and image prices; unavailable free capacity stops instead of selecting a paid API. Your own key and provider quota still apply. [Setup, policy and verification](docs/FREE-API-ROUTING.md). These changes are source updates; the Windows/Store downloads above retain their separately reviewed versions.
+
 ### 8.5.0: private API vault and quota-aware routing
 
 The current source adds Groq, Gemini, OpenRouter and Cerebras setup presets with direct links to their own key and limit pages. Fresh installations guide users to their private API vault; saved local/server settings remain available. API keys remain session-only or encrypted in the operating system credential store, separately from conversation and provider metadata.

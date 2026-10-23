@@ -4,7 +4,7 @@ import threading
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QListWidget,
     QListWidgetItem, QComboBox, QLineEdit, QSpinBox, QCheckBox, QPushButton, QWidget, QScrollArea)
-from providers import ProviderProfile, save_profiles, store_api_key, forget_api_key, list_models, vault_status
+from providers import ProviderProfile, save_profiles, store_api_key, forget_api_key, list_models, vault_status, validate_cost_policy
 
 
 class ProviderDialog(QDialog):
@@ -15,10 +15,11 @@ class ProviderDialog(QDialog):
         self.owner=owner;self.profiles_path=profiles_path;self.original=None;self.probing=False
         self.setWindowTitle('Private API vault & models');self.resize(880,min(780,owner.screen().availableGeometry().height()-80))
         layout=QVBoxLayout(self)
-        intro=QLabel('Use local models or connect your own Groq, OpenAI or compatible API directly inside TalkToAi Code. API tasks send their conversation, project context and tool results to the selected provider; that provider’s charges and limits apply. Enable automatic fallback for each profile you allow to receive task content. Only profiles marked free tier or self-hosted are eligible as alternatives; limits and free eligibility come from your account, not the app.')
+        intro=QLabel('Use local models or connect your own Meta, Groq, OpenAI, OpenRouter or compatible API. API tasks send conversation, project context and tool results to the selected provider. Enable fallback only for profiles allowed to receive task content. Free-only routing restricts automatic API choices to OpenRouter free models and your self-hosted endpoints. Other providers’ free account tiers require checking their own billing controls.')
         intro.setWordWrap(True);layout.addWidget(intro)
         links=QLabel('Keys and limits: <a href="https://console.groq.com/docs/rate-limits">Groq</a>  |  <a href="https://ai.google.dev/gemini-api/docs/rate-limits">Gemini</a>  |  <a href="https://openrouter.ai/docs/api-reference/limits">OpenRouter</a>  |  <a href="https://inference-docs.cerebras.ai/support/rate-limits">Cerebras</a>');links.setOpenExternalLinks(True);links.setWordWrap(True);layout.addWidget(links)
-        self.preset=QComboBox();self.preset.addItems(['Choose a provider preset…','OpenAI API','Groq API','Local compatible server (LM Studio)','Custom compatible API','OpenRouter free models','Gemini compatible API','Cerebras API'])
+        meta_link=QLabel('Meta Model API: <a href="https://dev.meta.ai/docs/sdks">setup and compatibility</a>');meta_link.setOpenExternalLinks(True);layout.addWidget(meta_link)
+        self.preset=QComboBox();self.preset.addItems(['Choose a provider preset…','OpenAI API','Groq API','Local compatible server (LM Studio)','Custom compatible API','OpenRouter free models','Gemini compatible API','Cerebras API','Meta Model API'])
         self.preset.currentIndexChanged.connect(self.apply_preset);layout.addWidget(self.preset)
         row=QHBoxLayout();left=QVBoxLayout();left.addWidget(QLabel('Saved profiles'));self.listing=QListWidget();left.addWidget(self.listing);row.addLayout(left,1)
         scroll=QScrollArea();scroll.setWidgetResizable(True);form_widget=QWidget();form=QVBoxLayout(form_widget);scroll.setWidget(form_widget);row.addWidget(scroll,2);layout.addLayout(row,1)
@@ -31,6 +32,7 @@ class ProviderDialog(QDialog):
             form.addWidget(QLabel(title));form.addWidget(widget)
         self.remember=QCheckBox('Remember pasted key in the system credential store');form.addWidget(self.remember)
         self.fallback=QCheckBox('Allow automatic fallback and send task context to other enabled profiles');form.addWidget(self.fallback)
+        self.free_only=QCheckBox('Require free-only routing: OpenRouter free models or my self-hosted endpoints');form.addWidget(self.free_only)
         self.cost_tier=QComboBox();self.cost_tier.addItems(['unknown','free','self_hosted','paid']);form.addWidget(QLabel('My account/model cost tier (verify in provider console)'));form.addWidget(self.cost_tier)
         self.vision=QCheckBox('This selected model accepts screenshots / vision inputs');form.addWidget(self.vision)
         self.priority=QSpinBox();self.priority.setRange(0,1000);self.priority.setValue(100);form.addWidget(QLabel('Fallback order (lower numbers first)'));form.addWidget(self.priority)
@@ -52,7 +54,7 @@ class ProviderDialog(QDialog):
 
     def new_profile(self):
         if self.probing:return
-        self.original=None;self.listing.setCurrentRow(-1);self.label.clear();self.url.clear();self.model.clear();self.env.clear();self.key.clear();self.remember.setChecked(False);self.default_api.setChecked(not bool(self.owner.provider_profiles));self.fallback.setChecked(False);self.cost_tier.setCurrentText("unknown");self.priority.setValue(100);self.vision.setChecked(False)
+        self.original=None;self.listing.setCurrentRow(-1);self.label.clear();self.url.clear();self.model.clear();self.env.clear();self.key.clear();self.remember.setChecked(False);self.default_api.setChecked(not bool(self.owner.provider_profiles));self.fallback.setChecked(False);self.free_only.setChecked(False);self.cost_tier.setCurrentText("unknown");self.priority.setValue(100);self.vision.setChecked(False)
 
     def apply_preset(self,index):
         if index==0 or self.probing:return
@@ -66,11 +68,15 @@ class ProviderDialog(QDialog):
         elif index==3:
             self.label.setText('Local compatible');self.url.setText('http://127.0.0.1:1234/v1');self.cost_tier.setCurrentText('self_hosted');self.status.setText('Start your local compatible server, then fetch models. No cloud API is configured by this preset.')
         elif index==5:
-            self.label.setText('OpenRouter free');self.url.setText('https://openrouter.ai/api/v1');self.env.setText('OPENROUTER_API_KEY');self.cost_tier.setCurrentText('free');self.status.setText('Fetch models and choose an ID ending :free. Free limits depend on your account; enabling fallback is optional.')
+            self.label.setText('OpenRouter free');self.url.setText('https://openrouter.ai/api/v1');self.env.setText('OPENROUTER_API_KEY');self.cost_tier.setCurrentText('free');self.model.setEditText('openrouter/free');self.free_only.setChecked(True)
+            self.status.setText('openrouter/free automatically selects an available free model with the requested capabilities. Fetch models lists only free IDs. Zero-price request ceilings apply; quota exhaustion stops or uses an approved free/self-hosted fallback. Your own OpenRouter key is required; no guaranteed allowance is included.')
         elif index==6:
             self.label.setText('Gemini');self.url.setText('https://generativelanguage.googleapis.com/v1beta/openai');self.env.setText('GEMINI_API_KEY');self.status.setText('Fetch models and verify free-tier eligibility in Google AI Studio. Some models or features require billing.')
         elif index==7:
             self.label.setText('Cerebras');self.url.setText('https://api.cerebras.ai/v1');self.env.setText('CEREBRAS_API_KEY');self.status.setText('Fetch models and verify free-tier quotas in your Cerebras console. Compatible streaming and tools depend on the selected model.')
+        elif index==8:
+            self.label.setText('Meta');self.url.setText('https://api.meta.ai/v1');self.env.setText('MODEL_API_KEY');self.model.setEditText('muse-spark-1.3')
+            self.status.setText('Use your own Meta Model API account/key. This preset uses the documented Chat Completions endpoint; verify model access and billing in Meta’s console. A free allowance is not assumed. Saved profile metadata contains no API key.')
         else:self.status.setText('Enter your endpoint and a model supporting streamed Chat Completions with function tools.')
 
     def load_selected(self,row):
@@ -80,16 +86,17 @@ class ProviderDialog(QDialog):
         self.original=profile;self.label.setText(profile.label);self.url.setText(profile.base_url);self.model.clear();self.model.setEditText(profile.model);self.env.setText(profile.api_key_env);self.key.clear();self.tokens.setValue(profile.max_output_tokens)
         self.remember.setChecked(False);self.default_api.setChecked(self.owner.config.get('preferred_route')=='provider' and self.owner.config.get('active_provider')==profile.label)
         self.fallback.setChecked(profile.fallback_enabled);self.cost_tier.setCurrentText(profile.cost_tier);self.priority.setValue(profile.priority);self.vision.setChecked(profile.supports_vision)
+        self.free_only.setChecked(profile.free_only)
         self.status.setText('Saved profile. '+vault_status(profile)+'. Keys are not displayed.')
 
     def profile(self,listing=False):
-        return ProviderProfile(self.label.text(),self.url.text(),self.model.currentText() or ('__model_listing__' if listing else ''),self.env.text(),max_output_tokens=self.tokens.value(),fallback_enabled=self.fallback.isChecked(),cost_tier=self.cost_tier.currentText(),priority=self.priority.value(),supports_vision=self.vision.isChecked())
+        return ProviderProfile(self.label.text(),self.url.text(),self.model.currentText() or ('__model_listing__' if listing else ''),self.env.text(),max_output_tokens=self.tokens.value(),fallback_enabled=self.fallback.isChecked(),cost_tier=self.cost_tier.currentText(),priority=self.priority.value(),supports_vision=self.vision.isChecked(),free_only=self.free_only.isChecked())
 
     def save_profile(self):
         if self.probing:return
         try:
             profile=self.profile()
-            if profile.base_url=='https://openrouter.ai/api/v1' and profile.cost_tier=='free' and not profile.model.endswith(':free'):raise ValueError('Choose an OpenRouter model ID ending :free, or change its cost tier.')
+            validate_cost_policy(profile)
             if self.key.text():store_api_key(profile,self.key.text(),self.remember.isChecked());self.key.clear()
             old=self.original.label if self.original else None
             profiles=[p for p in self.owner.provider_profiles if p.label not in (old,profile.label)]+[profile]
@@ -137,7 +144,7 @@ class ProviderDialog(QDialog):
         threading.Thread(target=work,daemon=True).start()
 
     def set_form_enabled(self,enabled):
-        for widget in (self.preset,self.listing,self.label,self.url,self.model,self.env,self.key,self.tokens,self.remember,self.default_api,self.fallback,self.cost_tier,self.priority,self.vision):widget.setEnabled(enabled)
+        for widget in (self.preset,self.listing,self.label,self.url,self.model,self.env,self.key,self.tokens,self.remember,self.default_api,self.fallback,self.free_only,self.cost_tier,self.priority,self.vision):widget.setEnabled(enabled)
         for name,button in self.buttons.items():
             if name!='Close':button.setEnabled(enabled)
 

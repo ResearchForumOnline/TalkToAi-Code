@@ -12,12 +12,13 @@ from urllib.parse import urlsplit
 
 
 class ProviderProfile:
-    def __init__(self, label: str, base_url: str, model: str, api_key_env: str = "", kind='compatible', engine='groq', max_output_tokens=2048, fallback_enabled=False, cost_tier="unknown", priority=100, supports_vision=False):
+    def __init__(self, label: str, base_url: str, model: str, api_key_env: str = "", kind='compatible', engine='groq', max_output_tokens=2048, fallback_enabled=False, cost_tier="unknown", priority=100, supports_vision=False, free_only=False):
         if kind != 'compatible':raise ValueError('Unknown provider kind')
         self.kind=kind;self.engine=engine
         self.fallback_enabled = fallback_enabled is True
         if cost_tier not in {"unknown", "free", "self_hosted", "paid"}:raise ValueError("Unknown provider cost tier")
         self.cost_tier=cost_tier
+        self.free_only=free_only is True
         self.supports_vision=supports_vision is True
         self.priority=max(0,min(1000,int(priority)))
         self.label = str(label or "Provider").strip()[:80]
@@ -39,6 +40,10 @@ class ProviderProfile:
             raise ValueError('Use https://api.openai.com/v1 for the direct OpenAI API.')
         if parsed.hostname=='api.groq.com' and self.base_url!='https://api.groq.com/openai/v1':
             raise ValueError('Use https://api.groq.com/openai/v1 for the direct Groq API.')
+        if parsed.hostname=='api.meta.ai' and self.base_url!='https://api.meta.ai/v1':
+            raise ValueError('Use https://api.meta.ai/v1 for the direct Meta Model API.')
+        if parsed.hostname=='openrouter.ai' and self.base_url!='https://openrouter.ai/api/v1':
+            raise ValueError('Use https://openrouter.ai/api/v1 for the OpenRouter API.')
 
     @property
     def is_openai(self):return self.kind=='compatible' and self.base_url=='https://api.openai.com/v1'
@@ -46,8 +51,20 @@ class ProviderProfile:
     @property
     def is_groq(self):return self.kind=='compatible' and self.base_url=='https://api.groq.com/openai/v1'
 
+    @property
+    def is_openrouter(self):return self.base_url=='https://openrouter.ai/api/v1'
+
+    @property
+    def is_meta(self):return self.base_url=='https://api.meta.ai/v1'
+
+    @property
+    def zero_price_route(self):
+        # Other providers' free account labels cannot enforce request pricing.
+        known_cloud={'api.openai.com','api.groq.com','openrouter.ai','api.meta.ai','generativelanguage.googleapis.com','api.cerebras.ai'}
+        return (self.is_openrouter and self.cost_tier=='free' and is_free_model(self.model)) or (self.cost_tier=='self_hosted' and urlsplit(self.base_url).hostname not in known_cloud)
+
     def as_dict(self):
-        return {"label": self.label, "base_url": self.base_url, "model": self.model, "api_key_env": self.api_key_env, 'kind':self.kind,'engine':self.engine,'max_output_tokens':self.max_output_tokens,'fallback_enabled':self.fallback_enabled,'cost_tier':self.cost_tier,'priority':self.priority,'supports_vision':self.supports_vision}
+        return {"label": self.label, "base_url": self.base_url, "model": self.model, "api_key_env": self.api_key_env, 'kind':self.kind,'engine':self.engine,'max_output_tokens':self.max_output_tokens,'fallback_enabled':self.fallback_enabled,'cost_tier':self.cost_tier,'priority':self.priority,'supports_vision':self.supports_vision,'free_only':self.free_only}
 
 
 def load_profiles(path: Path):
@@ -60,7 +77,7 @@ def load_profiles(path: Path):
     for x in data:
         if not isinstance(x,dict) or x.get('kind','compatible')!='compatible':continue
         try:
-            profiles.append(ProviderProfile(x.get("label", ""), x["base_url"], x["model"], x.get("api_key_env", ""),x.get('kind','compatible'),x.get('engine','groq'),x.get('max_output_tokens',2048),x.get('fallback_enabled',False),x.get('cost_tier','unknown'),x.get('priority',100),x.get('supports_vision',False)))
+            profiles.append(ProviderProfile(x.get("label", ""), x["base_url"], x["model"], x.get("api_key_env", ""),x.get('kind','compatible'),x.get('engine','groq'),x.get('max_output_tokens',2048),x.get('fallback_enabled',False),x.get('cost_tier','unknown'),x.get('priority',100),x.get('supports_vision',False),x.get('free_only',False)))
         except (ValueError,KeyError,TypeError):continue
     return profiles
 
@@ -145,6 +162,10 @@ def api_key(profile):
         raise ValueError('OpenAI API key is missing. Enter one in API providers or set OPENAI_API_KEY, then restart the app.')
     if profile.is_groq and not key:
         raise ValueError('Groq API key is missing. Enter one in API providers or set GROQ_API_KEY, then restart the app.')
+    if profile.is_meta and not key:
+        raise ValueError('Meta Model API key is missing. Enter one in API providers or set MODEL_API_KEY, then restart the app.')
+    if profile.is_openrouter and not key:
+        raise ValueError('OpenRouter API key is missing. Enter one in API providers or set OPENROUTER_API_KEY, then restart the app.')
     if key and urlsplit(profile.base_url).scheme!='https' and urlsplit(profile.base_url).hostname not in ('localhost','127.0.0.1','::1'):
         raise ValueError('API keys require HTTPS for remote providers.')
     return key
@@ -153,6 +174,18 @@ def api_key(profile):
 def http_error(status):
     advice={400:'Check the model and its support for Chat Completions and function tools.',401:'Check your API key.',402:'Provider quota or billing limit reached.',403:'Check account/model access.',404:'Check the endpoint and model name.',429:'Check provider quota, billing or rate limits.'}
     return f'Provider HTTP {status}. '+advice.get(status,'Check provider availability and settings.')
+
+
+def is_free_model(model):
+    return model=='openrouter/free' or (model.endswith(':free') and not any(c.isspace() for c in model))
+
+
+def validate_cost_policy(profile):
+    """Enforce policy on the transport path, including profiles edited outside the UI."""
+    if profile.is_openrouter and profile.cost_tier=='free' and not is_free_model(profile.model):
+        raise ValueError('Choose openrouter/free or an OpenRouter model ID ending :free for a free profile.')
+    if profile.free_only and not profile.zero_price_route:
+        raise ValueError('Free-only routing requires an OpenRouter free model or your self-hosted endpoint. Other account tiers cannot enforce zero API pricing.')
 
 
 def list_models(profile):
@@ -167,12 +200,23 @@ def list_models(profile):
             raw=response.read(2_000_001)
         if len(raw)>2_000_000:raise ValueError('Model listing exceeds the response limit.')
         data=json.loads(raw)
-        return sorted({m['id'] for m in data.get('data',[]) if isinstance(m,dict) and isinstance(m.get('id'),str)})
+        models={m['id'] for m in data.get('data',[]) if isinstance(m,dict) and isinstance(m.get('id'),str)}
+        if profile.is_openrouter and (profile.cost_tier=='free' or profile.free_only):
+            models={model for model in models if is_free_model(model)}
+            models.add('openrouter/free')
+        return sorted(models)
     except urllib.error.HTTPError as exc:raise RuntimeError(http_error(exc.code)) from None
 
 
 def configure_request(profile, request, options):
     """Keep compatible endpoints unchanged; use current first-party parameters."""
+    validate_cost_policy(profile)
+    if profile.is_openrouter and profile.cost_tier=='free':
+        # Do not allow caller-supplied model fallbacks or paid plugins to widen
+        # a free request. OpenRouter enforces these endpoint price ceilings.
+        request.pop('models',None);request.pop('plugins',None);request.pop('route',None)
+        request['model']=profile.model
+        request['provider']={'max_price':{'prompt':0,'completion':0,'request':0,'image':0},'require_parameters':True}
     if profile.is_openai:
         request['max_completion_tokens']=profile.max_output_tokens
         request['store']=False

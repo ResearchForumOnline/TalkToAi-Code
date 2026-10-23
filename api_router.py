@@ -4,7 +4,7 @@ import datetime
 import email.utils
 import threading
 import time
-from providers import key_identity, http_error, key_ready
+from providers import key_identity, http_error, key_ready, validate_cost_policy, is_free_model
 
 class ProviderHTTPError(RuntimeError):
     def __init__(self, status, retry_after=None):
@@ -37,11 +37,12 @@ class ApiRouter:
 
     def stream(self, primary, profiles, payload, cancel, stream_fn, notify=None):
         """Selected primary always runs first unless cooling. Alternatives require consent."""
+        validate_cost_policy(primary)
         requires_vision=any(m.get('images') or (isinstance(m.get('content'),list) and any(isinstance(part,dict) and part.get('type')=='image_url' for part in m['content'])) for m in payload.get('messages',[]) if isinstance(m,dict))
         if requires_vision and not primary.supports_vision:raise ValueError('Enable screenshot/vision support for the selected API model in the vault.')
         candidates=[primary]
         if primary.fallback_enabled:
-            candidates += sorted((p for p in profiles if profile_id(p)!=profile_id(primary) and p.fallback_enabled and p.cost_tier in {'free','self_hosted'} and (not requires_vision or p.supports_vision) and (p.base_url!='https://openrouter.ai/api/v1' or p.cost_tier!='free' or p.model.endswith(':free'))),key=lambda p:p.priority)
+            candidates += sorted((p for p in profiles if profile_id(p)!=profile_id(primary) and p.fallback_enabled and p.cost_tier in {'free','self_hosted'} and (not (primary.free_only or p.free_only) or p.zero_price_route) and (not requires_vision or p.supports_vision) and (not p.is_openrouter or p.cost_tier!='free' or is_free_model(p.model))),key=lambda p:p.priority)
         seen=set();last=None
         for profile in candidates:
             identity=profile_id(profile)
@@ -49,6 +50,7 @@ class ApiRouter:
             seen.add(identity)
             if cancel.is_set():raise InterruptedError('Task stopped.')
             if identity!=profile_id(primary) and not key_ready(profile):continue
+            validate_cost_policy(profile)
             remaining=self.remaining(profile)
             if remaining:
                 last=RuntimeError('Configured API is cooling down for '+str(int(remaining)+1)+' seconds.')

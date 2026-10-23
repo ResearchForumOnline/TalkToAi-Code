@@ -667,6 +667,37 @@ class WorkspaceUITests(unittest.TestCase):
             dialog.use_profile();self.assertEqual(w.route.currentIndex(),4)
         finally:dialog.close();dialog.deleteLater()
 
+    def test_free_router_preset_saves_strict_policy_and_defaults_to_dynamic_free_model(self):
+        from provider_dialog import ProviderDialog
+        from providers import load_profiles
+        path=self.root/'provider-fixture.json'
+        dialog=ProviderDialog(self.window,path)
+        try:
+            dialog.preset.setCurrentIndex(5)
+            self.assertEqual(dialog.model.currentText(),'openrouter/free')
+            self.assertTrue(dialog.free_only.isChecked())
+            dialog.fallback.setChecked(True);dialog.save_profile()
+            saved=load_profiles(path)[0]
+            self.assertEqual(saved.model,'openrouter/free');self.assertTrue(saved.free_only)
+            self.assertTrue(saved.fallback_enabled)
+            self.assertEqual(self.window.route.currentIndex(),0)
+            dialog.new_profile();self.assertFalse(dialog.free_only.isChecked())
+            dialog.listing.setCurrentRow(0);self.assertTrue(dialog.free_only.isChecked())
+        finally:dialog.close();dialog.deleteLater()
+
+    def test_meta_preset_has_official_endpoint_and_no_assumed_free_tier(self):
+        from provider_dialog import ProviderDialog
+        dialog=ProviderDialog(self.window,self.root/'provider-fixture.json')
+        try:
+            dialog.preset.setCurrentIndex(8)
+            self.assertEqual(dialog.url.text(),'https://api.meta.ai/v1')
+            self.assertEqual(dialog.env.text(),'MODEL_API_KEY')
+            self.assertEqual(dialog.model.currentText(),'muse-spark-1.3')
+            self.assertEqual(dialog.cost_tier.currentText(),'unknown')
+            self.assertFalse(dialog.free_only.isChecked());self.assertFalse(dialog.fallback.isChecked())
+            self.assertEqual(dialog.key.text(),'')
+        finally:dialog.close();dialog.deleteLater()
+
     def test_api_token_usage_is_reported_without_claiming_billing(self):
         w=self.window
         w.handle_event('metrics',{'api_usage':{'prompt_tokens':10,'completion_tokens':5,'total_tokens':15}})

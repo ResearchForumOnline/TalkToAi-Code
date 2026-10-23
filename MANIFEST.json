@@ -33,7 +33,7 @@
   },
   {
     "path": "README.md",
-    "sha256": "2e3a25d3e21035f3fa0919221853bc3311e8ac00c5f9cfd4cbcdd9b2c6c256e5"
+    "sha256": "fd514b05cbf636d6f5fd4e4f21f4e4be0d5af9a4540c61c02ffb7f02eb53b1b5"
   },
   {
     "path": "RELEASE-0.2.1.md",
@@ -169,7 +169,7 @@
   },
   {
     "path": "api_router.py",
-    "sha256": "a23a2b4577927649386cb393bd193b8ddd23550bbc10aaa2ac4668afa46188bf"
+    "sha256": "133dfa11c067bcd6e982dbf300696a59c2d11c1738519829a858c39bb66d911e"
   },
   {
     "path": "app.py",
@@ -334,6 +334,10 @@
   {
     "path": "docs/DEVSPACE-IDEAS-REVIEW.md",
     "sha256": "39815a502204db63900345e451ec9414f8d6c0ab259d463eed94c7de81c3965e"
+  },
+  {
+    "path": "docs/FREE-API-ROUTING.md",
+    "sha256": "13fa927ee1f5716a8d80368a7eff71086a8a0cb68ead5f63d2bcfd7714e43659"
   },
   {
     "path": "docs/GOAL-ACCEPTANCE-0.7.0.md",
@@ -517,11 +521,11 @@
   },
   {
     "path": "provider_dialog.py",
-    "sha256": "b25f5cbe21028460f53c3039532937b2c961cad8c03404b50594455d83fe293b"
+    "sha256": "03b8479a9ed854770205c2ee7e5424db3f412fc494c7b19af46da5d32e4ebfe7"
   },
   {
     "path": "providers.py",
-    "sha256": "9feb54b6255d76e555052afa544755e2f7f58eef42c8897a78e3125709daf96e"
+    "sha256": "6b9ad4f3b84eb62c0cf6aad65701592eb3af71fb33b3362d13be18b0d8782d59"
   },
   {
     "path": "reasoning_stream.py",
@@ -704,6 +708,10 @@
     "sha256": "602c7d0db92e20da857c447da7a8b6c466039cf8d6af850732e103fa8d251d4b"
   },
   {
+    "path": "test_free_provider_policy.py",
+    "sha256": "d491f663817126172125e126b5bd2dc75a757bb9b6297f07fad14006a5a0a358"
+  },
+  {
     "path": "test_inventory_providers.py",
     "sha256": "e6edfa004b07f86b2bc2c9a8c1a60d579faa2d2449257c13e392402002522187"
   },
@@ -857,7 +865,7 @@
   },
   {
     "path": "test_workspace_ui.py",
-    "sha256": "457e96979e7f38350f49d3ecbaedae9457d96d603cb5e72ac746677f953cb7ea"
+    "sha256": "015f77dd76b344d13ad24eb86d84a5a54aa8e4e72c67bfd9501bb6b4c55a0df4"
   },
   {
     "path": "tool_chains.py",
