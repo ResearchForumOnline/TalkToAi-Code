@@ -1,0 +1,197 @@
+{
+  "overall": "PASS",
+  "package_version": "1.5.1.0",
+  "partial_run": "FALSE",
+  "tests": [
+    {
+      "name": "Install signed driver and executable files",
+      "optional": "TRUE",
+      "result": "PASS"
+    },
+    {
+      "name": "User account control run level",
+      "optional": "TRUE",
+      "result": "PASS"
+    },
+    {
+      "name": "Application count",
+      "optional": "TRUE",
+      "result": "PASS"
+    },
+    {
+      "name": "App manifest",
+      "optional": "FALSE",
+      "result": "PASS"
+    },
+    {
+      "name": "File association verbs",
+      "optional": "TRUE",
+      "result": "PASS"
+    },
+    {
+      "name": "Registry checks",
+      "optional": "TRUE",
+      "result": "PASS"
+    },
+    {
+      "name": "Enterprise Features",
+      "optional": "FALSE",
+      "result": "PASS"
+    },
+    {
+      "name": "Resource Packages",
+      "optional": "FALSE",
+      "result": "PASS"
+    },
+    {
+      "name": "Banned file analyzer",
+      "optional": "FALSE",
+      "result": "PASS"
+    },
+    {
+      "name": "Private code signing",
+      "optional": "FALSE",
+      "result": "PASS"
+    },
+    {
+      "name": "App resources",
+      "optional": "TRUE",
+      "result": "PASS"
+    },
+    {
+      "name": "Branding",
+      "optional": "FALSE",
+      "result": "PASS"
+    },
+    {
+      "name": "Debug configuration",
+      "optional": "TRUE",
+      "result": "PASS"
+    },
+    {
+      "name": "Special use capabilities",
+      "optional": "FALSE",
+      "result": "PASS"
+    },
+    {
+      "name": "ExclusiveTo attribute",
+      "optional": "FALSE",
+      "result": "PASS"
+    },
+    {
+      "name": "Type location",
+      "optional": "FALSE",
+      "result": "PASS"
+    },
+    {
+      "name": "Type name case-sensitivity",
+      "optional": "FALSE",
+      "result": "PASS"
+    },
+    {
+      "name": "Type name correctness",
+      "optional": "FALSE",
+      "result": "PASS"
+    },
+    {
+      "name": "General metadata correctness",
+      "optional": "TRUE",
+      "result": "PASS"
+    },
+    {
+      "name": "Properties",
+      "optional": "FALSE",
+      "result": "PASS"
+    },
+    {
+      "name": "Archive files usage",
+      "optional": "TRUE",
+      "result": "PASS"
+    },
+    {
+      "name": "Blocked executables",
+      "optional": "TRUE",
+      "result": "FAIL",
+      "messages": [
+        "File TalkToAiCode.exe contains a reference to a \"Launch Process\" related API kernel32.dll!CreateProcessW",
+        "File _internal\\PySide6\\Qt6Core.dll contains a reference to a \"Launch Process\" related API kernel32.dll!CreateProcessW",
+        "File _internal\\PySide6\\Qt6Core.dll contains a reference to a \"Launch Process\" related API shell32.dll!ShellExecuteExW",
+        "File _internal\\win32\\win32process.pyd contains a reference to a \"Launch Process\" related API kernel32.dll!CreateProcessW",
+        "File _internal\\playwright\\driver\\node.exe contains a reference to a \"Launch Process\" related API kernel32.dll!CreateProcessW",
+        "File _internal\\python312.dll contains a reference to a \"Launch Process\" related API kernel32.dll!CreateProcessW",
+        "File _internal\\python312.dll contains a reference to a \"Launch Process\" related API shell32.dll!ShellExecuteW",
+        "File _internal\\PySide6\\plugins\\platforms\\qwindows.dll contains a reference to a \"Launch Process\" related API kernel32.dll!CreateProcessW",
+        "File _internal\\PySide6\\plugins\\platforms\\qwindows.dll contains a reference to a \"Launch Process\" related API shell32.dll!ShellExecuteW",
+        "File _internal\\PySide6\\plugins\\platforms\\qdirect2d.dll contains a reference to a \"Launch Process\" related API kernel32.dll!CreateProcessW",
+        "File _internal\\PySide6\\plugins\\platforms\\qdirect2d.dll contains a reference to a \"Launch Process\" related API shell32.dll!ShellExecuteW",
+        "File _internal\\PySide6\\opengl32sw.dll contains a reference to a \"Launch Process\" related API kernel32.dll!CreateProcessW",
+        "File _internal\\win32\\win32api.pyd contains a reference to a \"Launch Process\" related API kernel32.dll!WinExec",
+        "File _internal\\win32\\win32api.pyd contains a reference to a \"Launch Process\" related API shell32.dll!ShellExecuteW",
+        "File TalkToAiCode.exe contains a blocked executable reference to \"REg\".",
+        "File TalkToAiCode.exe contains a blocked executable reference to \"cdb\".",
+        "File TalkToAiCode.exe contains a blocked executable reference to \"Csi\".",
+        "File TalkToAiCode.exe contains a blocked executable reference to \"CMd\".",
+        "File utilsBundle.js.LICENSE contains a blocked executable reference to \"powershell\".",
+        "File libcrypto-3-x64.dll contains a blocked executable reference to \"cmd\".",
+        "File libcrypto-3.dll contains a blocked executable reference to \"cmd\".",
+        "File libssl-3-x64.dll contains a blocked executable reference to \"cmd\".",
+        "File libssl-3.dll contains a blocked executable reference to \"cmd\".",
+        "File python312.dll contains a blocked executable reference to \"cSI\".",
+        "File python312.dll contains a blocked executable reference to \"cmd\".",
+        "File ucrtbase.dll contains a blocked executable reference to \"cmd.exe\".",
+        "File unicodedata.pyd contains a blocked executable reference to \"CSI\".",
+        "File unicodedata.pyd contains a blocked executable reference to \"BASH\".",
+        "File _socket.pyd contains a blocked executable reference to \"cmd\".",
+        "File _rust.pyd contains a blocked executable reference to \"cDb\".",
+        "File _rust.pyd contains a blocked executable reference to \"cmd\".",
+        "File node.exe contains a blocked executable reference to \"CDb\".",
+        "File node.exe contains a blocked executable reference to \"CSI\".",
+        "File node.exe contains a blocked executable reference to \"Reg\".",
+        "File node.exe contains a blocked executable reference to \"cmd\".",
+        "File node.exe contains a blocked executable reference to \"cmd.exe\".",
+        "File node.exe contains a blocked executable reference to \"bash\".",
+        "File install_webkit_wsl.ps1 contains a blocked executable reference to \"bash\".",
+        "File reinstall_chrome_beta_linux.sh contains a blocked executable reference to \"bash\".",
+        "File reinstall_chrome_beta_mac.sh contains a blocked executable reference to \"bash\".",
+        "File reinstall_chrome_stable_linux.sh contains a blocked executable reference to \"bash\".",
+        "File reinstall_chrome_stable_mac.sh contains a blocked executable reference to \"bash\".",
+        "File reinstall_msedge_beta_linux.sh contains a blocked executable reference to \"bash\".",
+        "File reinstall_msedge_beta_mac.sh contains a blocked executable reference to \"bash\".",
+        "File reinstall_msedge_dev_linux.sh contains a blocked executable reference to \"bash\".",
+        "File reinstall_msedge_dev_mac.sh contains a blocked executable reference to \"bash\".",
+        "File reinstall_msedge_stable_linux.sh contains a blocked executable reference to \"bash\".",
+        "File reinstall_msedge_stable_mac.sh contains a blocked executable reference to \"bash\".",
+        "File SKILL.md contains a blocked executable reference to \"Bash\".",
+        "File SKILL.md contains a blocked executable reference to \"PowerShell\".",
+        "File session-management.md contains a blocked executable reference to \"bash\".",
+        "File opengl32sw.dll contains a blocked executable reference to \"CSI\".",
+        "File opengl32sw.dll contains a blocked executable reference to \"Reg\".",
+        "File Qt6Core.dll contains a blocked executable reference to \"dnX\".",
+        "File Qt6Gui.dll contains a blocked executable reference to \"CdB\".",
+        "File Qt6Gui.dll contains a blocked executable reference to \"reg\".",
+        "File Qt6Gui.dll contains a blocked executable reference to \"CMD\".",
+        "File Qt6Gui.dll contains a blocked executable reference to \"CSI\".",
+        "File Qt6Pdf.dll contains a blocked executable reference to \"CDB\".",
+        "File Qt6Pdf.dll contains a blocked executable reference to \"Reg\".",
+        "File Qt6Qml.dll contains a blocked executable reference to \"CMD\".",
+        "File Qt6Quick.dll contains a blocked executable reference to \"cSI\".",
+        "File Qt6Quick.dll contains a blocked executable reference to \"cMD\"."
+      ]
+    },
+    {
+      "name": "Platform appropriate files",
+      "optional": "TRUE",
+      "result": "PASS"
+    },
+    {
+      "name": "DPIAwarenessValidation",
+      "optional": "FALSE",
+      "result": "PASS"
+    }
+  ],
+  "tool": "Windows App Certification Kit 10.0.28000.2270",
+  "completed_local": "2026-10-23 15:45:32 Europe/London",
+  "package_sha256": "9fc5fecac3349ac4fc31d64df7f4c7d48ccefc294c935b856ce324d4c57c54e5",
+  "source_commit": "9db901f578e85fc06c963edd1c7f4b31b76048e2",
+  "report_scope": "Full local package validation; not Microsoft certification or proof of a Store-signed upgrade."
+}

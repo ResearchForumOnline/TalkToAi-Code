@@ -19,4 +19,14 @@ Microsoft documents [manifest-based process DPI awareness](https://learn.microso
 
 The payload and MSIX scripts refuse existing targets. The newer package version identifies changed bytes separately from the uploaded 1.5.0.0 candidate.
 
-The focused provider, UI, attachment, update and release suite passed **118 tests** after this repair. Fresh packaged-runtime, embedded-manifest and WACK results are recorded when the repaired candidate is verified. The prior optional static blocked-executable finding remains disclosed; the app intentionally exposes user-requested process/command tools. Neither a build nor a WACK run establishes Microsoft certification, public availability or a clean Store-signed upgrade.
+## Verified candidate
+
+The focused provider, UI, attachment, update and release suite passed **118 tests** after this repair. The freshly built executable embeds the reviewed manifest and its runtime self-test exited 0 with all checks passing, including the actual Windows Per-Monitor V2 context, browser interaction/popup/screenshot, screenshot attachment, managed process, Escape hook, offline tools and strict free-provider policy. All **55 frozen application modules** match the reviewed source after source-filename normalization.
+
+MakeAppx validation, packaging and unpacking passed. The candidate contains 490 files and no private configuration, API vault, conversations or user projects. Package: `TalkToAi-Code-1.5.1.0-x64.msix`, **106,215,560 bytes**, SHA-256 `9fc5fecac3349ac4fc31d64df7f4c7d48ccefc294c935b856ce324d4c57c54e5`. Its source commit is `9db901f578e85fc06c963edd1c7f4b31b76048e2`. The existing Store identity remains `talktoai.TalkToAiCode-AICodingStudio`, x64, publisher `CN=9B704446-6F62-4D52-954E-775436315422`.
+
+A full Windows App Certification Kit run against this exact package finished on 23 October 2026 with **overall PASS**: **23 tests PASS**, one optional **Blocked executables FAIL**, and no partial run. **Every mandatory test passed, including DPIAwarenessValidation.** This confirms the earlier mandatory DPI warning is repaired. The [sanitized WACK result](WACK-8.6.1.json) records every test and the remaining optional findings without raw host logs.
+
+The optional static check reports process-launch APIs in the executable and bundled Python, Qt, Playwright and Windows bindings, plus blocked-name strings in dependencies and documentation. The app intentionally exposes user-requested process/command tools, but this fact alone does not independently resolve the optional finding. It remains disclosed for reviewer assessment.
+
+The privacy source includes the 8.6 Meta/OpenRouter host and retention supplement; this source change does not establish a live-site deployment. This document establishes a reviewed package candidate and completed local validation. Neither a build nor a WACK run establishes Microsoft certification, public availability or a clean Store-signed upgrade.

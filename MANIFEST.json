@@ -441,7 +441,7 @@
   },
   {
     "path": "docs/RELEASE-8.6.1.md",
-    "sha256": "7cd2ac146c34bfb38f9025a5f56fa90ae7bfe3cc070434f845ff94dbf7362a33"
+    "sha256": "5c8bff601f553a7015b91f10d875cd7157266acc72fe00142bfca637bb5d3840"
   },
   {
     "path": "docs/RESEARCH-EXPERIMENTS.md",
@@ -454,6 +454,10 @@
   {
     "path": "docs/WACK-8.6.0.json",
     "sha256": "1df88690efa969be0e2be31be6f4b3596aca64f4cd67b5b6b2aaf72b4d771e97"
+  },
+  {
+    "path": "docs/WACK-8.6.1.json",
+    "sha256": "d6411512a6ec5eb4997b1c419ac7a3a065db0c83e7d06d6f2086b6980f71d86a"
   },
   {
     "path": "engine_discovery.py",
