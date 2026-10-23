@@ -1,0 +1,132 @@
+{
+  "overall": "WARNING",
+  "package_version": "1.5.0.0",
+  "partial_run": "FALSE",
+  "tests": [
+    {
+      "name": "Install signed driver and executable files",
+      "optional": "TRUE",
+      "result": "PASS"
+    },
+    {
+      "name": "User account control run level",
+      "optional": "TRUE",
+      "result": "PASS"
+    },
+    {
+      "name": "Application count",
+      "optional": "TRUE",
+      "result": "PASS"
+    },
+    {
+      "name": "App manifest",
+      "optional": "FALSE",
+      "result": "PASS"
+    },
+    {
+      "name": "File association verbs",
+      "optional": "TRUE",
+      "result": "PASS"
+    },
+    {
+      "name": "Registry checks",
+      "optional": "TRUE",
+      "result": "PASS"
+    },
+    {
+      "name": "Enterprise Features",
+      "optional": "FALSE",
+      "result": "PASS"
+    },
+    {
+      "name": "Resource Packages",
+      "optional": "FALSE",
+      "result": "PASS"
+    },
+    {
+      "name": "Banned file analyzer",
+      "optional": "FALSE",
+      "result": "PASS"
+    },
+    {
+      "name": "Private code signing",
+      "optional": "FALSE",
+      "result": "PASS"
+    },
+    {
+      "name": "App resources",
+      "optional": "TRUE",
+      "result": "PASS"
+    },
+    {
+      "name": "Branding",
+      "optional": "FALSE",
+      "result": "PASS"
+    },
+    {
+      "name": "Debug configuration",
+      "optional": "TRUE",
+      "result": "PASS"
+    },
+    {
+      "name": "Special use capabilities",
+      "optional": "FALSE",
+      "result": "PASS"
+    },
+    {
+      "name": "ExclusiveTo attribute",
+      "optional": "FALSE",
+      "result": "PASS"
+    },
+    {
+      "name": "Type location",
+      "optional": "FALSE",
+      "result": "PASS"
+    },
+    {
+      "name": "Type name case-sensitivity",
+      "optional": "FALSE",
+      "result": "PASS"
+    },
+    {
+      "name": "Type name correctness",
+      "optional": "FALSE",
+      "result": "PASS"
+    },
+    {
+      "name": "General metadata correctness",
+      "optional": "TRUE",
+      "result": "PASS"
+    },
+    {
+      "name": "Properties",
+      "optional": "FALSE",
+      "result": "PASS"
+    },
+    {
+      "name": "Archive files usage",
+      "optional": "TRUE",
+      "result": "PASS"
+    },
+    {
+      "name": "Blocked executables",
+      "optional": "TRUE",
+      "result": "FAIL"
+    },
+    {
+      "name": "Platform appropriate files",
+      "optional": "TRUE",
+      "result": "PASS"
+    },
+    {
+      "name": "DPIAwarenessValidation",
+      "optional": "FALSE",
+      "result": "WARNING"
+    }
+  ],
+  "counts": {
+    "PASS": 22,
+    "FAIL": 1,
+    "WARNING": 1
+  }
+}

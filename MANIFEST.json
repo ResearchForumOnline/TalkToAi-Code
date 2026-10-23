@@ -437,7 +437,7 @@
   },
   {
     "path": "docs/RELEASE-8.6.0.md",
-    "sha256": "0d933a29f790e3ff3816ce776eb9c048deefc6bf22470d99747e5dcd1a1bc2f6"
+    "sha256": "898f50eb289babbe7d0a8db3e3aa8273e934f4617a875f212656db764a1e9dce"
   },
   {
     "path": "docs/RESEARCH-EXPERIMENTS.md",
@@ -446,6 +446,10 @@
   {
     "path": "docs/ROUTING-EVALUATION.md",
     "sha256": "f83c1686d5033e39948fa0a7316f5e98f0275bec3d6bf2abdfecf94d159b4e5e"
+  },
+  {
+    "path": "docs/WACK-8.6.0.json",
+    "sha256": "1df88690efa969be0e2be31be6f4b3596aca64f4cd67b5b6b2aaf72b4d771e97"
   },
   {
     "path": "engine_discovery.py",
@@ -905,7 +909,7 @@
   },
   {
     "path": "website/privacy/index.html",
-    "sha256": "2954f8e1acf491239512530d879048a57060dc69413c640118c6c582d072e707"
+    "sha256": "1fcf8dcc10485290b37d7cdd649c215dc4f9e56160aaf407d4a18b8cdb017a13"
   },
   {
     "path": "website/support/index.html",
