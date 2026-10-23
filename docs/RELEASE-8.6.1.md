@@ -30,3 +30,11 @@ A full Windows App Certification Kit run against this exact package finished on 
 The optional static check reports process-launch APIs in the executable and bundled Python, Qt, Playwright and Windows bindings, plus blocked-name strings in dependencies and documentation. The app intentionally exposes user-requested process/command tools, but this fact alone does not independently resolve the optional finding. It remains disclosed for reviewer assessment.
 
 The privacy source includes the 8.6 Meta/OpenRouter host and retention supplement; this source change does not establish a live-site deployment. This document establishes a reviewed package candidate and completed local validation. Neither a build nor a WACK run establishes Microsoft certification, public availability or a clean Store-signed upgrade.
+
+## Submitted for certification on 23 October 2026
+
+Partner Center validated and saved the exact 1.5.1.0 package above as the replacement candidate in **Submission 3**, then accepted the final submission. The observed overview showed **Update in certification**, **Submission complete**, and **Pre-processing in progress**; certification and publishing had not started. Submission ID: `1152921505702214816`.
+
+The publisher selected publication as soon as certification passes, replacing this product's previous manual publication hold. The portal explicitly confirmed that the product will start publishing after passing certification. The prior Submission 2 remained the recorded live Store presence. This records an accepted update submission, without asserting certification, new public availability or a Store-signed installed upgrade.
+
+The English (US) description, feature list and 8.6.1 release notes were saved. Reviewer testing information was reloaded and checked against the actual version, package hash, full WACK pass and remaining optional static finding. The [sanitized submission receipt](STORE-SUBMISSION-8.6.1.json) records the package and observed workflow status; account screenshots remain private.

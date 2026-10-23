@@ -441,7 +441,7 @@
   },
   {
     "path": "docs/RELEASE-8.6.1.md",
-    "sha256": "5c8bff601f553a7015b91f10d875cd7157266acc72fe00142bfca637bb5d3840"
+    "sha256": "077dbf3edddeb1121005bf4523ad9dcd49f2eaf0a3b110f2bc6879963139ed3b"
   },
   {
     "path": "docs/RESEARCH-EXPERIMENTS.md",
@@ -450,6 +450,10 @@
   {
     "path": "docs/ROUTING-EVALUATION.md",
     "sha256": "f83c1686d5033e39948fa0a7316f5e98f0275bec3d6bf2abdfecf94d159b4e5e"
+  },
+  {
+    "path": "docs/STORE-SUBMISSION-8.6.1.json",
+    "sha256": "f6ae9428fff71dc4faee4ee48b62c67795932000b1212376444fb35940687967"
   },
   {
     "path": "docs/WACK-8.6.0.json",
