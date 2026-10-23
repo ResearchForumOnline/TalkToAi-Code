@@ -441,7 +441,7 @@
   },
   {
     "path": "docs/RELEASE-8.6.1.md",
-    "sha256": "077dbf3edddeb1121005bf4523ad9dcd49f2eaf0a3b110f2bc6879963139ed3b"
+    "sha256": "d889b0195700e73fb166e35201dbebe73a78b07aef099f5b95762cf302e3fbac"
   },
   {
     "path": "docs/RESEARCH-EXPERIMENTS.md",
@@ -453,7 +453,7 @@
   },
   {
     "path": "docs/STORE-SUBMISSION-8.6.1.json",
-    "sha256": "f6ae9428fff71dc4faee4ee48b62c67795932000b1212376444fb35940687967"
+    "sha256": "bea2108da56ea92d3611b052980ab2798b2dc2d4bb6bbe38a23a233be5aaf300"
   },
   {
     "path": "docs/WACK-8.6.0.json",

@@ -21,7 +21,7 @@
   "publication_choice": "As soon as certification passes",
   "publication_choice_change": "Publisher changed the previous manual hold to automatic publication after passing certification",
   "prior_live_store_submission": 2,
-  "english_us_listing": "Description, features and 8.6.1 release notes saved",
+  "english_us_listing": "Description, features and 8.6.1 release notes saved; overview Store listings status Updated",
   "reviewer_notes": "Reloaded and verified against app version, package hash, full WACK PASS and optional static failure",
   "wack": {
     "overall": "PASS",
@@ -29,12 +29,14 @@
     "passed": 23,
     "all_mandatory_passed": true,
     "DPIAwarenessValidation": "PASS",
-    "optional_failed": ["Blocked executables"],
+    "optional_failed": [
+      "Blocked executables"
+    ],
     "partial_run": false,
     "summary": "WACK-8.6.1.json"
   },
   "certification_passed": "Not established",
   "new_public_availability": "Not established",
   "store_signed_installed_upgrade": "Not verified",
-  "evidence_boundary": "Observed Partner Center overview and reloaded reviewer/listing pages; private account screenshot retained outside public source. This receipt does not establish certification, public release or installation."
+  "evidence_boundary": "Observed Partner Center overview, reloaded and verified reviewer notes, and saved English (US) listing followed by overview Store listings status Updated. Private account screenshot retained outside public source. This receipt does not establish certification, public release or installation."
 }
