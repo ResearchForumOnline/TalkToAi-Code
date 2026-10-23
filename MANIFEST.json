@@ -5,7 +5,7 @@
   },
   {
     "path": ".github/workflows/portable-desktop-smoke.yml",
-    "sha256": "ef9cb29f291d3cdc27f5ba2f47b20c5c8c12ae269489ae229d199a2c057242cc"
+    "sha256": "0b91eb923a32524e75a04ed6af9a1786312ce0eb02bf70a2155c600f1ba8a8e2"
   },
   {
     "path": ".gitignore",
