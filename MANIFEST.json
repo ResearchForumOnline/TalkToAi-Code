@@ -13,7 +13,7 @@
   },
   {
     "path": "Build-Studio.ps1",
-    "sha256": "b6cbccb91cabbc7d85ffc2e628a6976ba95159c5afe453b5626f1f9f48d33d75"
+    "sha256": "c51d0a4b469d3282ff416c0164bb3c957e11dfc99ec2fc32f0c2a51ac6500950"
   },
   {
     "path": "Install.cmd",
@@ -33,7 +33,7 @@
   },
   {
     "path": "README.md",
-    "sha256": "3a4876800e0979043af6ad7f070b46a63a5609ab61dbb304d2a87c61db646b0d"
+    "sha256": "01b60c6630c8dc058b018145a12ec83d691687e0fb2ee6c7a8854c0b25545ff7"
   },
   {
     "path": "RELEASE-0.2.1.md",
@@ -153,7 +153,7 @@
   },
   {
     "path": "TalkToAi-Code.iss",
-    "sha256": "653706c402b5fd13d9a7f882c73d03bec1829783d9728553dbe1bc8eded2161d"
+    "sha256": "ed86947cca3a28a01f161a326b1e75ef4568c78a5e0b4ef167302c38e6691b03"
   },
   {
     "path": "agent_core.py",
@@ -440,6 +440,10 @@
     "sha256": "898f50eb289babbe7d0a8db3e3aa8273e934f4617a875f212656db764a1e9dce"
   },
   {
+    "path": "docs/RELEASE-8.6.1.md",
+    "sha256": "7cd2ac146c34bfb38f9025a5f56fa90ae7bfe3cc070434f845ff94dbf7362a33"
+  },
+  {
     "path": "docs/RESEARCH-EXPERIMENTS.md",
     "sha256": "bf301994e73a2c68ae1a25ff3be1e249a6873612b41feb192262bc76c9fbbd6e"
   },
@@ -541,7 +545,7 @@
   },
   {
     "path": "release_checks.py",
-    "sha256": "10e830ff6e8fe48a628e86c04a59bf72a565ecb4ab604e24cebe8c24d5fdb3d7"
+    "sha256": "f0de88296f31cd6efbd3d5a69642264cafa4a54771a6eb2c92febf1bf029c299"
   },
   {
     "path": "remote_intent.py",
@@ -620,12 +624,16 @@
     "sha256": "402bd3068a09deb80096c4504f661199e6b232c55cc559df66ff339e47b5eee7"
   },
   {
+    "path": "store/TalkToAiCode.manifest",
+    "sha256": "c9f3692376e279cf2fe7e4634a7a91bf24dcb9bc24e3451885955f6a7ac6c836"
+  },
+  {
     "path": "store/build-msix.ps1",
-    "sha256": "6c172241eef73209774b5b6bdc428f32da1d60e503bb46111cc4c4bc3ba84305"
+    "sha256": "c048d0249db6c7d1e877a49c19fe79903bb1f4840941b62f2963fb00a90eb2dc"
   },
   {
     "path": "store/build-payload.ps1",
-    "sha256": "23c645b9013c455c30d43d2438a7628639724dd3cd2da7ce4c4d7aef7e47b21e"
+    "sha256": "2b7fef2c5f174abc61808e43944399dd868fe14699d52c1c539183f1427853d4"
   },
   {
     "path": "studio.py",
@@ -901,7 +909,7 @@
   },
   {
     "path": "updates.py",
-    "sha256": "4eef1aefb3728ad25fb206e74d086df7ef25d20c43f962491344a7d7c9522fc5"
+    "sha256": "5dcbf8fda09ea107d08521e14abfe7a086a1535806d60c296defb6b2c0a7aa76"
   },
   {
     "path": "website/index.html",

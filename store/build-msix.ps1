@@ -1,16 +1,17 @@
 [CmdletBinding()]
 param(
-    [string]$Version = '1.5.0.0',
+    [string]$Version = '1.5.1.0',
     [string]$IdentityName = 'talktoai.TalkToAiCode-AICodingStudio',
     [string]$Publisher = 'CN=9B704446-6F62-4D52-954E-775436315422',
     [string]$PublisherDisplayName = 'talktoai',
-    [string]$BuildLabel = ''
+    [string]$BuildLabel = '',
+    [string]$PayloadDirectory = ''
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
-$payload = Join-Path $root 'dist-studio-store\TalkToAiCode'
+$payload = if ($PayloadDirectory) { [IO.Path]::GetFullPath($PayloadDirectory) } else { Join-Path $root 'dist-studio-store\TalkToAiCode' }
 $stage = Join-Path $root ("store-staging-" + $Version + $BuildLabel)
 $outDir = Join-Path $root 'dist-store'
 $output = Join-Path $outDir ("TalkToAi-Code-" + $Version + "-x64" + $BuildLabel + ".msix")

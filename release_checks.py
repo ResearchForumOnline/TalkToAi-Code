@@ -23,6 +23,12 @@ def smoke(destination):
         if os.name=='nt':
             import pywinauto
             result['computer_dependency']=pywinauto.__version__
+            if getattr(__import__('sys'),'frozen',False):
+                import ctypes
+                user32=ctypes.windll.user32
+                user32.GetThreadDpiAwarenessContext.restype=ctypes.c_void_p
+                user32.AreDpiAwarenessContextsEqual.argtypes=[ctypes.c_void_p,ctypes.c_void_p]
+                result['per_monitor_v2']=bool(user32.AreDpiAwarenessContextsEqual(user32.GetThreadDpiAwarenessContext(),ctypes.c_void_p(-4)))
         else:
             result['computer_dependency']='Windows-only PC Pilot; portable browser checks remain available'
         from ethics_policy import verify_release_policy
@@ -133,6 +139,7 @@ def smoke(destination):
             result['browser_popup']=report['url'].endswith('/report') and 'Packaged report ready' in report['page']
             browser.close();browser=None
         result['passed']=all(result.get(key,False) for key in ('free_provider_policy','offline_program','offline_starter','operating_policy','bundled_example','browser_interaction','browser_popup','browser_screenshot','vision_attachment','read_only_chain','remote_intent','named_project_target','batch_read','output_registration','project_playbooks','research_comparison','source_change_evidence','audited_preferences','routing_audit','candidate_controls_imported')) and (os.name!='nt' or (result.get('managed_process',False) and result.get('escape_hook_registration',False)))
+        if os.name=='nt' and getattr(__import__('sys'),'frozen',False):result['passed']=result['passed'] and result.get('per_monitor_v2',False)
     except Exception as exc:result.update(passed=False,error=f'{type(exc).__name__}: {exc}')
     finally:
         if browser:browser.close()
