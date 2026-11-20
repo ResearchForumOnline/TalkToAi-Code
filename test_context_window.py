@@ -88,7 +88,8 @@ class ContextWindowTests(unittest.TestCase):
     def test_interrupted_tool_call_is_repaired_before_compaction(self):
         history=[{'role':'system','content':'system'},{'role':'user','content':'Inspect'}]+batch(1)[:1]
         result=context_window(history)
-        self.assertIn('Interrupted before execution',result[-1]['content'])
+        self.assertIn('Interrupted before a result was recorded',result[-1]['content'])
+        self.assertIn('Inspect current state before retrying',result[-1]['content'])
         self.assert_valid_batches(result)
 
     def test_schema_and_system_allowance_reduce_history_budget(self):

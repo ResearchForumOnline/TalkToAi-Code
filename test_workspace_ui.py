@@ -323,7 +323,7 @@ class WorkspaceUITests(unittest.TestCase):
         self.assertTrue(overlay.testAttribute(Qt.WA_ShowWithoutActivating))
         shown=overlay.headline.text()+overlay.detail.text()+w.control_banner.text()
         self.assertNotIn('private-user',shown);self.assertNotIn('secret-typed',shown)
-        self.assertIn('working in its browser',shown)
+        self.assertIn('using the browser',shown)
         self.assertIn('Esc in TalkToAi',shown);self.assertTrue(w.escape_shortcut.isEnabled())
         with patch.object(overlay,'show') as show:
             w.handle_event('tool',{'name':'computer','args':{'action':'click'}});show.assert_not_called()
@@ -656,13 +656,16 @@ class WorkspaceUITests(unittest.TestCase):
         from provider_dialog import ProviderDialog
         w=self.window;dialog=ProviderDialog(w,self.root/'provider-fixture.json')
         try:
+            startup_route=w.config.get('preferred_route')
             dialog.preset.setCurrentIndex(1)
             self.assertEqual(dialog.url.text(),'https://api.openai.com/v1')
             self.assertEqual(dialog.env.text(),'OPENAI_API_KEY')
+            self.assertEqual(dialog.model.currentText(),'gpt-6.2-sol')
+            self.assertTrue(dialog.profile().uses_responses)
             dialog.model.setEditText('user-chosen-model')
             dialog.default_api.setChecked(False)  # Explicitly keep local startup for this fixture.
             dialog.save_profile()
-            self.assertEqual(w.route.currentIndex(),0);self.assertEqual(w.config['preferred_route'],'auto')
+            self.assertEqual(w.route.currentIndex(),0);self.assertEqual(w.config.get('preferred_route'),startup_route)
             self.assertTrue(w.active_provider().is_openai)
             dialog.use_profile();self.assertEqual(w.route.currentIndex(),4)
         finally:dialog.close();dialog.deleteLater()

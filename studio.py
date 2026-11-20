@@ -18,9 +18,10 @@ from PySide6.QtCore import QUrl
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QLabel, QPushButton, QComboBox, QListWidget, QListWidgetItem, QSplitter, QTabWidget,
     QTextBrowser, QPlainTextEdit, QFileDialog, QMessageBox, QFrame, QInputDialog,
-    QSystemTrayIcon, QMenu, QDialog, QLineEdit, QCheckBox, QDialogButtonBox, QScrollArea)
-from agent_core import ProjectTools, run_agent, restore_checkpoint, set_active_remote, set_agent_preferences, set_active_provider
+    QSystemTrayIcon, QMenu, QDialog, QLineEdit, QCheckBox, QDialogButtonBox, QScrollArea, QSpinBox)
+from agent_core import AGENT_NAME, ProjectTools, run_agent_zero as run_agent, restore_checkpoint, set_active_remote, set_agent_preferences, set_active_provider
 from routing import choose_route, ensure_local_model, ensure_local_runtime
+from model_library import DEFAULT_LOCAL_MODEL, QWEN_LOCAL_MODEL, DownloadCancelled
 from ssh_tools import SSHProfile, SSHSession, load_profiles, save_profiles
 from providers import ProviderProfile, load_profiles as load_provider_profiles, save_profiles as save_provider_profiles
 from desktop_inventory import inspect_desktop
@@ -172,8 +173,8 @@ class Studio(QMainWindow):
         self.job_manager=None
         self.config = {
             'project': str(Path.home() if os.name != 'nt' else (Path.home() / 'Documents' if STORE_PACKAGE and (Path.home() / 'Documents').is_dir() else Path.home() if STORE_PACKAGE else HOME.parent)),
-            'local_model': 'qwen3.5:4b',
-            'local_large_model': 'smtek/Qwen3.8-27B',
+            'local_model': DEFAULT_LOCAL_MODEL,
+            'local_large_model': QWEN_LOCAL_MODEL,
             'server_model': 'qwen3-coder:30b',
             'server_label': 'Server',
             'approval_policy': 'ask_remote',
@@ -188,7 +189,8 @@ class Studio(QMainWindow):
             'active_ssh_alias': '',
             'active_ssh_path': '',
             'active_provider': '',
-            'preferred_route': 'provider',
+            'preferred_route': 'local',
+            'auto_install_openzero': True,
             'access_mode': 'full_user',
             'pc_pilot': True,
         }
@@ -314,7 +316,7 @@ class Studio(QMainWindow):
         self.gmail_button = self.button('Connect Gmail', lambda:self.connect_mail('Gmail'), side)
         self.mail_status_label = QLabel('Mail: checking connections…');self.mail_status_label.setWordWrap(True);self.mail_status_label.setObjectName('muted');side.addWidget(self.mail_status_label)
         more=QPushButton('More  ·  tools && help');more_menu=QMenu(more)
-        for title,callback in [('Actions · Ctrl+K',self.command_palette),('Project memory · Ctrl+Shift+M',self.memory_dialog),('Project instructions · AGENTS.md',self.instructions_dialog),('Back up conversations',self.backup_conversations),('Private API vault',self.providers_dialog),('Model choices and storage',self.models_dialog),('FAQ / How to · F1',self.faq_dialog),('Open app data folder',lambda:QDesktopServices.openUrl(QUrl.fromLocalFile(str(STATE))))]:
+        for title,callback in [('Actions · Ctrl+K',self.command_palette),('Project memory · Ctrl+Shift+M',self.memory_dialog),('Project instructions · AGENTS.md',self.instructions_dialog),('Back up conversations',self.backup_conversations),('Private API vault',self.providers_dialog),('Model downloads',self.models_dialog),('FAQ / How to · F1',self.faq_dialog),('Open app data folder',lambda:QDesktopServices.openUrl(QUrl.fromLocalFile(str(STATE))))]:
             more_menu.addAction(title,callback)
         more_menu.addAction('Operating policy',self.operating_policy_dialog)
         more_menu.addAction('Project workbench · playbooks & experiments',self.project_workbench)
@@ -348,6 +350,7 @@ class Studio(QMainWindow):
             for name in names:starter_menu.addAction(name,lambda checked=False,n=name:self.use_starter(n))
         starter.setMenu(starter_menu);shortcuts.addWidget(starter)
         self.button('Private API vault',self.providers_dialog,shortcuts)
+        self.button('Model downloads',self.models_dialog,shortcuts)
         self.skynet_button=self.button('⚡ Skynet Mode',self.start_skynet,shortcuts)
         self.skynet_button.setToolTip('Create and check a bounded improvement candidate in a separate copy. Review the diff before applying it.')
         chat.addWidget(self.code_actions)
@@ -366,7 +369,7 @@ class Studio(QMainWindow):
         self.control_banner.setStyleSheet('background:#173a35;color:#d9fff1;border:1px solid #65bea5;border-radius:7px;padding:8px;')
         self.control_banner.hide();chat.addWidget(self.control_banner)
         box = QFrame(); box.setObjectName('composer'); composer = QVBoxLayout(box)
-        self.prompt = Composer(); self.prompt.setPlaceholderText('Describe the result you want, for example: find my game and fix its menu…'); self.prompt.setFixedHeight(104); self.prompt.submitted.connect(self.send); self.prompt.filesDropped.connect(self.attach_files); composer.addWidget(self.prompt)
+        self.prompt = Composer(); self.prompt.setPlaceholderText(f'Ask {AGENT_NAME} to find your game and fix its menu…'); self.prompt.setFixedHeight(104); self.prompt.submitted.connect(self.send); self.prompt.filesDropped.connect(self.attach_files); composer.addWidget(self.prompt)
         attachment_row=QHBoxLayout()
         self.attach_button=self.button('＋ Attach files',self.choose_attachments,attachment_row)
         self.attach_button.setToolTip('Add up to five local text, code, CSV, JSON, or text PDF files as bounded context for the next message. Extracted text is sent to the selected model route and saved in local chat history. Drag files onto the composer too.')
@@ -419,6 +422,7 @@ class Studio(QMainWindow):
         self.button('Open example game',lambda:self.quick_command('open score arena'),gl)
         self.button('✓  Godot import check',lambda:self.game_command(True),gl)
         self.button('Open Blender',self.blender,gl)
+        self.button('Game assets',self.game_assets_dialog,gl)
         self.button('Capture this app',self.capture,gl)
         self.button('Capture game / desktop in 3s',self.capture_desktop,gl)
         self.button('Open project folder',lambda:QDesktopServices.openUrl(QUrl.fromLocalFile(self.task['project'])),gl)
@@ -747,7 +751,7 @@ class Studio(QMainWindow):
         if self.busy:self.status.setText('Use Steer or Stop while a task is running.');return
         dialog=QDialog(self);dialog.setWindowTitle('Actions');dialog.resize(600,480);layout=QVBoxLayout(dialog)
         query=QLineEdit();query.setPlaceholderText('Find an action…');layout.addWidget(query);items=QListWidget();layout.addWidget(items)
-        actions=[('New chat',lambda:self.new_in_workspace('chat')),('New code task',lambda:self.new_in_workspace('code')),('Open project',self.choose_project),('Open Desktop',lambda:self.quick_command('open desktop')),('Inspect project',lambda:self.quick_command('inspect project')),('Run tests',lambda:self.quick_command('run tests')),('Launch game',lambda:self.quick_command('launch game')),('Capture screenshot',lambda:self.quick_command('take a screenshot')),('Map project',lambda:self.quick_command('map project')),('Rename task',self.rename_task),('Pin or unpin task',self.toggle_pin_task),('Move chat between Chat and Code',self.move_task_workspace),('Branch conversation',self.fork_task),('Export task report',self.export_task),('Settings',self.settings),('SSH connections',self.connections_dialog),('Private API vault',self.providers_dialog),('Model choices and storage',self.models_dialog),('FAQ / How to',self.faq_dialog)]
+        actions=[('New chat',lambda:self.new_in_workspace('chat')),('New code task',lambda:self.new_in_workspace('code')),('Open project',self.choose_project),('Open Desktop',lambda:self.quick_command('open desktop')),('Inspect project',lambda:self.quick_command('inspect project')),('Run tests',lambda:self.quick_command('run tests')),('Launch game',lambda:self.quick_command('launch game')),('Capture screenshot',lambda:self.quick_command('take a screenshot')),('Map project',lambda:self.quick_command('map project')),('Rename task',self.rename_task),('Pin or unpin task',self.toggle_pin_task),('Move chat between Chat and Code',self.move_task_workspace),('Branch conversation',self.fork_task),('Export task report',self.export_task),('Settings',self.settings),('SSH connections',self.connections_dialog),('Private API vault',self.providers_dialog),('Model downloads',self.models_dialog),('FAQ / How to',self.faq_dialog)]
         actions += [('Project memory · Ctrl+Shift+M',self.memory_dialog),('Project instructions · AGENTS.md',self.instructions_dialog),('About & updates',self.updates_dialog),('Open app data folder',lambda:QDesktopServices.openUrl(QUrl.fromLocalFile(str(STATE)))),('Open project folder',lambda:QDesktopServices.openUrl(QUrl.fromLocalFile(self.task['project'])))]
         actions += [('Archive or restore conversation',self.toggle_archive_task),('Search chats · Ctrl+Shift+F',self.focus_task_search),('Find in conversation · Ctrl+F',self.find_in_chat),('Reuse last prompt',self.reuse_last_prompt),('Copy last reply',self.copy_last_reply),('Copy conversation',self.copy_conversation),('Export conversation',self.export_conversation),('Attach local files',self.choose_attachments)]
         actions += [('Starter: '+name,lambda n=name:self.use_starter(n)) for name in STARTERS]
@@ -755,6 +759,8 @@ class Studio(QMainWindow):
         actions += [('Project workbench · playbooks and experiments',self.project_workbench)]
         actions += [('Local tools · no AI required',self.local_tools)]
         actions += [('Continue unfinished work',self.continue_task),('Managed process jobs',lambda:self.right.setCurrentIndex(self.jobs_tab)),('Add project output to Evidence',self.add_output)]
+        actions.append(('Integrations and MCP plugins',self.integrations_dialog))
+        actions.append(('Game assets',self.game_assets_dialog))
         for label,callback in actions:items.addItem(label)
         def filter_items(text):
             for i in range(items.count()):items.item(i).setHidden(text.casefold() not in items.item(i).text().casefold())
@@ -800,7 +806,7 @@ class Studio(QMainWindow):
         kind=self.task.get('kind','code')
         self.keep_going.blockSignals(True);self.keep_going.setChecked(bool(self.task.setdefault('keep_going',self.config.get('keep_going',False))));self.keep_going.blockSignals(False);self.keep_going.setVisible(kind=='code');self.work_duration.setVisible(kind=='code')
         self.mode.setCurrentText('Plan' if kind=='chat' or self.config.get('approval_policy')=='plan' else 'Act')
-        self.prompt.setPlaceholderText('Ask a question or work through an idea…' if kind=='chat' else 'Describe the result you want, for example: find my game and fix its menu…')
+        self.prompt.setPlaceholderText(f'Ask {AGENT_NAME} a question…' if kind=='chat' else f'Ask {AGENT_NAME} to find your game and fix its menu…')
         self.right.setVisible(kind=='code')
         self.code_actions.setVisible(kind=='code')
         self.partial=''; self.current_file=None; self.editor.clear(); self.output.clear()
@@ -1176,12 +1182,13 @@ class Studio(QMainWindow):
         self.execution_kind='model'
         self.partial=''; self.render(); self.persist(); self.cancel=threading.Event(); self.set_busy(True)
         preference=('auto','local','server','local_large','provider')[self.route.currentIndex()]
-        self.started_at=time.monotonic();self.route_description='Selecting runtime';self.status.setText('Checking installed models…')
+        self.started_at=time.monotonic();self.route_description=f'{AGENT_NAME} · selecting model';self.status.setText('Checking installed models…')
         project=self.task['project']; history=list(self.task['messages']); act=self.mode.currentText()=='Act';task_id=self.task['id']
         task_kind=self.task.get('kind','code');rounds=self.step_budget.currentData() if task_kind=='code' else 16
         performance=self.model_performance()
         keep_going=bool(self.keep_going.isChecked()) and task_kind=='code'
         task_goal=copy.deepcopy(self.current_task_goal())
+        auto_openzero=bool(self.config.get('auto_install_openzero',True))
         active_remote=self.active_remote()
         requested_ssh=act and (requests_remote_work(text) or (
             bool(re.search(r'\b(ssh|log ?in|connect)\b',text,re.I)) and
@@ -1195,6 +1202,8 @@ class Studio(QMainWindow):
             remote_pilot=bool(self.config.get('remote_pilot',True)),
             web_browser=self.config.get('web_browser','auto'),
             web_search=self.config.get('web_search','auto'),
+            web_browser_mode=self.config.get('web_browser_mode','headless'),
+            web_browser_cdp_port=self.config.get('web_browser_cdp_port',9222),
         )
         def work():
             try:
@@ -1209,7 +1218,7 @@ class Studio(QMainWindow):
                     set_active_provider(None)
                     if preference in ('local','local_large'):
                         requested_model=self.config['local_model'] if preference=='local' else self.config.get('local_large_model', self.config['local_model'])
-                        ensure_local_model(requested_model, self.bus.event.emit)
+                        ensure_local_model(requested_model, self.bus.event.emit, cancel=self.cancel, allow_default_download=auto_openzero)
                     if preference in ('auto','server'):
                         ready,detail=ensure_amd_tunnel(self.config)
                         if not ready and preference=='server':
@@ -1219,12 +1228,20 @@ class Studio(QMainWindow):
                     if preference=='auto' and not ready:
                         self.bus.event.emit('status','Starting local Ollama fallback…')
                         ensure_local_runtime()
-                    selected=choose_route(self.config,preference,benchmarks)
+                    try:
+                        selected=choose_route(self.config,preference,benchmarks)
+                    except ConnectionError:
+                        if preference!='auto' or not auto_openzero or self.config.get('local_model')!=DEFAULT_LOCAL_MODEL:
+                            raise
+                        ensure_local_model(DEFAULT_LOCAL_MODEL,self.bus.event.emit,cancel=self.cancel,allow_default_download=True)
+                        selected=choose_route(self.config,'local',benchmarks)
                 if self.cancel.is_set():return
                 self.bus.event.emit('route',selected)
                 def job_event(kind,data):self.bus.event.emit(kind,dict(data,task_id=task_id))
                 self.job_manager=ProcessJobs(project,self.cancel,job_event)
-                run_agent(selected['url'],selected['model'],history,project,act,self.cancel,self.bus.event.emit,rounds=rounds,performance=performance,jobs=self.job_manager,task_kind=task_kind,keep_going=keep_going,task_goal=task_goal,app_preferences=self.preferences_manager,preference_change_notify=lambda result:self.bus.event.emit('app_preferences_changed',result))
+                run_agent(selected['url'],selected['model'],history,project,act,self.cancel,self.bus.event.emit,rounds=rounds,performance=performance,jobs=self.job_manager,task_kind=task_kind,keep_going=keep_going,task_goal=task_goal,app_preferences=self.preferences_manager,preference_change_notify=lambda result:self.bus.event.emit('app_preferences_changed',result),mcp_config=self.config.get('mcp_plugins'))
+            except DownloadCancelled:
+                self.bus.event.emit('status','Model download stopped')
             except Exception as exc:self.bus.event.emit('error',str(exc))
             finally:
                 set_active_remote(None)
@@ -1331,13 +1348,15 @@ class Studio(QMainWindow):
                 else:
                     if preference in ('local','local_large'):
                         model=self.config['local_model'] if preference=='local' else self.config.get('local_large_model',self.config['local_model'])
-                        ensure_local_model(model,self.bus.event.emit)
+                        ensure_local_model(model,self.bus.event.emit,cancel=self.cancel)
                     if preference in ('auto','server'):
                         ready,detail=ensure_amd_tunnel(self.config)
                         if not ready and preference=='server':raise ConnectionError(detail)
                     selected=choose_route(self.config,preference,{})
                 self.bus.event.emit('route',selected)
                 run_improvement(selected['url'],selected['model'],project,goal,self.cancel,self.bus.event.emit,performance=performance,max_iterations=iterations)
+            except DownloadCancelled:
+                self.bus.event.emit('status','Model download stopped')
             except Exception as exc:self.bus.event.emit('error',str(exc))
             finally:
                 set_active_provider(None)
@@ -1434,7 +1453,7 @@ class Studio(QMainWindow):
             self.control_overlay=ControlOverlay();self.control_overlay.stop_requested.connect(self.stop_task)
         self.control_active=True;action=safe_action_label(name,args)
         self.control_overlay.show_control(action,self.global_escape,browser=name=='browser')
-        headline='TalkToAi is working in its browser' if name=='browser' else 'TalkToAi is using your computer'
+        headline='TalkToAi is using the browser' if name=='browser' else 'TalkToAi is using your computer'
         self.control_banner.setText(headline+' · '+('Esc to cancel' if self.global_escape else 'Esc in TalkToAi to cancel, or use Stop')+'\n'+action)
         self.control_banner.show()
 
@@ -1909,7 +1928,7 @@ class Studio(QMainWindow):
 ## Keep working without an OpenAI subscription
 
 - **Auto** uses your configured server/local models. It never switches to a paid API automatically.
-- **Settings → Research browser** chooses Edge, Chrome, Firefox or Chromium, with fallback if the preferred browser cannot start. **Preferred web search** can use free browser search engines or your own Serper key. Serper searches may consume account credits. Open original pages before citing them.
+- **Settings → Browser** chooses Edge, Chrome, Brave, Firefox or Chromium. **Browser control** lets you use a hidden session, see a managed browser window, or connect to a local debugging profile. **Preferred web search** supports free browser search engines and the Serper API.
 - If the server connection fails, Auto tries to start your installed local Ollama service and use your configured local model. It does not download a model in Auto mode.
 - **Models & APIs → Groq API** connects your own Groq key. Provider limits apply; no OpenAI account is needed for that route.
 - After an error your latest request returns to the composer. Change the model or repair the connection, then send again. Check existing changes first because a failed task may have completed some actions.
@@ -1942,9 +1961,9 @@ Configure an SSH profile in **Connections** to use Remote Pilot. Select **Act** 
 
 ## Models and API providers
 
-**Auto** chooses among your available local/server models and never falls back to an API. **Local** uses your local Ollama model. **Server** uses your configured server Ollama model, with SSH tunnelling when configured. The dropdown shows your configured model names. Say `use server always` to remember that route; this chooses where inference runs, while files stay in the selected project. **API** is the guided route for fresh installations. Open **Private API vault**, choose Groq, Gemini, OpenRouter, Cerebras or a compatible endpoint, enter your own key, fetch models and choose a model supporting Chat Completions and function tools. Save and use the profile. Existing saved runtime choices are preserved. Local and Server remain available without API keys.
+**Agent Zero** runs the task using the model you choose. Fresh installations select **Local** with OpenZero 1.7B and download it on the first model request when Ollama is available. Turn this off in **Settings**. For Qwen3.6 35B A3B, choose **Model downloads → Install Qwen3.6 35B A3B** to set up **Local large**. **Auto** can select an available configured local or server model. **Server** uses your configured Ollama model and SSH connection. For **API**, use **Private API vault**.
 
-OpenAI API billing is separate from this app. No subscription, API credit or free tier is included. A model-list response verifies metadata access, not inference/tool capability. The app uses `max_completion_tokens` for direct OpenAI requests and leaves sampling defaults alone. Each response has a configurable token ceiling, but a task can make multiple requests: this is not a currency cap. Reported token usage may be incomplete after cancellation and is not an invoice.
+The OpenAI preset uses Responses for current GPT and reasoning models. Select the protocol and reasoning effort in the vault if a model needs different settings. Responses supports streaming, function tools and screenshots when the model accepts images. The app disables API response storage and carries encrypted reasoning in memory during the task. Fetch models checks account access to model metadata. OpenAI bills inference separately, and the configurable token ceiling applies per response.
 
 Keys can remain in memory for this session, come from an environment variable, or be remembered in Windows user encryption, macOS Keychain or a Linux desktop keyring. Keys are never put in conversation/profile JSON. **Forget saved key** removes the app-held key without changing external environment variables. Project context and tool results are sent to the provider you explicitly select; review what you share. For automatic switching, enable fallback on the selected profile and on every alternative you permit to receive task context. Alternatives must be marked free or self-hosted. The app respects quota cooldowns and never replays a partial response on another provider. A free label is your account declaration; your provider controls actual prices and limits.
 
@@ -1954,7 +1973,9 @@ Use `run tests`, `launch game`, `take a screenshot`, `map project`, `show git ch
 
 ## Browser testing and research
 
-In Act mode ask: `Use the browser to open http://localhost:3000, test the Start button, report page errors and save a screenshot.` The agent uses the configured browser, reads page structure, clicks visible text and fills labelled fields. The browser closes after each turn. Screenshots are saved to Evidence. Supported vision models can inspect screenshots; text-only models use page and accessibility text.
+In Act mode ask `Use Brave to open http://localhost:3000, test the Start button and save a screenshot.` The agent can inspect pages, click controls, fill fields and switch tabs. Managed browsers close after a turn. Screenshots are saved to Evidence.
+
+For a browser you keep open between turns, go to **Settings → Browser control → Connect to a running Chromium browser**. Choose Chrome, Brave or Edge and click **Open connectable browser**, then save the settings. The new window has a dedicated browser profile. Open the tabs you want to work on and ask the agent to use that browser in Act mode. You can also connect to a Chromium profile already listening on the local debugging port you configured.
 
 ## Computer use on Windows
 
@@ -2036,6 +2057,10 @@ Use an available local or server model, stop a task, or steer it into a smaller 
             field=QLineEdit(str(self.config.get(key,'')));field.setObjectName(key);field.setMaxLength(200)
             form.addWidget(QLabel(title));form.addWidget(field);model_fields[key]=field
         model_hint=QLabel('Use the exact Ollama model ID, including its tag. Saving settings does not download or load models. Server models must already be available on your server.');model_hint.setWordWrap(True);form.addWidget(model_hint)
+        auto_model=QCheckBox('Download the default OpenZero model on the first request (1.1 GB)')
+        auto_model.setObjectName('auto_install_openzero')
+        auto_model.setChecked(bool(self.config.get('auto_install_openzero',True)))
+        form.addWidget(auto_model)
         context_choice=QComboBox();context_choice.setObjectName('model_context_window')
         for title,value in [('8K tokens · default',8192),('16K tokens',16384),('32K tokens',32768)]:context_choice.addItem(title,value)
         context_choice.setCurrentIndex(context_choice.findData(self.model_performance()['num_ctx']))
@@ -2044,6 +2069,15 @@ Use an available local or server model, stop a task, or steer it into a smaller 
         godot_path=QLineEdit(str(self.config.get('godot_executable','')));godot_path.setObjectName('godot_executable')
         godot_path.setPlaceholderText('Optional full path to Godot; leave blank for automatic discovery')
         form.addWidget(QLabel('Godot executable'));form.addWidget(godot_path)
+        blender_path=QLineEdit(str(self.config.get('blender_executable','')));blender_path.setObjectName('blender_executable')
+        blender_path.setPlaceholderText('Automatic discovery')
+        locate_blender=QPushButton('Browse…')
+        def choose_blender():
+            path,_=QFileDialog.getOpenFileName(dialog,'Choose Blender executable',blender_path.text())
+            if path:blender_path.setText(path)
+        locate_blender.clicked.connect(choose_blender)
+        blender_row=QHBoxLayout();blender_row.addWidget(blender_path);blender_row.addWidget(locate_blender)
+        form.addWidget(QLabel('Blender executable'));form.addLayout(blender_row)
         policy=QComboBox();policy.addItem('Remote agent commands off','ask_remote');policy.addItem('Allow agent remote commands','auto_remote');policy.addItem('Plan / read-only default','plan')
         policy.setCurrentIndex(max(0,policy.findData(self.config.get('approval_policy','ask_remote'))))
         form.addWidget(QLabel('Permission default'));form.addWidget(policy)
@@ -2056,10 +2090,40 @@ Use an available local or server model, stop a task, or steer it into a smaller 
         pilot.setToolTip('In Act mode, the agent carries out its own observe → act → verify loop. It does not bypass sign-in, passwords, security prompts, payments or final external submissions.')
         if os.name!='nt':pilot.setChecked(False);pilot.setEnabled(False);pilot.setToolTip('Native accessibility control is currently available on Windows. Browser tools and project/user shell tools work here.')
         form.addWidget(pilot)
-        browser_choice=QComboBox()
-        for title,code in [('Auto: Edge, Chrome, Firefox, Chromium','auto'),('Microsoft Edge','edge'),('Google Chrome','chrome'),('Firefox','firefox'),('Playwright Chromium','chromium')]:browser_choice.addItem(title,code)
+        from browser_tools import browser_port, launch_connectable_browser
+        browser_choice=QComboBox();browser_choice.setObjectName('web_browser')
+        for title,code in [('Automatic','auto'),('Microsoft Edge','edge'),('Google Chrome','chrome'),('Brave','brave'),('Playwright Firefox','firefox'),('Playwright Chromium','chromium')]:browser_choice.addItem(title,code)
         browser_choice.setCurrentIndex(max(0,browser_choice.findData(self.config.get('web_browser','auto'))))
-        form.addWidget(QLabel('Research browser'));form.addWidget(browser_choice)
+        form.addWidget(QLabel('Browser'));form.addWidget(browser_choice)
+        browser_mode=QComboBox();browser_mode.setObjectName('web_browser_mode')
+        for title,code in [('Automatic · hidden for research','headless'),('Visible managed browser','visible'),
+                           ('Connect to a running Chromium browser','attach')]:browser_mode.addItem(title,code)
+        browser_mode.setCurrentIndex(max(0,browser_mode.findData(self.config.get('web_browser_mode','headless'))))
+        form.addWidget(QLabel('Browser control'));form.addWidget(browser_mode)
+        port=QSpinBox();port.setObjectName('web_browser_cdp_port');port.setRange(1,65535)
+        try:port.setValue(browser_port(self.config.get('web_browser_cdp_port',9222)))
+        except ValueError:port.setValue(9222)
+        open_browser=QPushButton('Open connectable browser')
+        browser_row=QHBoxLayout()
+        browser_row.addWidget(QLabel('Local debugging port'));browser_row.addWidget(port);browser_row.addWidget(open_browser)
+        form.addLayout(browser_row)
+        browser_status=QLabel('Act can control selected tabs in this profile. Observed page content is sent to the selected model.')
+        browser_status.setWordWrap(True);form.addWidget(browser_status)
+        def update_browser_controls():
+            attaching=browser_mode.currentData()=='attach'
+            port.setEnabled(attaching)
+            open_browser.setEnabled(attaching and browser_choice.currentData()!='firefox')
+            browser_status.setVisible(attaching)
+        def open_configured_browser():
+            try:
+                name=launch_connectable_browser(browser_choice.currentData(),port.value(),STATE)
+                browser_status.setText(f'Opening {name} with a dedicated profile. Save these settings to connect in Act mode.')
+            except (OSError,ValueError) as exc:
+                browser_status.setText(str(exc))
+        browser_mode.currentIndexChanged.connect(update_browser_controls)
+        browser_choice.currentIndexChanged.connect(update_browser_controls)
+        open_browser.clicked.connect(open_configured_browser)
+        update_browser_controls()
         search_choice=QComboBox()
         for title,code in [('Auto: try available engines','auto'),('Serper API (your key)','serper'),('DuckDuckGo','duckduckgo'),('Bing','bing'),('Google','google'),('Brave Search','brave')]:search_choice.addItem(title,code)
         search_choice.setCurrentIndex(max(0,search_choice.findData(self.config.get('web_search','auto'))))
@@ -2089,12 +2153,17 @@ Use an available local or server model, stop a task, or steer it into a smaller 
         status=QLabel('Current active SSH: '+(self.config.get('active_ssh_alias') or 'none'));status.setObjectName('muted');form.addWidget(status);form.addStretch()
         buttons=QDialogButtonBox(QDialogButtonBox.Save|QDialogButtonBox.Cancel);buttons.accepted.connect(dialog.accept);buttons.rejected.connect(dialog.reject);layout.addWidget(buttons)
         if dialog.exec()==QDialog.Accepted:
+            if browser_mode.currentData()=='attach' and browser_choice.currentData()=='firefox':
+                self.error('Choose a Chromium-based browser for connected mode. Firefox supports managed browsing.');return
             model_values={key:field.text().strip() for key,field in model_fields.items()}
             if any(not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}',value) for value in model_values.values()):
                 self.error('Model IDs must be nonempty, at most 200 characters, and contain only letters, numbers, dots, underscores, colons, slashes or hyphens.');return
             godot_value=godot_path.text().strip().strip('"')
             if godot_value and (not Path(godot_value).is_absolute() or not Path(godot_value).is_file()):
                 self.error('Godot executable must be an existing absolute file path.');return
+            blender_value=blender_path.text().strip().strip('"')
+            if blender_value and (not Path(blender_value).is_absolute() or not Path(blender_value).is_file()):
+                self.error('Blender executable must be an existing absolute file path.');return
             try:
                 if forget_serper.isChecked():forget_key()
                 if serper_key.text().strip():save_key(serper_key.text().strip())
@@ -2102,8 +2171,11 @@ Use an available local or server model, stop a task, or steer it into a smaller 
             self.config['approval_policy']=policy.currentData();self.config['auto_context']=auto.isChecked();self.config['show_tool_activity']=activity.isChecked()
             self.config['access_mode']=access.currentData();self.config['pc_pilot']=pilot.isChecked();self.config['remote_pilot']=remote_pilot.isChecked();self.config['remote_enabled']=remote_pilot.isChecked() or self.config.get('remote_enabled',False)
             self.config['web_browser']=browser_choice.currentData();self.config['web_search']=search_choice.currentData()
+            self.config['web_browser_mode']=browser_mode.currentData();self.config['web_browser_cdp_port']=port.value()
             self.config['num_ctx']=context_choice.currentData()
+            self.config['auto_install_openzero']=auto_model.isChecked()
             self.config['godot_executable']=godot_value
+            self.config['blender_executable']=blender_value
             self.config['server_label']=' '.join(server_name.text().split()) or 'Server'
             self.config.update(model_values)
             try:
@@ -2113,38 +2185,41 @@ Use an available local or server model, stop a task, or steer it into a smaller 
             if self.config['approval_policy']=='plan':self.mode.setCurrentText('Plan')
             self.write_config();self.refresh_route_labels();self.refresh_connection_label();self.refresh_access_label();self.status.setText('Settings saved')
 
+    def integrations_dialog(self):
+        from integration_dialog import integration_dialog
+        result=integration_dialog(self,self.config.get('mcp_plugins',{}))
+        if result is not None:
+            self.config['mcp_plugins']=result
+            self.write_config()
+            self.status.setText('Integrations saved')
+
+    def game_assets_dialog(self):
+        if self.busy:return
+        from asset_library_dialog import AssetLibraryDialog
+        AssetLibraryDialog(self,self.task['project']).exec()
+        self.refresh_files()
+
     def models_dialog(self):
-        import shutil
-        dialog=QDialog(self);dialog.setWindowTitle('Model choices & storage');dialog.resize(720,440)
-        layout=QVBoxLayout(dialog)
-        free=shutil.disk_usage(HOME).free/(1024**3)
-        layout.addWidget(QLabel(f'{free:.1f} GiB free on this drive · downloads are optional'))
-        info=QTextBrowser();info.setOpenExternalLinks(True)
-        info.setMarkdown('''## Choose a model for your hardware
+        if self.busy:return
+        from model_library_dialog import ModelLibraryDialog
 
-**Server** — runs inference on your configured server model. The route dropdown shows its model name; **Settings → Server name** lets you give the server a personal label. TalkToAi Code checks the server inventory before tasks.
+        ModelLibraryDialog(self,STATE/'models',self.select_installed_model,self._select_downloaded_model,
+                           self.diagnose_models,self.compare_installed_models).exec()
 
-**Local large** — uses your configured larger local model. Choosing this route and sending a task can download that model if it is missing. Large models need substantial disk space and RAM, and the first run can be slow.
-
-**Qwen3.5 4B · about 3.4 GB** — compact local option with tool and image support. Quality and speed depend on your hardware and task. [Model details](https://ollama.com/library/qwen3.5:4b)
-
-**Qwen3.5 9B · about 6.6 GB** — optional larger local alternative with tool and image support. More memory and CPU work; not speed-tested here. [Model details](https://ollama.com/library/qwen3.5:9b)
-
-**Qwen3 4B · about 2.5 GB** — small tool-capable alternative. Older generation; test results vary by task. [Model details](https://ollama.com/library/qwen3:4b)
-
-**Phi-4-mini 3.8B · about 2.5 GB** — optional Microsoft model with function calling. A different model family to compare on small tasks; not installed or benchmarked here. [Model details](https://ollama.com/library/phi4-mini)
-
-**Granite 4 micro 3.4B · about 2.1 GB** — optional IBM tool-capable model for smaller tasks. Not installed or benchmarked here. [Model details](https://ollama.com/library/granite4:micro)
-
-The compact model is intentionally kept as the weak-CPU fallback. TalkToAi Code never pulls a large model merely by opening this panel: downloads happen only when you choose that route and send a task, with progress shown in the status line.
-''');layout.addWidget(info)
-        self.button('Diagnose local / server connection',self.diagnose_models,layout)
-        row=QHBoxLayout();self.button('Use installed local model…',self.select_installed_model,row)
-        def compare():dialog.accept();self.compare_installed_models()
-        compare_button=self.button('Compare installed coding models',compare,row)
-        compare_button.setToolTip('Runs two short checks on the configured server and large local model. Uses your own runtimes, takes up to four minutes per route, and can be stopped. Does not download models or change your selection.')
-        self.button('Close',dialog.accept,row);layout.addLayout(row)
-        dialog.exec()
+    def _select_downloaded_model(self, model, route):
+        model_setting=route+'_model'
+        with self.config_write_lock:
+            original={key:self.config[key] for key in (model_setting,'preferred_route')}
+            self.config.update({model_setting:model,'preferred_route':route})
+            try:
+                self.write_config()
+            except OSError:
+                self.config.update(original)
+                raise
+        self.refresh_route_labels()
+        self.route.setCurrentIndex(3 if route=='local_large' else 1)
+        self.status.setText('Selected '+model)
+        self.health()
 
     def diagnose_models(self):
         if getattr(self,'diagnostics_running',False):return
@@ -2184,8 +2259,7 @@ The compact model is intentionally kept as the weak-CPU fallback. TalkToAi Code 
             names=inventory(11434)
             if not names:raise ValueError('No local models available.')
             name,ok=QInputDialog.getItem(self,'Installed local model','Choose a downloaded model:',names,editable=False)
-            if ok:
-                self.config['local_model']=name;self.write_config();self.refresh_route_labels();self.route.setCurrentIndex(1);self.health()
+            if ok:self._select_downloaded_model(name,'local')
         except Exception as exc:self.error(exc)
 
     def export_task(self):
@@ -2221,13 +2295,15 @@ The compact model is intentionally kept as the weak-CPU fallback. TalkToAi Code 
         self.prompt.setPlainText('Run a Godot headless import check for this project using this executable and report errors: '+str(godot)+' . Use --headless --editor --quit --path .');self.mode.setCurrentText('Act');self.send()
 
     def blender(self):
-        import shutil
-        path=shutil.which('blender')
-        if not path and os.name=='nt':
-            candidate=Path('C:/Program Files/Blender Foundation/Blender 5.2/blender.exe')
-            if candidate.exists():path=str(candidate)
-        if path:subprocess.Popen([path],stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
-        else:self.error('Blender was not found on PATH.')
+        from engine_discovery import find_blender
+        try:
+            path=find_blender()
+            if not path:
+                self.error('Blender was not found. Install Blender or select its executable in Settings.');return
+            subprocess.Popen([path],cwd=self.task['project'],stdin=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+        except (OSError, ValueError) as exc:
+            self.error('Could not open Blender. '+str(exc))
 
     def capture(self):
         folder=Path(self.task['project'])/'.talktoai-code/screenshots';folder.mkdir(parents=True,exist_ok=True)

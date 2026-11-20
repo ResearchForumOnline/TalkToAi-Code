@@ -1,5 +1,6 @@
 import json, os, pathlib, subprocess, urllib.request
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
+from model_library import DEFAULT_LOCAL_MODEL, QWEN_LOCAL_MODEL
 
 ROOT = pathlib.Path(__file__).resolve().parent
 DEFAULT_PROJECT = pathlib.Path(os.environ.get('LOCAL_CODEX_PROJECT', str(ROOT.parent))).resolve()
@@ -7,7 +8,10 @@ CONFIG = ROOT / 'config.json'
 
 def load_config():
     try: return json.loads(CONFIG.read_text(encoding='utf-8'))
-    except Exception: return {'project': str(DEFAULT_PROJECT), 'local_model': 'qwen3.5:4b', 'local_large_model': 'smtek/Qwen3.8-27B', 'server_model': 'openzero-qwen3-coder-30b-a3b-q3', 'backend': 'local'}
+    except (OSError, ValueError):
+        return {'project': str(DEFAULT_PROJECT), 'local_model': DEFAULT_LOCAL_MODEL,
+                'local_large_model': QWEN_LOCAL_MODEL,
+                'server_model': 'openzero-qwen3-coder-30b-a3b-q3', 'backend': 'local'}
 
 def safe_path(project, rel):
     base = pathlib.Path(project).expanduser().resolve()
@@ -63,7 +67,7 @@ class Handler(BaseHTTPRequestHandler):
             if action=='chat':
                 url='http://127.0.0.1:11434'; model=c['local_model']
                 if c.get('backend')=='server': url='http://127.0.0.1:11435'; model=c['server_model']
-                system='You are TalkToAi Code, a private local coding agent in the TalkToAI ecosystem. Work like a careful game-development engineer: inspect before proposing edits, scope work to the project, favor small testable milestones, use concise answers to preserve local-model context, and never claim a file was changed unless the user saves it through this UI. AgentZero web sign-in is a separate browser identity flow; never request or expose credentials. Project root: '+c['project']
+                system='You are Agent Zero in the TalkToAi Code web workspace. Inspect before proposing edits, scope work to the project, favor small testable milestones, use concise answers to preserve local-model context, and never claim a file was changed unless the user saves it through this UI. Never request or expose credentials. Project root: '+c['project']
                 self.send_json(api_chat(url,model,[{'role':'system','content':system}]+data.get('messages',[]))); return
             if action=='command':
                 p=subprocess.run(data.get('command',''),cwd=c['project'],shell=True,capture_output=True,text=True,timeout=120)

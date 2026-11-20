@@ -23,7 +23,7 @@ _PREFERENCES = {
     'keep_going': ('Default Keep going for new Code tasks', True, (False, True)),
     'work_session_minutes': ('Maximum Keep going duration for future requests', 120, (60, 120, 240)),
     'num_ctx': ('Context size requested for future model calls', 8192, (8192, 16384, 32768)),
-    'web_browser': ('Preferred research browser', 'auto', ('auto', 'edge', 'chrome', 'firefox', 'chromium')),
+    'web_browser': ('Preferred research browser', 'auto', ('auto', 'edge', 'chrome', 'brave', 'firefox', 'chromium')),
     'web_search': ('Preferred free browser search', 'auto', ('auto', 'duckduckgo', 'bing', 'google', 'brave')),
     'skynet_iterations': ('Default candidate iterations in Skynet Mode', 2, (1, 2, 3, 4, 5)),
 }

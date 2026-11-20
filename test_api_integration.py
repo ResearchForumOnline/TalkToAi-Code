@@ -96,8 +96,9 @@ class APIStartupIntegrationTests(unittest.TestCase):
     def setUpClass(cls):
         from PySide6.QtWidgets import QApplication
         cls.app=QApplication.instance() or QApplication([])
-    def test_fresh_install_api_default_vault_cancel_preserves_draft_and_history(self):
+    def test_fresh_install_defaults_to_openzero_and_api_vault_cancel_preserves_draft(self):
         import studio
+        from model_library import DEFAULT_LOCAL_MODEL
         with ExitStack() as stack:
             root=Path(stack.enter_context(tempfile.TemporaryDirectory()))
             for name,value in [('HOME',root),('STATE',root),('SESSION',root/'studio.json'),('CONNECTIONS',root/'connections.json'),('PROVIDERS',root/'providers.json')]:stack.enter_context(patch.object(studio,name,value))
@@ -105,7 +106,9 @@ class APIStartupIntegrationTests(unittest.TestCase):
             stack.enter_context(patch('studio.EscapeCancel'))
             window=studio.Studio()
             try:
-                self.assertEqual(window.route.currentIndex(),4)
+                self.assertEqual(window.route.currentIndex(),1)
+                self.assertEqual(window.config['local_model'],DEFAULT_LOCAL_MODEL)
+                window.route.setCurrentIndex(4)
                 window.prompt.setPlainText('Build my fixture application')
                 before=list(window.task['messages'])
                 with patch.object(window,'providers_dialog') as vault,patch('studio.threading.Thread') as worker:

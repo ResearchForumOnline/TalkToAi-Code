@@ -14,12 +14,15 @@ def safe_action_label(name,args):
     if name=='browser':
         return {'search':'Searching the web','open':'Opening a web page','inspect':'Reading the current page',
                 'click':'Clicking a page control','fill':'Entering text in a page','press':'Using a browser key',
+                'tabs':'Finding browser tabs','switch':'Selecting a tab','new_tab':'Opening a tab',
+                'back':'Returning to the previous page','reload':'Reloading the page',
                 'screenshot':'Capturing a page screenshot'}.get(action,'Using the browser')
     return {'list':'Finding application windows','windows':'Finding application windows',
             'inspect':'Reading application controls','screenshot':'Capturing the desktop',
             'click':'Clicking an observed control','type':'Entering text','type_text':'Entering text',
             'fill':'Entering text','press':'Using a keyboard action','key':'Using a keyboard action',
-            'scroll':'Scrolling an application','focus':'Selecting an application'}.get(action,'Using desktop controls')
+            'scroll':'Scrolling an application','focus':'Focusing an observed control',
+            'activate':'Activating an application'}.get(action,'Using desktop controls')
 
 
 class ControlOverlay(QWidget):
@@ -45,7 +48,7 @@ QPushButton:disabled {background:#39514e;color:#cfdfdb;}''')
 
     def show_control(self,action,global_escape,browser=False):
         self.session_active=True
-        self.headline.setText('TalkToAi is working in its browser' if browser else 'TalkToAi is using your computer')
+        self.headline.setText('TalkToAi is using the browser' if browser else 'TalkToAi is using your computer')
         self.detail.setText(action+' · '+('Esc to cancel' if global_escape else 'Esc in TalkToAi to cancel, or click Stop'))
         self.stop_button.setEnabled(True)
         if not self.isVisible():

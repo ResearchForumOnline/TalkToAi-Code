@@ -1,6 +1,8 @@
 # TalkToAi Code — Your projects. Your AI. Your workspace.
 
-> **Latest update: 8.5.0** - [Windows release](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/tag/v8.5.0) | [Release notes](docs/RELEASE-8.5.0.md) | [Repaired Linux/macOS source ZIP](https://github.com/ResearchForumOnline/TalkToAi-Code/archive/refs/tags/v8.5.0-portable.1.zip).
+**8.7.0** introduces Agent Zero as the native desktop agent, with managed and connected browsers, Blender execution, Hugging Face model downloads, OpenAI Responses, Project Data, MCP stdio plugins and 25 free CC0 asset packs. [Windows release and downloads](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/tag/v8.7.0) · [Desktop guide](docs/DESKTOP-8.7.0.md)
+
+> **Previous Windows package 8.5.0** · [Release archive](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/tag/v8.5.0) · [Release notes](docs/RELEASE-8.5.0.md) · [Linux/macOS source ZIP](https://github.com/ResearchForumOnline/TalkToAi-Code/archive/refs/tags/v8.5.0-portable.1.zip).
 
 **Linux/macOS source repair:** use `v8.5.0-portable.1` for keyless local/self-hosted compatible endpoints on systems without a secure desktop keyring. The reviewed Windows 8.5.0 binaries and Microsoft Store package remain separate and unchanged. [Failure, repair and verification record](docs/PORTABLE-8.5.0-FIX.md).
 
@@ -177,7 +179,7 @@ An independent native desktop AI assistant from TalkToAI for coding, games and g
 
 ## Install
 
-**Recommended for Windows:** use the [8.3.0 installer](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/download/v8.3.0/TalkToAi-Code-8.3.0-Windows-Setup.exe). Run setup and open **TalkToAi Code** from Start. Python is bundled; you do not need the source setup below. Future releases can be checked from **About & updates** inside the app.
+For Windows x64, use the [8.7.0 setup](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/tag/v8.7.0) and open TalkToAi Code from Start. The installer bundles Python. Agent Zero can download the default 1.1 GB OpenZero model on the first local request when Ollama is installed. Check future updates from **About & updates**.
 
 ## Updates and saved settings
 

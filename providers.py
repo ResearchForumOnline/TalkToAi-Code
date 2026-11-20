@@ -11,8 +11,24 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 
+PROVIDER_KEY_HOSTS = {
+    'OPENAI_API_KEY': 'api.openai.com',
+    'GROQ_API_KEY': 'api.groq.com',
+    'OPENROUTER_API_KEY': 'openrouter.ai',
+    'MODEL_API_KEY': 'api.meta.ai',
+    'GEMINI_API_KEY': 'generativelanguage.googleapis.com',
+    'CEREBRAS_API_KEY': 'api.cerebras.ai',
+    'DEEPSEEK_API_KEY': 'api.deepseek.com',
+    'MISTRAL_API_KEY': 'api.mistral.ai',
+    'XAI_API_KEY': 'api.x.ai',
+}
+RESPONSES_URLS = {'https://api.openai.com/v1', 'https://api.x.ai/v1'}
+API_MODES = ('auto', 'responses', 'chat_completions')
+REASONING_EFFORTS = ('', 'low', 'medium', 'high', 'xhigh')
+
+
 class ProviderProfile:
-    def __init__(self, label: str, base_url: str, model: str, api_key_env: str = "", kind='compatible', engine='groq', max_output_tokens=2048, fallback_enabled=False, cost_tier="unknown", priority=100, supports_vision=False, free_only=False):
+    def __init__(self, label: str, base_url: str, model: str, api_key_env: str = "", kind='compatible', engine='groq', max_output_tokens=2048, fallback_enabled=False, cost_tier="unknown", priority=100, supports_vision=False, free_only=False, api_mode='auto', reasoning_effort=''):
         if kind != 'compatible':raise ValueError('Unknown provider kind')
         self.kind=kind;self.engine=engine
         self.fallback_enabled = fallback_enabled is True
@@ -28,14 +44,16 @@ class ProviderProfile:
         parsed = urlsplit(self.base_url)
         if parsed.username or parsed.password or parsed.query or parsed.fragment:
             raise ValueError('Provider URL must not contain credentials, query parameters or fragments.')
-        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
             raise ValueError("Provider URL must be an http:// or https:// OpenAI-compatible endpoint.")
+        if parsed.port == 0:
+            raise ValueError('Provider URL must use a valid port.')
         if not self.model:
             raise ValueError("Provider model cannot be empty.")
         if self.api_key_env and not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*',self.api_key_env):
             raise ValueError("API key reference must be an environment variable name, not a key value.")
         self.max_output_tokens=int(max_output_tokens)
-        if not 256<=self.max_output_tokens<=8192:raise ValueError('Output-token limit must be between 256 and 8192.')
+        if not 256<=self.max_output_tokens<=32768:raise ValueError('Output-token limit must be between 256 and 32768.')
         if parsed.hostname=='api.openai.com' and self.base_url!='https://api.openai.com/v1':
             raise ValueError('Use https://api.openai.com/v1 for the direct OpenAI API.')
         if parsed.hostname=='api.groq.com' and self.base_url!='https://api.groq.com/openai/v1':
@@ -44,6 +62,12 @@ class ProviderProfile:
             raise ValueError('Use https://api.meta.ai/v1 for the direct Meta Model API.')
         if parsed.hostname=='openrouter.ai' and self.base_url!='https://openrouter.ai/api/v1':
             raise ValueError('Use https://openrouter.ai/api/v1 for the OpenRouter API.')
+        if api_mode not in API_MODES or reasoning_effort not in REASONING_EFFORTS:
+            raise ValueError('Unknown API protocol or reasoning effort.')
+        if self.base_url not in RESPONSES_URLS and (api_mode == 'responses' or reasoning_effort):
+            raise ValueError('Responses and configurable reasoning effort are available for direct OpenAI and xAI endpoints.')
+        self.api_mode = api_mode
+        self.reasoning_effort = reasoning_effort
 
     @property
     def is_openai(self):return self.kind=='compatible' and self.base_url=='https://api.openai.com/v1'
@@ -58,13 +82,23 @@ class ProviderProfile:
     def is_meta(self):return self.base_url=='https://api.meta.ai/v1'
 
     @property
+    def uses_responses(self):
+        if self.base_url not in RESPONSES_URLS:
+            return False
+        if self.api_mode != 'auto':
+            return self.api_mode == 'responses'
+        if self.base_url == 'https://api.x.ai/v1':
+            return True
+        return bool(re.match(r'^(?:gpt-(?:5|6)(?:[.-]|$)|o[134](?:-|$))', self.model))
+
+    @property
     def zero_price_route(self):
         # Other providers' free account labels cannot enforce request pricing.
-        known_cloud={'api.openai.com','api.groq.com','openrouter.ai','api.meta.ai','generativelanguage.googleapis.com','api.cerebras.ai'}
-        return (self.is_openrouter and self.cost_tier=='free' and is_free_model(self.model)) or (self.cost_tier=='self_hosted' and urlsplit(self.base_url).hostname not in known_cloud)
+        host = urlsplit(self.base_url).hostname.rstrip('.')
+        return (self.is_openrouter and self.cost_tier=='free' and is_free_model(self.model)) or (self.cost_tier=='self_hosted' and host not in PROVIDER_KEY_HOSTS.values())
 
     def as_dict(self):
-        return {"label": self.label, "base_url": self.base_url, "model": self.model, "api_key_env": self.api_key_env, 'kind':self.kind,'engine':self.engine,'max_output_tokens':self.max_output_tokens,'fallback_enabled':self.fallback_enabled,'cost_tier':self.cost_tier,'priority':self.priority,'supports_vision':self.supports_vision,'free_only':self.free_only}
+        return {"label": self.label, "base_url": self.base_url, "model": self.model, "api_key_env": self.api_key_env, 'kind':self.kind,'engine':self.engine,'max_output_tokens':self.max_output_tokens,'fallback_enabled':self.fallback_enabled,'cost_tier':self.cost_tier,'priority':self.priority,'supports_vision':self.supports_vision,'free_only':self.free_only,'api_mode':self.api_mode,'reasoning_effort':self.reasoning_effort}
 
 
 def load_profiles(path: Path):
@@ -77,7 +111,7 @@ def load_profiles(path: Path):
     for x in data:
         if not isinstance(x,dict) or x.get('kind','compatible')!='compatible':continue
         try:
-            profiles.append(ProviderProfile(x.get("label", ""), x["base_url"], x["model"], x.get("api_key_env", ""),x.get('kind','compatible'),x.get('engine','groq'),x.get('max_output_tokens',2048),x.get('fallback_enabled',False),x.get('cost_tier','unknown'),x.get('priority',100),x.get('supports_vision',False),x.get('free_only',False)))
+            profiles.append(ProviderProfile(x.get("label", ""), x["base_url"], x["model"], x.get("api_key_env", ""),x.get('kind','compatible'),x.get('engine','groq'),x.get('max_output_tokens',2048),x.get('fallback_enabled',False),x.get('cost_tier','unknown'),x.get('priority',100),x.get('supports_vision',False),x.get('free_only',False),x.get('api_mode','auto'),x.get('reasoning_effort','')))
         except (ValueError,KeyError,TypeError):continue
     return profiles
 
@@ -136,8 +170,19 @@ def forget_api_key(profile):
         except keyring.errors.PasswordDeleteError:pass
 
 
+def environment_key_allowed(profile):
+    host = PROVIDER_KEY_HOSTS.get(profile.api_key_env.upper())
+    endpoint = urlsplit(profile.base_url)
+    return not host or (endpoint.hostname == host and endpoint.scheme == 'https' and endpoint.port in (None, 443))
+
+
 def api_key(profile):
-    key=_SESSION_KEYS.get(key_identity(profile),'') or os.environ.get(profile.api_key_env,'')
+    env = os.environ.get(profile.api_key_env, '')
+    key = _SESSION_KEYS.get(key_identity(profile), '')
+    if not key and env:
+        if not environment_key_allowed(profile):
+            raise ValueError('This environment key belongs to a different API host. Paste a key for this endpoint or use its own environment variable.')
+        key = env
     path=key_path(profile)
     if not key and os.name=='nt' and path.is_file():
         try:
@@ -166,13 +211,23 @@ def api_key(profile):
         raise ValueError('Meta Model API key is missing. Enter one in API providers or set MODEL_API_KEY, then restart the app.')
     if profile.is_openrouter and not key:
         raise ValueError('OpenRouter API key is missing. Enter one in API providers or set OPENROUTER_API_KEY, then restart the app.')
+    if not key and urlsplit(profile.base_url).hostname in PROVIDER_KEY_HOSTS.values():
+        raise ValueError('Provider API key is missing. Enter one in API providers or set the configured environment variable.')
     if key and urlsplit(profile.base_url).scheme!='https' and urlsplit(profile.base_url).hostname not in ('localhost','127.0.0.1','::1'):
         raise ValueError('API keys require HTTPS for remote providers.')
+    if key and any(c.isspace() for c in key):
+        raise ValueError('API keys must not contain whitespace. Check the saved key or environment variable.')
     return key
 
 
-def http_error(status):
-    advice={400:'Check the model and its support for Chat Completions and function tools.',401:'Check your API key.',402:'Provider quota or billing limit reached.',403:'Check account/model access.',404:'Check the endpoint and model name.',429:'Check provider quota, billing or rate limits.'}
+def http_error(status, code=None):
+    advice={400:'Check the model, API protocol, reasoning effort and tool support.',401:'Check your API key.',402:'Provider quota or billing limit reached.',403:'Check account/model access.',404:'Check the endpoint and model name.',429:'Check provider quota, billing or rate limits.'}
+    if code == 'insufficient_quota':
+        advice[429] = 'Check OpenAI API credits and billing limits.'
+    elif code == 'context_length_exceeded':
+        advice[400] = 'Reduce Model context or start a new chat for this model.'
+    elif code in ('model_not_found', 'unsupported_model'):
+        advice[400] = advice[404] = 'Fetch models and select a model your API project can use.'
     return f'Provider HTTP {status}. '+advice.get(status,'Check provider availability and settings.')
 
 
@@ -194,13 +249,19 @@ def list_models(profile):
         def redirect_request(self,*args,**kwargs):return None
     key=api_key(profile)
     headers={'Authorization':'Bearer '+key} if key else {}
-    request=urllib.request.Request(profile.base_url+'/models',headers=headers)
+    base = profile.base_url.removesuffix('/chat/completions')
+    if base == 'https://api.mistral.ai/openai/v1':
+        base = 'https://api.mistral.ai/v1'
+    request=urllib.request.Request(base+'/models',headers=headers)
     try:
         with urllib.request.build_opener(NoRedirect).open(request,timeout=12) as response:
             raw=response.read(2_000_001)
         if len(raw)>2_000_000:raise ValueError('Model listing exceeds the response limit.')
         data=json.loads(raw)
-        models={m['id'] for m in data.get('data',[]) if isinstance(m,dict) and isinstance(m.get('id'),str)}
+        models_data = data.get('data') if isinstance(data, dict) else data if base == 'https://api.mistral.ai/v1' else None
+        if not isinstance(models_data, list):
+            raise ValueError('The provider did not return an OpenAI-compatible model list.')
+        models={m['id'] for m in models_data if isinstance(m,dict) and isinstance(m.get('id'),str)}
         if profile.is_openrouter and (profile.cost_tier=='free' or profile.free_only):
             models={model for model in models if is_free_model(model)}
             models.add('openrouter/free')
@@ -221,6 +282,8 @@ def configure_request(profile, request, options):
         request['max_completion_tokens']=profile.max_output_tokens
         request['store']=False
         request['stream_options']={'include_usage':True}
+        if profile.reasoning_effort:
+            request['reasoning_effort'] = profile.reasoning_effort
         # Leave sampling defaults alone: some reasoning models reject temperature.
     elif profile.is_groq:
         request['max_completion_tokens']=profile.max_output_tokens
@@ -228,6 +291,10 @@ def configure_request(profile, request, options):
     else:
         request['max_tokens']=profile.max_output_tokens
         request['temperature']=options.get('temperature',.1)
+        if profile.base_url == 'https://api.x.ai/v1' and profile.reasoning_effort:
+            request['reasoning_effort'] = profile.reasoning_effort
+        if urlsplit(profile.base_url).hostname == 'api.deepseek.com' and profile.model.startswith(('deepseek-flash','deepseek-v4-','deepseek-chat')):
+            request['thinking'] = {'type': 'disabled'}
     return request
 
 
@@ -245,7 +312,8 @@ def _secure_keyring(keyring):
 def vault_status(profile):
     """Report secret location only, without retrieving or returning any key."""
     if key_identity(profile) in _SESSION_KEYS:return 'Session key available'
-    if profile.api_key_env and os.environ.get(profile.api_key_env):return 'Environment key available'
+    if profile.api_key_env and os.environ.get(profile.api_key_env):
+        return 'Environment key available' if environment_key_allowed(profile) else 'Environment key belongs to a different API host'
     if os.name=='nt' and key_path(profile).is_file():return 'Encrypted system key saved'
     return 'System keyring or no saved key' if os.name!='nt' else 'No saved key'
 

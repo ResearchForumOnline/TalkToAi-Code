@@ -11,7 +11,7 @@ $appConfig=Join-Path $appRoot 'config.json'
 if (-not (Test-Path -LiteralPath $appConfig)) {
     $projectRoot=[Environment]::GetFolderPath('MyDocuments')
     if (-not (Test-Path -LiteralPath $projectRoot)) { $projectRoot=$appRoot }
-    @{project=$projectRoot;local_model='qwen3.5:4b';local_large_model='qwen3:4b';server_model='qwen3-coder:30b';approval_policy='ask_remote';remote_enabled=$false;remote_pilot=$false;pc_pilot=$true;access_mode='project';auto_context=$true;show_tool_activity=$true} | ConvertTo-Json | Set-Content -LiteralPath $appConfig -Encoding UTF8
+    @{project=$projectRoot;approval_policy='ask_remote';remote_enabled=$false;remote_pilot=$false;pc_pilot=$true;access_mode='project';auto_context=$true;show_tool_activity=$true} | ConvertTo-Json | Set-Content -LiteralPath $appConfig -Encoding UTF8
 }
 $shortcutShell=New-Object -ComObject WScript.Shell
 $shortcutPath=Join-Path ([Environment]::GetFolderPath('Desktop')) 'TalkToAi Code.lnk'

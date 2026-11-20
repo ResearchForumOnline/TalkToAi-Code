@@ -1,5 +1,7 @@
 """Select an available installed model before executing any tools."""
 import json
+import os
+from pathlib import Path
 import urllib.request
 import subprocess
 import shutil
@@ -8,6 +10,19 @@ import threading
 
 _LOCAL_START_LOCK = threading.Lock()
 from concurrent.futures import ThreadPoolExecutor
+from model_library import DEFAULT_LOCAL_MODEL, QWEN_LOCAL_MODEL, pull_model
+
+
+def ollama_executable():
+    command = shutil.which('ollama')
+    if command:
+        return command
+    local = os.environ.get('LOCALAPPDATA')
+    if os.name == 'nt' and local:
+        installed = Path(local) / 'Programs' / 'Ollama' / 'ollama.exe'
+        if installed.is_file():
+            return str(installed)
+    return None
 
 def inventory(port):
     try:
@@ -29,12 +44,13 @@ def ensure_local_runtime():
             except (OSError, ValueError):
                 return False
         if ready(): return True
-        ollama = shutil.which('ollama')
+        ollama = ollama_executable()
         if not ollama: return False
         try:
             subprocess.Popen([ollama, 'serve'], stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
+                env={**os.environ, 'OLLAMA_HOST': '127.0.0.1:11434'})
         except OSError:
             return False
         for _ in range(10):
@@ -43,18 +59,18 @@ def ensure_local_runtime():
         return False
 
 
-def ensure_local_model(model, emit=None, timeout=7200):
+def ensure_local_model(model, emit=None, timeout=7200, cancel=None, allow_default_download=False):
     """Install a missing local Ollama model on demand; never attempts remote pulls."""
-    ensure_local_runtime()
+    if not ensure_local_runtime():
+        raise ConnectionError('Start or install Ollama on this computer. TalkToAi Code connects on 127.0.0.1:11434.')
     if model_present(11434, model): return True
-    ollama=shutil.which('ollama')
-    if not ollama:
-        raise ConnectionError('Ollama is not installed or is not on PATH. Install Ollama, then retry.')
-    if emit: emit('status', 'Downloading local model '+model+' Â· this happens once and may take a while')
-    result=subprocess.run([ollama,'pull',model],capture_output=True,text=True,timeout=timeout)
-    if result.returncode!=0:
-        detail=(result.stderr or result.stdout or 'ollama pull failed').strip()[-1200:]
-        raise RuntimeError('Could not download '+model+': '+detail)
+    if model == QWEN_LOCAL_MODEL or (model == DEFAULT_LOCAL_MODEL and not allow_default_download):
+        raise ConnectionError('Open Model downloads and install the selected model, or choose one already installed.')
+    def progress(status, completed, total):
+        if emit:
+            detail = f' · {100 * completed // total}%' if total else ''
+            emit('status', f'{model} · {status}{detail}')
+    pull_model(model, cancel if cancel is not None else threading.Event(), progress, timeout)
     return model_present(11434, model)
 
 def choose_route(config, preference='auto', benchmarks=None):

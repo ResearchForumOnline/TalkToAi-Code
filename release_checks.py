@@ -10,6 +10,7 @@ from pathlib import Path
 
 def smoke(destination):
     result={}
+    desktop_worker_check=os.name=='nt' and os.environ.get('TALKTOAI_VERIFY_WINDOWS_WORKER')=='1'
     class Handler(BaseHTTPRequestHandler):
         def log_message(self,*args):pass
         def do_GET(self):
@@ -116,6 +117,13 @@ def smoke(destination):
                 and Path(starter['project_path'],'index.html').is_file()
                 and Path(starter['project_path'],'game.js').stat().st_size>1000)
             if os.name=='nt':
+                if desktop_worker_check:
+                    from computer_tools import ComputerSession
+                    desktop=ComputerSession(folder,threading.Event())
+                    try:
+                        windows=json.loads(desktop.execute('windows'))
+                        result['desktop_worker']=bool(windows) and all(entry.get('handle') for entry in windows)
+                    finally:desktop.close()
                 jobs=ProcessJobs(folder)
                 try:
                     key=jobs.start('powershell.exe',['-NoProfile','-NonInteractive','-Command','Write-Output TALKTOAI_JOB_OK'])['id']
@@ -127,8 +135,25 @@ def smoke(destination):
             from sample_projects import ensure_score_arena, SCORE_ARENA_FILES
             sample=ensure_score_arena(Path(__file__).resolve().parent,Path(folder)/'projects')
             result['bundled_example']=all((sample/name).is_file() for name in SCORE_ARENA_FILES)
+            from model_library import DEFAULT_LOCAL_MODEL, OPENZERO_FILE, QWEN_FILE, QWEN_REPO, gguf_selection, repository_id
+            from model_library_dialog import ModelLibraryDialog
+            result['model_library']=(callable(ModelLibraryDialog) and DEFAULT_LOCAL_MODEL.startswith('hf.co/')
+                                     and repository_id('https://huggingface.co/'+QWEN_REPO)==QWEN_REPO
+                                     and gguf_selection([QWEN_FILE])
+                                     and QWEN_FILE.size>OPENZERO_FILE.size>0)
+            from integration_dialog import integration_dialog
+            from mcp_plugins import McpPlugins
+            plugins=McpPlugins(folder,{'fixture':{'command':'fixture-command','enabled':True}},threading.Event())
+            try:
+                result['mcp_plugins']=callable(integration_dialog) and plugins.execute('plugins','','','')['enabled_plugins']==['fixture']
+            finally:plugins.close()
+            from project_data_plugin import inspect_project_data
+            data_fixture=Path(folder,'data.csv')
+            data_fixture.write_text('Player,Score\nBuilder,42\n',encoding='utf-8')
+            result['project_data']=inspect_project_data(data_fixture)['preview']==[['Player','Score'],['Builder','42']]
             browser=BrowserTools(folder,threading.Event())
-            browser.execute('open',f'http://127.0.0.1:{server.server_port}')
+            opened=json.loads(browser.execute('open',f'http://127.0.0.1:{server.server_port}'))
+            home_tab=next(tab['id'] for tab in opened['tabs'] if tab['current'])
             browser.execute('fill','Player','Builder');browser.execute('click','Start')
             result['browser_interaction']='Hello Builder' in browser.execute('inspect')
             artifact=json.loads(browser.execute('screenshot'))
@@ -137,8 +162,11 @@ def smoke(destination):
             result['vision_attachment']=len(image_for_model(artifact['artifact']))>1000
             report=json.loads(browser.execute('click','Open report'))
             result['browser_popup']=report['url'].endswith('/report') and 'Packaged report ready' in report['page']
+            result['browser_tabs']=len(report['tabs'])==2 and 'Hello Builder' in browser.execute('switch',home_tab)
             browser.close();browser=None
         result['passed']=all(result.get(key,False) for key in ('free_provider_policy','offline_program','offline_starter','operating_policy','bundled_example','browser_interaction','browser_popup','browser_screenshot','vision_attachment','read_only_chain','remote_intent','named_project_target','batch_read','output_registration','project_playbooks','research_comparison','source_change_evidence','audited_preferences','routing_audit','candidate_controls_imported')) and (os.name!='nt' or (result.get('managed_process',False) and result.get('escape_hook_registration',False)))
+        result['passed']=result['passed'] and all(result.get(key,False) for key in ('browser_tabs','model_library','mcp_plugins','project_data'))
+        if desktop_worker_check:result['passed']=result['passed'] and result.get('desktop_worker',False)
         if os.name=='nt' and getattr(__import__('sys'),'frozen',False):result['passed']=result['passed'] and result.get('per_monitor_v2',False)
     except Exception as exc:result.update(passed=False,error=f'{type(exc).__name__}: {exc}')
     finally:

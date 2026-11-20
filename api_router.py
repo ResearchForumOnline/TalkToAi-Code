@@ -2,14 +2,21 @@
 from __future__ import annotations
 import datetime
 import email.utils
+import re
 import threading
 import time
 from providers import key_identity, http_error, key_ready, validate_cost_policy, is_free_model
 
 class ProviderHTTPError(RuntimeError):
-    def __init__(self, status, retry_after=None):
-        self.status=int(status); self.retry_after=retry_after
-        super().__init__(http_error(self.status))
+    def __init__(self, status, retry_after=None, code=None, request_id=None):
+        self.status = int(status)
+        self.retry_after = retry_after
+        self.code = code
+        # Request IDs help support trace failures without surfacing provider bodies.
+        detail = http_error(self.status, code)
+        if isinstance(request_id, str) and re.fullmatch(r'req_[A-Za-z0-9_\-]{1,100}', request_id):
+            detail += ' Request ID ' + request_id + '.'
+        super().__init__(detail)
 
 class ProviderPartialResponseError(RuntimeError):
     def __init__(self):
@@ -61,7 +68,7 @@ class ApiRouter:
                 for event in stream_fn(profile,payload,cancel):
                     if cancel.is_set():raise InterruptedError('Task stopped.')
                     message=event.get('message') or {}
-                    if message.get('content') or message.get('tool_calls') or event.get('done'):emitted=True
+                    if message.get('content') or message.get('thinking') or message.get('tool_calls') or event.get('done'):emitted=True
                     if event.get('done'):
                         event=dict(event);event['api_provider']=profile.label;event['api_model']=profile.model
                         event['api_usage_source']='provider_reported' if event.get('api_usage') else 'unavailable'
@@ -71,7 +78,7 @@ class ApiRouter:
             except (ProviderHTTPError,OSError) as exc:
                 if cancel.is_set():raise InterruptedError('Task stopped.') from None
                 if emitted:raise ProviderPartialResponseError() from None
-                if isinstance(exc,ProviderHTTPError) and exc.status not in {402,429,502,503,504}:raise
+                if isinstance(exc,ProviderHTTPError) and exc.status not in {402,429,500,502,503,504,529}:raise
                 delay=retry_delay(exc.retry_after) if isinstance(exc,ProviderHTTPError) else 15.0
                 with self.lock:self.cooldowns[profile.base_url]=self.clock()+delay
                 last=exc
