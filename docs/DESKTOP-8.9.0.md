@@ -4,7 +4,7 @@
 
 Open **Chat** and type a message. Try “Help me write a birthday invitation,” then “Make it shorter.” TalkToAi uses recent messages from the same conversation for follow-up questions. You can attach a document and ask about it. **Stop** interrupts a reply. If a reply fails, **Retry reply** uses the original message and its attachment.
 
-Everyday conversation works without opening a project. To do something on your computer, make an explicit request such as “Open my Brave browser,” or select **Use tools** for the next message. **Code** opens the project workspace.
+The default OpenZero stream removes a stray template marker that some Ollama replies otherwise showed before the first word. Everyday conversation works without opening a project. To do something on your computer, make an explicit request such as “Open my Brave browser,” or select **Use tools** for the next message. **Code** opens the project workspace.
 
 ## Check a model you downloaded
 

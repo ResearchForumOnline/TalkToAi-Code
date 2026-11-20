@@ -18,6 +18,28 @@ _CREDENTIAL = re.compile(
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]+")
 _TOOL_MARKUP = re.compile(r"<\s*/?\s*(?:tool_call|function|parameter)\b[^>]*>", re.I)
 
+class OpenZeroReplyStart:
+    """Consume the default GGUF template's orphan closing marker only at the reply boundary."""
+
+    markers = ('</think>\n\n', '</think>\r\n\r\n')
+
+    def __init__(self):
+        self.pending = ''
+
+    def feed(self, text, *, done):
+        if self.pending is None:
+            return text
+        prefix = self.pending + text
+        for marker in self.markers:
+            if prefix.startswith(marker):
+                self.pending = None
+                return prefix[len(marker):]
+        if not done and any(marker.startswith(prefix) for marker in self.markers):
+            self.pending = prefix
+            return ''
+        self.pending = None
+        return prefix
+
 
 class ReasoningActivity:
     """Turn streamed reasoning fragments into sparse, honest UI events."""

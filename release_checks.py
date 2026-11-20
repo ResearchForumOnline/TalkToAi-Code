@@ -36,6 +36,7 @@ def _check_store_model_upgrade(folder, port):
 
 
 def smoke(destination):
+    from model_library import DEFAULT_LOCAL_MODEL
     from runtime_diagnostics import REPLY_CHECK_PROMPT, last_reply_check, measure_local_reply
     result={}
     chat_requests=[]
@@ -51,7 +52,7 @@ def smoke(destination):
             chat_requests.append(request)
             text = 'I will remember Luna.' if len(chat_requests) == 1 else 'Luna.'
             if request['messages'][-1]['content'] == REPLY_CHECK_PROMPT:
-                text = '5'
+                text = '</think>\n\n5'
             body = (json.dumps({'message': {'content': text}, 'done': True}) + '\n').encode()
             self.send_response(200)
             self.send_header('Content-Type', 'application/x-ndjson')
@@ -61,7 +62,7 @@ def smoke(destination):
 
         def do_GET(self):
             if self.path == '/api/tags':
-                data = json.dumps({'models':[{'name':'fixture-chat','digest':'a'*64}]}).encode()
+                data = json.dumps({'models':[{'name':DEFAULT_LOCAL_MODEL,'digest':'a'*64}]}).encode()
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json')
                 self.send_header('Content-Length', str(len(data)))
@@ -137,11 +138,12 @@ def smoke(destination):
             and chat_history[-1] == {'role': 'assistant', 'content': 'Luna.'})
         with tempfile.TemporaryDirectory(prefix='talktoai-release-') as folder:
             check_directory = Path(folder, 'model-checks')
-            check = measure_local_reply('fixture-chat', threading.Event(), lambda *_: None,
+            check = measure_local_reply(DEFAULT_LOCAL_MODEL, threading.Event(), lambda *_: None,
                                         port=server.server_port, history_dir=check_directory)
             saved = last_reply_check(check_directory, check['digest'])
             result['installed_model_reply_check'] = (check['outcome'] == 'verified' and check['saved']
                 and saved is not None and saved['outcome'] == 'verified' and 'preview' not in saved)
+            result['openzero_template_prefix_clean'] = check['preview'] == '5'
             from process_jobs import ProcessJobs
             from workspace_outputs import read_batch, register_output
             from agent_core import ProjectTools
@@ -269,7 +271,8 @@ def smoke(destination):
         result['passed']=all(result.get(key,False) for key in ('free_provider_policy','offline_program','offline_starter','operating_policy','bundled_example','browser_interaction','browser_popup','browser_screenshot','vision_attachment','read_only_chain','remote_intent','named_project_target','batch_read','output_registration','project_playbooks','research_comparison','source_change_evidence','audited_preferences','routing_audit','candidate_controls_imported')) and (os.name!='nt' or (result.get('managed_process',False) and result.get('escape_hook_registration',False)))
         result['passed']=result['passed'] and all(result.get(key,False) for key in
                                                   ('browser_tabs','model_library','store_model_download_upgrade','mcp_plugins','project_data'))
-        result['passed'] = result['passed'] and result['conversation_round_trip'] and result['installed_model_reply_check']
+        result['passed'] = result['passed'] and all(result[key] for key in
+            ('conversation_round_trip', 'installed_model_reply_check', 'openzero_template_prefix_clean'))
         if desktop_worker_check:result['passed']=result['passed'] and result.get('desktop_worker',False)
         if getattr(__import__('sys'),'frozen',False):result['passed']=result['passed'] and result.get('bundled_game_assets',False)
         if os.name=='nt' and getattr(__import__('sys'),'frozen',False):result['passed']=result['passed'] and result.get('per_monitor_v2',False)

@@ -66,6 +66,30 @@ class ConversationTests(unittest.TestCase):
         core.run_conversation(url, 'qwen3.6:35b', history or [{'role': 'user', 'content': 'hello'}],
                               self.cancel, lambda kind, value: self.events.append((kind, value)))
 
+    def test_openzero_template_boundary_is_clean_in_stream_and_transcript(self):
+        from model_library import DEFAULT_LOCAL_MODEL
+        for separator in ('\n\n', '\r\n\r\n'):
+            wire = '</think>' + separator + 'Hello! Type </think> in the code example.'
+            frames = [json.dumps({'message': {'content': ch}}) for ch in wire] + ['{"done":true}']
+            with self.subTest(separator=separator), fixture([(200, 'application/x-ndjson', '\n'.join(frames).encode())]) as (url, _):
+                events = []
+                core.run_conversation(url, DEFAULT_LOCAL_MODEL, [{'role':'user','content':'hello'}],
+                                      self.cancel, lambda kind, value: events.append((kind, value)))
+                expected = 'Hello! Type </think> in the code example.'
+                self.assertEqual(''.join(v for k, v in events if k == 'delta'), expected)
+                self.assertEqual([v['content'] for k, v in events if k == 'message'], [expected])
+
+    def test_openzero_prefix_filter_preserves_literal_text_and_other_models(self):
+        from model_library import DEFAULT_LOCAL_MODEL
+        for model, text in ((DEFAULT_LOCAL_MODEL, '</thin'), (DEFAULT_LOCAL_MODEL, '</think> is an HTML-like tag.'),
+                            ('other-model', '</think>\n\nexample')):
+            frames = [{'message': {'content': ch}} for ch in text] + [{'done':True}]
+            body = '\n'.join(json.dumps(frame) for frame in frames).encode()
+            with self.subTest(model=model, text=text), fixture([(200, 'application/x-ndjson', body)]) as (url, _):
+                reply = ''.join(frame.get('message', {}).get('content', '') for frame in
+                                core._http_stream(url, {'model':model, 'think':False}, self.cancel))
+                self.assertEqual(reply, text)
+
     def test_greeting_and_followup_use_no_tools_or_project_context(self):
         history = [{'role': 'user', 'content': 'My dog is Ada.'}, {'role': 'assistant', 'content': 'Hello, Ada!'},
                    {'role': 'assistant', 'source': 'app', 'content': 'private app report'},

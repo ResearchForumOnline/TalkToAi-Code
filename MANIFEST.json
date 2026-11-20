@@ -5,7 +5,7 @@
   },
   {
     "path": ".github/workflows/portable-desktop-smoke.yml",
-    "sha256": "5209ec2d1c4cc476e24375ef1a9b4e4c32bc1c59b84e3ffe39335ec3df6311db"
+    "sha256": "2eb2b8f39f2cb59d352d779f6c1c3e63b8121b5b0253b152112ed41fc3a612b3"
   },
   {
     "path": ".gitignore",
@@ -157,7 +157,7 @@
   },
   {
     "path": "agent_core.py",
-    "sha256": "1bc75467c433edee48148ec7dc86c5b80186325aae1e1f88e14344084c8abbfa"
+    "sha256": "bb2b6a84d70bb38845ea2c4def6e506a11a6120ac04302e562181cc628f6c459"
   },
   {
     "path": "agent_workflow.py",
@@ -361,7 +361,7 @@
   },
   {
     "path": "docs/DESKTOP-8.9.0.md",
-    "sha256": "f0f080e9353f6f1c040b2eb8a09a0c0ab8f043cba7d9b3270d825fdbc39bcf38"
+    "sha256": "de9c80a54da0b6858495e042e52e06a029e3a7aa4db486309ab523609d021ba3"
   },
   {
     "path": "docs/DEVSPACE-IDEAS-REVIEW.md",
@@ -609,11 +609,11 @@
   },
   {
     "path": "reasoning_stream.py",
-    "sha256": "4afab3d9387fa7c57e5a9564ad86f2aee36a6f00aff69ccae7188873a38e27e6"
+    "sha256": "0b99df98664d3da3aac4f000cdf501458584e5538299b743ce5221344fb2f2a4"
   },
   {
     "path": "release_checks.py",
-    "sha256": "bd793dbdcce63e5c0cfe9638807fbda7229a92b3341bb0e2c56f3d69a38f8017"
+    "sha256": "c3f466f9565ecd1cca47e1c3e591dfccf44abbcaaf4d7bfedb32032047b024ab"
   },
   {
     "path": "remote_intent.py",
@@ -705,7 +705,7 @@
   },
   {
     "path": "store/build-msix.ps1",
-    "sha256": "0d237a270ebebf2905c20f06dcb1256f8f0ae8a82c6e3a6b9f385609eb84f20d"
+    "sha256": "057e23a3feb4b0066b7ffaf8da37f8c86f90c58d3e0bb650b603d280d6686927"
   },
   {
     "path": "store/build-payload.ps1",
@@ -797,7 +797,7 @@
   },
   {
     "path": "test_conversation.py",
-    "sha256": "c1f1aa387115b5a962b78f8d27c87fb4d5a8cdcc8a2cfe323b883b991530e319"
+    "sha256": "88c5d35db391bf56c005570a475c261a8514afea7a139e013e38766cc5bf5a32"
   },
   {
     "path": "test_conversation_export.py",

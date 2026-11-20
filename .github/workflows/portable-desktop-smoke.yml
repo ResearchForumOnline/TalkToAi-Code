@@ -56,15 +56,17 @@ jobs:
                                cancel, lambda kind, value: events.append((kind, value)))
               replies = [value['content'] for kind, value in events if kind == 'message']
               assert len(replies) == 1 and replies[0].strip(), [kind for kind, _ in events]
+              assert not replies[0].lstrip().startswith('</think>'), repr(replies[0][:120])
               assert not any(kind == 'tool' for kind, _ in events)
               print('Studio Chat received a model reply:', replies[0][:120], flush=True)
               with tempfile.TemporaryDirectory() as location:
                   root = Path(location)
                   check = measure_local_reply(installed, cancel, progress, history_dir=root)
                   assert check['outcome'] in ('verified', 'different') and check['preview'] and check['saved'], check
+                  assert not check['preview'].lstrip().startswith('</think>'), check['preview']
                   record = last_reply_check(root, check['digest'])
                   assert record and record['outcome'] == check['outcome']
-                  print('Installed model reply check:', check['outcome'], check['elapsed_seconds'], flush=True)
+                  print('Installed model reply check:', check['outcome'], repr(check['preview']), check['elapsed_seconds'], flush=True)
           finally:
               delete_local_model(model, cancel)
           assert not model_present(11434, model)

@@ -23,7 +23,8 @@ from agent_workflow import ToolCatalog, PLAN_TOOL, normalize_plan, previous_plan
 from process_jobs import ProcessJobs
 from workspace_outputs import read_batch, register_output
 from progress_guard import DiscoveryProgressGuard
-from reasoning_stream import ReasoningActivity
+from reasoning_stream import OpenZeroReplyStart, ReasoningActivity
+from model_library import DEFAULT_LOCAL_MODEL
 from conversation import conversational_reply, describe_switch, model_metrics
 from workspace_change_evidence import WorkspaceChangeTracker
 from task_goals import normalize_goal, goal_context
@@ -369,6 +370,8 @@ def _http_stream(url,payload,cancel):
                 return
             raise _ollama_error(response.status, detail)
         output_started = False
+        clean_start = (OpenZeroReplyStart() if str(payload.get('model', '')).casefold() == DEFAULT_LOCAL_MODEL.casefold()
+                       and not payload.get('think') else None)
         while not cancel.is_set():
             line=response.readline()
             if not line:break
@@ -378,6 +381,12 @@ def _http_stream(url,payload,cancel):
                 output_started = True
             if data.get('error'):
                 raise _ollama_error(None, data['error'], output_started)
+            if clean_start is not None:
+                content = message.get('content', '')
+                if isinstance(content, str):
+                    visible = clean_start.feed(content, done=bool(data.get('done')))
+                    if visible != content:
+                        data = dict(data, message=dict(message, content=visible))
             yield data
             if data.get('done'):break
         if cancel.is_set():raise InterruptedError('Task stopped.')
