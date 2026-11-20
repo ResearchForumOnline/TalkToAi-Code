@@ -821,7 +821,7 @@
   },
   {
     "path": "test_openai_provider.py",
-    "sha256": "141f9e3521a8318e18516922d9d5e069935437c72353063c73014299ddf879fa"
+    "sha256": "c1884775722f097cf089593cfdd7fb5aeacb02788f5189b6ecb6259b90f34d5b"
   },
   {
     "path": "test_progress_guard.py",

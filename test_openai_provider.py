@@ -62,6 +62,13 @@ class OwnKeyProviderTests(unittest.TestCase):
         self.env=patch.dict(os.environ,{'LOCALAPPDATA':str(self.root)},clear=True);self.env.start()
         self.keys=patch.object(providers,'_SESSION_KEYS',{});self.keys.start()
         self.profile=providers.ProviderProfile('OpenAI','https://api.openai.com/v1','user-selected-model','OPENAI_API_KEY')
+        if os.name != 'nt':
+            # Use an empty vault fixture. Hosted runners lack a desktop keyring.
+            for fixture in (patch.object(providers, '_secure_keyring'),
+                            patch('keyring.get_password', return_value=None),
+                            patch('keyring.delete_password')):
+                fixture.start()
+                self.addCleanup(fixture.stop)
     def tearDown(self):self.keys.stop();self.env.stop();self.temp.cleanup()
 
     def test_openai_requires_users_key_without_network(self):
