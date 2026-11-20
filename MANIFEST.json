@@ -157,7 +157,7 @@
   },
   {
     "path": "agent_core.py",
-    "sha256": "17cb559c727eabc5451510d011ba457f1a7380127aa7d750c1a7ea07c70874a1"
+    "sha256": "8fc80e46f4b399af3842db596118bf65c5c4b719f43834dccc7e45b5518ccc07"
   },
   {
     "path": "agent_workflow.py",
@@ -797,7 +797,7 @@
   },
   {
     "path": "test_long_session.py",
-    "sha256": "8b875b9b99ae2c35bf6f5195be831f5118fffb5202f448c4428c2eb5f9d92d16"
+    "sha256": "85ea5f99661126bd75ea234c27bc8b87c875a157f73296bbb73601688932ddd6"
   },
   {
     "path": "test_mail_connectors.py",

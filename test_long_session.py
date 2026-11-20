@@ -4,7 +4,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 
@@ -12,6 +12,17 @@ import agent_core as core
 
 
 class LongSessionTests(unittest.TestCase):
+    def test_slow_model_response_has_its_own_timeout_and_owned_socket(self):
+        connection = Mock()
+        connection.getresponse.return_value.status = 200
+        connection.getresponse.return_value.readline.side_effect = [b'{"done":true}\n', b'']
+        with patch.object(core.http.client, 'HTTPConnection', return_value=connection) as transport:
+            result = list(core._http_stream('http://127.0.0.1:11434', {}, threading.Event()))
+        self.assertEqual(result, [{'done': True}])
+        transport.assert_called_once_with('127.0.0.1', 11434, timeout=10)
+        connection.sock.settimeout.assert_called_once_with(600)
+        connection.sock.dup.return_value.close.assert_called_once()
+
     def test_unsupported_ollama_thinking_retries_without_it(self):
         received = []
 

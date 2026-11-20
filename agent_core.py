@@ -33,6 +33,7 @@ from task_navigation import research_query, canonical_source, desktop_projects, 
 from work_packet import build_work_packet, complete_direct_read_request
 
 AGENT_NAME = 'Agent Zero'
+OLLAMA_REQUEST_SECONDS = 600
 SKIP = {'.git', '.godot', 'node_modules', '__pycache__', '.venv', 'venv', '.talktoai-code', 'Library', 'Temp', 'obj', 'bin', 'vendor', 'artifacts', 'build', 'dist'}
 ACTIVE_REMOTE = None
 ACTIVE_REMOTE_ALLOWED = False
@@ -295,18 +296,23 @@ def _http_stream(url,payload,cancel):
     parsed=urlsplit(url)
     if parsed.hostname not in ('127.0.0.1','localhost') or parsed.scheme!='http':
         raise ValueError('Model transport must use local Ollama or the loopback SSH tunnel.')
-    conn=http.client.HTTPConnection(parsed.hostname,parsed.port,timeout=180)
-    completed=threading.Event();sock=None
+    conn=http.client.HTTPConnection(parsed.hostname,parsed.port,timeout=10)
+    completed=threading.Event();sock=None;watcher=None
     try:
-        conn.connect();sock=conn.sock
+        conn.connect()
+        # A cold local model can spend minutes loading weights and processing
+        # its first prompt. Keep that deadline separate from connecting.
+        conn.sock.settimeout(OLLAMA_REQUEST_SECONDS)
+        sock=conn.sock.dup()
         def watch():
-            deadline=time.monotonic()+600
+            deadline=time.monotonic()+OLLAMA_REQUEST_SECONDS
             while not completed.wait(.1):
                 if cancel.is_set() or time.monotonic()>deadline:
                     try:sock.shutdown(socket.SHUT_RDWR)
                     except OSError:pass
                     return
-        threading.Thread(target=watch,daemon=True).start()
+        watcher=threading.Thread(target=watch,daemon=True)
+        watcher.start()
         conn.request('POST',parsed.path.rstrip('/')+'/api/chat',body=json.dumps(payload).encode(),headers={'Content-Type':'application/json'})
         response=conn.getresponse()
         if response.status!=200:
@@ -328,7 +334,11 @@ def _http_stream(url,payload,cancel):
     except (OSError,http.client.HTTPException) as exc:
         if cancel.is_set():raise InterruptedError('Task stopped.') from exc
         raise
-    finally:completed.set();conn.close()
+    finally:
+        completed.set()
+        conn.close()
+        if watcher:watcher.join()
+        if sock:sock.close()
 
 def stream_chat(url,payload,cancel):
     """Keep UI cancellation responsive even while Windows connect/recv is blocked."""
