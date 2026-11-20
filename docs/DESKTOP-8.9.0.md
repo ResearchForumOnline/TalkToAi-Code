@@ -20,7 +20,7 @@ In **Auto**, if Ollama explicitly reports that the selected local model needs mo
 
 If both apps use the same local Ollama service, look in **Installed Ollama** first. You can select an existing model directly. Entries with the same manifest digest are labeled, and removing one name may recover little space because other names can share its weights.
 
-If you already have a compatible `.gguf` file on disk, open **Models → Saved downloads → Use a GGUF from disk…**. Choose the file, or every shard of the same split model. Ollama imports the local files and reuses matching blobs already in its store. This avoids another internet download. The original file stays in its original folder. For your first Qwen install, **Install Qwen3.6 35B A3B** in Recommended gets the version that Chat can run. **Save Qwen UD-Q4_K_M GGUF** creates a standalone export for a separate use.
+If you already have a compatible `.gguf` file on disk, open **Models → Saved downloads → Browse for GGUF…**. Choose the file, or every shard of the same split model. Ollama imports the local files and reuses matching blobs already in its store. This avoids another internet download. The original file stays in its original folder. For your first Qwen install, **Install Qwen3.6 35B A3B** in Recommended gets the version that Chat can run. **Save Qwen UD-Q4_K_M GGUF** creates a standalone export for a separate use.
 
 ## Recover disk space
 
