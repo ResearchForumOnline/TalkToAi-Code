@@ -5,7 +5,7 @@
   },
   {
     "path": ".github/workflows/portable-desktop-smoke.yml",
-    "sha256": "51cf26055687d44f187064799e4650c6c2d48f8b638fa224af29cff72746f393"
+    "sha256": "4800fd3494b3f26d05fe336167914fd95ad8ab11c931bd659f5c782d95a17410"
   },
   {
     "path": ".gitignore",
@@ -597,7 +597,7 @@
   },
   {
     "path": "release_checks.py",
-    "sha256": "56550a682178b1e53c454aab0830958a24a6f55bd1e4152b5e6a0c46f23fb29d"
+    "sha256": "9584636421afd595dcb56b3cb00ff7ce8478b98aa458795ab4506b9f6d0b1794"
   },
   {
     "path": "remote_intent.py",
@@ -689,7 +689,7 @@
   },
   {
     "path": "store/build-msix.ps1",
-    "sha256": "32e0b69d5dcd795b8877faf1ec2a37179d8f6d352246746dc3949711fcf9a31c"
+    "sha256": "d61d3cdba76c700caddce37654ce18b2e95a45ba7da736750690ec0e84df36f7"
   },
   {
     "path": "store/build-payload.ps1",

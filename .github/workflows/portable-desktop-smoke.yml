@@ -25,6 +25,8 @@ jobs:
         run: python -m unittest test_model_library test_model_library_dialog test_model_routing test_runtime_setup test_runtime_diagnostics test_asset_library test_engine_discovery test_computer_route -v
       - name: Install Ollama and use a model on a fresh Windows runner
         shell: python
+        env:
+          PYTHONPATH: ${{ github.workspace }}
         run: |
           import json
           import threading

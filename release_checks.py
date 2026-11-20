@@ -143,7 +143,7 @@ def smoke(destination):
                                      and QWEN_FILE.size>OPENZERO_FILE.size>0)
             if getattr(__import__('sys'), 'frozen', False):
                 from asset_library import PACKS, install_pack
-                project = Path(folder) / 'offline-game'
+                project = Path(folder) / 'offline-kenney-assets'
                 project.mkdir()
                 pack = next(item for item in PACKS if item['slug'] == 'tiny-dungeon')
                 bundle = Path(__file__).resolve().parent / 'assets' / 'kenney-cc0.zip'
