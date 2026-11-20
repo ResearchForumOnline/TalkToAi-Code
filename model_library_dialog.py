@@ -1,5 +1,7 @@
 """Qt model downloads panel with cancellable network and import work."""
 
+from contextlib import nullcontext
+from datetime import datetime
 import os
 from pathlib import Path
 import threading
@@ -7,17 +9,22 @@ import threading
 from PySide6.QtCore import QObject, Qt, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget,
+    QAbstractItemView, QCheckBox, QDialog, QFileDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget,
     QListWidgetItem, QMessageBox, QProgressBar, QPushButton, QTabWidget, QVBoxLayout, QWidget,
 )
 
 from model_library import (
     DEFAULT_LOCAL_MODEL, OPENZERO_FILE, OPENZERO_REPO, OPENZERO_REVISION,
-    QWEN_LOCAL_MODEL, QWEN_FILE, QWEN_REPO, QWEN_REVISION, DownloadCancelled,
+    QWEN_LOCAL_MODEL, QWEN_FILE, QWEN_REPO, QWEN_REVISION, DownloadCancelled, ModelFile,
     download_files, format_size, gguf_selection, import_gguf, resolve_hf_selection, selected_files,
 )
-from routing import delete_local_model, install_model, list_models, model_present, require_local_runtime
+from model_storage import (
+    PARTIAL_RETENTION_DAYS, clear_partials, display_path, library_root, native_path,
+    partial_inventory, remove_export, reviewed_export, saved_exports, storage_lock,
+)
+from routing import delete_local_model, install_model, installed_model_records, matching_model, model_present, require_local_runtime
 from runtime_setup import require_model_runtime
+from runtime_diagnostics import last_reply_check, reply_check_text
 
 
 class _DownloadSignals(QObject):
@@ -26,11 +33,16 @@ class _DownloadSignals(QObject):
 
 
 class ModelLibraryDialog(QDialog):
-    def __init__(self, parent, root, select_model, model_removed, diagnose, compare, use_api):
+    def __init__(self, parent, root, select_model, model_removed, diagnose, compare, use_api, *, configured_models=None):
         super().__init__(parent)
         self.root = Path(root)
+        self.reply_history_dir = self.root / '.reply-checks-v1'
         self.select_model = select_model
         self.model_removed = model_removed
+        self.configured_models = dict(configured_models or {})
+        self.model_records = {}
+        self.partials = []
+        self.saved_files = []
         self.cancel = None
         self.stoppable = True
         self.destination = None
@@ -73,6 +85,7 @@ class ModelLibraryDialog(QDialog):
         connection.addWidget(self.api)
         connection.addStretch(1)
         recommended.addLayout(connection)
+        recommended.addWidget(self._text('For chat, use Install above. Save GGUF creates a separate file for other runtimes.'))
         exports = QHBoxLayout()
         self.openzero_file = QPushButton('Save OpenZero GGUF')
         self.openzero_file.clicked.connect(lambda: self._save_preset(OPENZERO_REPO, OPENZERO_REVISION, OPENZERO_FILE))
@@ -124,10 +137,13 @@ class ModelLibraryDialog(QDialog):
         hugging_face.addLayout(actions)
 
         installed = self._tab('Installed Ollama')
-        installed.addWidget(self._text('Models available on this computer. Choose one to use or remove.'))
+        installed.addWidget(self._text('These models belong to your local Ollama library. Other apps using the same Ollama service share this list.'))
         self.installed = QListWidget()
         self.installed.currentItemChanged.connect(self._installed_selection_changed)
         installed.addWidget(self.installed, 1)
+        self.reply_history = self._text('Select a model to see its last reply check.')
+        self.reply_history.setAccessibleName('Last measured reply check')
+        installed.addWidget(self.reply_history)
         inventory_actions = QHBoxLayout()
         self.refresh_installed = QPushButton('Refresh models')
         self.refresh_installed.clicked.connect(self._load_installed)
@@ -135,11 +151,42 @@ class ModelLibraryDialog(QDialog):
         self.use_installed = QPushButton('Use selected for Local')
         self.use_installed.clicked.connect(self._use_installed)
         inventory_actions.addWidget(self.use_installed)
+        self.test_reply = QPushButton('Test reply')
+        self.test_reply.setToolTip('Ask the selected model for 2 + 3. Check the answer and time this local chat request.')
+        self.test_reply.clicked.connect(self._test_reply)
+        inventory_actions.addWidget(self.test_reply)
         self.delete_installed = QPushButton('Remove from Ollama…')
         self.delete_installed.clicked.connect(self._remove_installed)
         inventory_actions.addWidget(self.delete_installed)
         inventory_actions.addStretch(1)
         installed.addLayout(inventory_actions)
+
+        saved = self._tab('Saved downloads')
+        saved.addWidget(self._text('Standalone Hugging Face files saved by Studio, largest first. '
+                                   f'Interrupted downloads resume for {PARTIAL_RETENTION_DAYS} days before automatic cleanup.'))
+        self.exports = QListWidget()
+        self.exports.currentItemChanged.connect(self._export_selection_changed)
+        self.exports.setAccessibleName('Saved Hugging Face downloads')
+        saved.addWidget(self.exports, 1)
+        storage_buttons = QHBoxLayout()
+        self.refresh_exports = QPushButton('Refresh files')
+        self.refresh_exports.clicked.connect(self._load_exports)
+        storage_buttons.addWidget(self.refresh_exports)
+        self.use_saved = QPushButton('Use selected for chat')
+        self.use_saved.clicked.connect(self._use_saved)
+        storage_buttons.addWidget(self.use_saved)
+        self.local_gguf = QPushButton('Browse for GGUF…')
+        self.local_gguf.setToolTip('Import an existing GGUF, including a file downloaded by another app. Select all shards for a split model.')
+        self.local_gguf.clicked.connect(self._choose_local_gguf)
+        storage_buttons.addWidget(self.local_gguf)
+        self.remove_saved = QPushButton('Remove saved file…')
+        self.remove_saved.clicked.connect(self._remove_export)
+        storage_buttons.addWidget(self.remove_saved)
+        self.clear_cache = QPushButton('Clear unfinished…')
+        self.clear_cache.clicked.connect(self._clear_partials)
+        storage_buttons.addWidget(self.clear_cache)
+        storage_buttons.addStretch(1)
+        saved.addLayout(storage_buttons)
         self.tabs.currentChanged.connect(self._tab_changed)
 
         row = QHBoxLayout()
@@ -196,13 +243,15 @@ class ModelLibraryDialog(QDialog):
     def _set_running(self, running):
         for widget in [*self.presets, *self.local_actions, self.openzero_file, self.qwen_file,
                        self.repo, self.revision, self.token, self.files, self.check_connection, self.api,
-                       self.refresh_installed, self.installed]:
+                       self.refresh_installed, self.installed, self.refresh_exports, self.exports, self.local_gguf]:
             widget.setEnabled(not running)
         self.find.setEnabled(not running and bool(self.repo.text().strip()))
-        self.folder.setEnabled(not running and (self.destination is not None or self.root.is_dir()))
+        self.folder.setEnabled(not running and (self.destination is not None or native_path(self.root).is_dir()))
         self.stop.setEnabled(running and self.stoppable)
+        self.clear_cache.setEnabled(not running and bool(self.partials))
         self._selection_changed()
         self._installed_selection_changed()
+        self._export_selection_changed()
 
     def _selection(self):
         if self.loaded is None:
@@ -294,6 +343,9 @@ class ModelLibraryDialog(QDialog):
             model, route = data
             try:
                 self.select_model(model, route)
+                self.configured_models['Local large' if route == 'local_large' else 'Local'] = model
+                if model in self.model_records:
+                    self._show_installed(list(self.model_records))
                 self._set_status(f'Selected {model} for {"Local large" if route == "local_large" else "Local"}.')
                 self.progress.setValue(100)
             except OSError as exc:
@@ -311,12 +363,35 @@ class ModelLibraryDialog(QDialog):
             self._finished(('installed', model, 'local'))
             return
         elif action == 'inventory':
-            names, = data
-            self._show_installed(names)
-            self._set_status(f'Ollama connected · {len(names)} installed model(s).')
+            records, = data
+            self.model_records = {item['name']: item for item in records}
+            self._show_installed(list(self.model_records))
+            self._set_status(f'Ollama connected · {len(records)} installed model(s).')
             self.progress.setValue(100)
+        elif action == 'reply_check':
+            result, = data
+            if result['outcome'] != 'incomplete':
+                record = self.model_records.get(result['model'])
+                if record is not None:
+                    record['digest'] = result['digest']
+                self.inventory_loaded = bool(result['digest'])
+            self._set_status(reply_check_text(result))
+            if result['outcome'] != 'incomplete':
+                self.progress.setValue(100)
+        elif action == 'exports':
+            files, capped, self.partials, label = data
+            self.saved_files = files
+            self.exports.clear()
+            for file in files:
+                item = QListWidgetItem(f'{format_size(file.size)}   {file.relative}')
+                item.setData(Qt.UserRole, file)
+                self.exports.addItem(item)
+            detail = (f'{len(files)} saved file(s), {format_size(sum(file.size for file in files))}. '
+                      f'Unfinished downloads: {format_size(sum(file.size for file in self.partials))}.')
+            self._set_status(label + detail + (' Showing a partial inventory.' if capped else ''))
         elif action == 'removed':
             model, = data
+            self.model_records.pop(model, None)
             names = [self.installed.item(row).data(Qt.UserRole) for row in range(self.installed.count())]
             names = [name for name in names if name != model]
             self._show_installed(names)
@@ -379,34 +454,56 @@ class ModelLibraryDialog(QDialog):
                     if not model_present(11434, model):
                         raise RuntimeError('The imported model did not appear in Ollama inventory.')
                 except DownloadCancelled:
-                    return 'saved', folder, f'Download saved to {folder}. Ollama import stopped.'
+                    return 'saved', folder, f'Download saved to {display_path(folder)}. Ollama import stopped.'
                 except Exception as exc:
-                    return 'saved_error', folder, f'Ollama import failed. Files were saved to {folder}. {str(exc)[:900]}'
+                    return 'saved_error', folder, f'Ollama import failed. Files were saved to {display_path(folder)}. {str(exc)[:900]}'
                 return 'saved_install', folder, model
-            return 'saved', folder, f'Saved {len(paths)} file(s) to {folder}'
+            return 'saved', folder, f'Saved {len(paths)} file(s) to {display_path(folder)}'
 
         self._start('Preparing download…', work)
 
     def _tab_changed(self, index):
         if self.tabs.tabText(index) == 'Installed Ollama' and not self.inventory_loaded and self.cancel is None:
             self._load_installed()
+        elif self.tabs.tabText(index) == 'Saved downloads' and self.cancel is None:
+            self._load_exports()
 
     def _load_installed(self):
         def work(cancel, notify):
             require_local_runtime(cancel, notify)
-            return 'inventory', list_models(11434)
+            return 'inventory', installed_model_records(11434)
 
         self._start('Connecting to local Ollama…', work)
 
     def _show_installed(self, names):
         selected = self._installed_name()
         self.installed.clear()
+        aliases = {}
+        for tag, record in self.model_records.items():
+            digest = record.get('digest')
+            if isinstance(digest, str) and digest:
+                aliases.setdefault(digest, []).append(tag)
         for name in names:
-            item = QListWidgetItem(name)
+            record = self.model_records.get(name, {})
+            labels = []
+            if type(record.get('size')) is int and record['size'] >= 0:
+                labels.append(format_size(record['size']))
+            routes = [route for route, model in self.configured_models.items() if matching_model([name], model)]
+            if self.configured_models:
+                labels.extend(routes or ['Not selected in Studio'])
+            digest = record.get('digest')
+            group = aliases.get(digest, []) if isinstance(digest, str) else []
+            if len(group) > 1:
+                shared = [other for other in group[:3] if other != name][:2]
+                suffix = f' and {len(group) - 3} more' if len(group) > 3 else ''
+                labels.append('same model as ' + ', '.join(shared) + suffix)
+            item = QListWidgetItem('   ·   '.join([name, *labels]))
             item.setData(Qt.UserRole, name)
             self.installed.addItem(item)
             if name == selected:
                 self.installed.setCurrentItem(item)
+        if self.installed.count() and self.installed.currentRow() < 0:
+            self.installed.setCurrentRow(0)
         self.inventory_loaded = True
 
     def _installed_name(self):
@@ -414,9 +511,26 @@ class ModelLibraryDialog(QDialog):
         return item.data(Qt.UserRole) if item else None
 
     def _installed_selection_changed(self):
-        available = self.cancel is None and bool(self._installed_name())
+        name = self._installed_name()
+        available = self.cancel is None and bool(name)
         self.use_installed.setEnabled(available)
+        self.test_reply.setEnabled(available)
         self.delete_installed.setEnabled(available)
+        measurement = last_reply_check(self.reply_history_dir, self.model_records.get(name, {}).get('digest'))
+        if measurement:
+            when = datetime.fromisoformat(measurement['checked_at']).astimezone().strftime('%Y-%m-%d %H:%M %Z')
+            outcome = 'Verified the expected answer (5)' if measurement['outcome']=='verified' else 'Answered differently (expected 5)'
+            self.reply_history.setText(f'Last reply check · {outcome} · {measurement["elapsed_seconds"]:.1f}s · {when}')
+        else:
+            self.reply_history.setText('No saved reply check for this version of the model.' if name else 'Select a model to see its last reply check.')
+
+    def _test_reply(self):
+        from runtime_diagnostics import measure_local_reply
+        model = self._installed_name()
+        if model and self.cancel is None:
+            def work(cancel, notify):
+                return 'reply_check', measure_local_reply(model, cancel, notify, history_dir=self.reply_history_dir)
+            self._start('Checking local model…', work)
 
     def _use_installed(self):
         model = self._installed_name()
@@ -431,6 +545,8 @@ class ModelLibraryDialog(QDialog):
         confirm.setWindowTitle('Remove installed model')
         confirm.setTextFormat(Qt.PlainText)
         confirm.setText(f'Remove {model} from local Ollama?')
+        confirm.setInformativeText('Every app connected to this Ollama service will lose this model name. '
+                                   'Ollama manages the underlying shared weights.')
         confirm.setStandardButtons(QMessageBox.Yes | QMessageBox.Cancel)
         confirm.setDefaultButton(QMessageBox.Cancel)
         if confirm.exec() != QMessageBox.Yes:
@@ -441,10 +557,95 @@ class ModelLibraryDialog(QDialog):
 
         self._start(f'Removing {model} from local Ollama…', work, stoppable=False)
 
+    def _load_exports(self):
+        self._start('Looking for files saved by Studio…', lambda *_: self._storage_result())
+
+    def _storage_result(self, label=''):
+        return 'exports', *saved_exports(self.root), partial_inventory(self.root), label
+
+    def _clear_partials(self):
+        reviewed = list(self.partials)
+        if not reviewed or self.cancel is not None:
+            return
+        size = format_size(sum(item.size for item in reviewed))
+        answer = QMessageBox.question(self, 'Clear unfinished downloads',
+                                      f'Discard {len(reviewed)} unfinished Studio download(s) ({size})?\n'
+                                      'Those downloads will start again from the beginning.',
+                                      QMessageBox.Yes | QMessageBox.Cancel, QMessageBox.Cancel)
+        if answer == QMessageBox.Yes:
+            def work(*_):
+                removed = clear_partials(self.root, reviewed)
+                return self._storage_result(f'Cleared {removed} unfinished download(s). ')
+            self._start('Clearing unfinished downloads…', work, stoppable=False)
+
+    def _export_selection_changed(self):
+        item = self.exports.currentItem()
+        selected = item.data(Qt.UserRole) if item is not None else None
+        self.remove_saved.setEnabled(self.cancel is None and selected is not None)
+        self.use_saved.setEnabled(self.cancel is None and selected is not None and selected.relative.lower().endswith('.gguf'))
+
+    def _remove_export(self):
+        item = self.exports.currentItem()
+        if not item or self.cancel is not None:
+            return
+        selected = item.data(Qt.UserRole)
+        confirm = QMessageBox(self)
+        confirm.setTextFormat(Qt.PlainText)
+        confirm.setWindowTitle('Remove saved download')
+        confirm.setText(f'Remove this standalone file ({format_size(selected.size)})?\n\n{selected.relative}')
+        confirm.setInformativeText('Apps that open this file directly will need another copy.')
+        confirm.setStandardButtons(QMessageBox.Yes | QMessageBox.Cancel)
+        confirm.setDefaultButton(QMessageBox.Cancel)
+        if confirm.exec() != QMessageBox.Yes:
+            return
+
+        def work(*_):
+            remove_export(self.root, selected)
+            return self._storage_result('File removed. ')
+
+        self._start('Removing the selected download…', work, stoppable=False)
+
+    def _choose_local_gguf(self):
+        paths, _ = QFileDialog.getOpenFileNames(self, 'Choose one GGUF or all its shards', '', 'GGUF models (*.gguf)')
+        if paths:
+            self._import_existing(paths)
+
+    def _use_saved(self):
+        item = self.exports.currentItem()
+        if self.cancel is not None or item is None:
+            return
+        selected = item.data(Qt.UserRole)
+        siblings = {file.relative: file for file in self.saved_files
+                    if Path(file.relative).parent == Path(selected.relative).parent}
+        files = [ModelFile(name, file.size) for name, file in siblings.items()]
+        try:
+            group = selected_files(files, [ModelFile(selected.relative, selected.size)])
+        except ValueError as exc:
+            self._set_status(str(exc), error=True)
+            return
+        self._import_existing([file.name for file in group], [siblings[file.name] for file in group])
+
+    def _import_existing(self, paths, saved=None):
+        if not gguf_selection([ModelFile(Path(path).name, 0) for path in paths]):
+            self._set_status('Choose one GGUF model or all the files in one split model.', error=True)
+            return
+
+        def work(cancel, notify):
+            require_model_runtime(cancel, notify)
+            root = library_root(self.root) if saved is not None else None
+            with storage_lock(root) if saved is not None else nullcontext():
+                source = [reviewed_export(root, item) for item in saved] if saved is not None else paths
+                model = import_gguf(source, cancel, notify)
+            if not model_present(11434, model):
+                raise RuntimeError('The imported model did not appear in local Ollama.')
+            return 'installed', model, 'local'
+
+        self._start('Preparing your existing GGUF for Ollama…', work)
+
     def _open_folder(self):
         destination = self.destination if self.destination is not None else self.root
-        if destination.is_dir():
-            QDesktopServices.openUrl(QUrl.fromLocalFile(str(destination)))
+        if native_path(destination).is_dir():
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(display_path(destination))))
 
     def _stop(self):
         if self.cancel and self.stoppable:

@@ -23,7 +23,7 @@ class ProviderDialog(QDialog):
         row=QHBoxLayout();left=QVBoxLayout();left.addWidget(QLabel('Saved profiles'));self.listing=QListWidget();left.addWidget(self.listing);row.addLayout(left,1)
         scroll=QScrollArea();scroll.setWidgetResizable(True);form_widget=QWidget();form=QVBoxLayout(form_widget);scroll.setWidget(form_widget);row.addWidget(scroll,2);layout.addLayout(row,1)
         self.label=QLineEdit();self.url=QLineEdit();self.model=QComboBox();self.model.setEditable(True)
-        self.model.setInsertPolicy(QComboBox.NoInsert);self.model.setPlaceholderText('Choose a model that supports function tools')
+        self.model.setInsertPolicy(QComboBox.NoInsert);self.model.setPlaceholderText('Choose a model for Chat or Code')
         self.model.lineEdit().setPlaceholderText('Fetch models or type a model ID')
         self.env=QLineEdit();self.key=QLineEdit();self.key.setEchoMode(QLineEdit.Password);self.key.setPlaceholderText('Paste your key here, or use the environment variable')
         self.tokens=QSpinBox();self.tokens.setRange(256,32768);self.tokens.setValue(2048);self.tokens.setSingleStep(256)
@@ -46,7 +46,7 @@ class ProviderDialog(QDialog):
         self.refresh_protocol_controls()
         self.priority=QSpinBox();self.priority.setRange(0,1000);self.priority.setValue(100);form.addWidget(QLabel('Fallback order (lower numbers first)'));form.addWidget(self.priority)
         self.default_api=QCheckBox('Use this API profile by default when I next open the app');form.addWidget(self.default_api)
-        fine=QLabel('Session-only keys disappear on exit. Remembered keys use Windows encryption, macOS Keychain or a Linux desktop keyring, separately from profile metadata. A task may make several model calls; the token setting is not a money/spending cap. A listed model is not proof that it supports tools.');fine.setWordWrap(True);fine.setObjectName('muted');form.addWidget(fine)
+        fine=QLabel('Chat works with text models. Computer and coding actions need a model with function calling. Session keys expire when you quit. Remembered keys use your operating system’s credential storage. The token limit applies to each response. A task can make several billable requests.');fine.setWordWrap(True);fine.setObjectName('muted');form.addWidget(fine)
         self.status=QLabel('Select a provider above, add your own key if required and fetch available models.');self.status.setWordWrap(True);self.status.setTextFormat(Qt.PlainText);form.addWidget(self.status)
         actions=QHBoxLayout();layout.addLayout(actions)
         self.buttons={}
@@ -104,7 +104,7 @@ class ProviderDialog(QDialog):
             self.label.setText('xAI');self.url.setText('https://api.x.ai/v1');self.env.setText('XAI_API_KEY')
             self.model.setEditText('grok-4.7');self.tokens.setValue(8192);self.vision.setChecked(True)
             self.status.setText('Use your xAI key and fetch models to check access. Automatic mode uses Responses for function tools and screenshots.')
-        else:self.status.setText('Enter your endpoint and a model supporting streamed Chat Completions with function tools.')
+        else:self.status.setText('Enter your Chat Completions endpoint and a text model. For computer and coding actions, select a model with function calling.')
 
     def load_selected(self,row):
         if row<0:return

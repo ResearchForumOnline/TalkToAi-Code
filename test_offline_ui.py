@@ -32,6 +32,7 @@ class OfflineWorkspaceTests(unittest.TestCase):
         self.stack.enter_context(patch.object(studio.Studio, 'install_tray'))
         hook = self.stack.enter_context(patch('studio.EscapeCancel')).return_value
         hook.arm.return_value = False
+        (self.root/'config.json').write_text('{"last_workspace":"code"}',encoding='utf-8')
         self.window = studio.Studio()
         self.window.task['project'] = str(self.root)
         self.route = self.stack.enter_context(patch('studio.choose_route', side_effect=AssertionError('Offline work must not select a model')))

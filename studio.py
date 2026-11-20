@@ -11,17 +11,17 @@ import copy
 import subprocess
 import hashlib
 from PySide6.QtCore import Qt, Signal, QObject, QTimer, QEvent
-from PySide6.QtGui import QFont, QTextCursor, QKeySequence, QShortcut, QDesktopServices, QIcon, QPixmap, QPainter, QColor
+from PySide6.QtGui import QFont, QTextCharFormat, QTextCursor, QKeySequence, QShortcut, QDesktopServices, QIcon, QPixmap, QPainter, QColor
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtCore import QUrl
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QLabel, QPushButton, QComboBox, QListWidget, QListWidgetItem, QSplitter, QTabWidget,
     QTextBrowser, QPlainTextEdit, QFileDialog, QMessageBox, QFrame, QInputDialog,
     QSystemTrayIcon, QMenu, QDialog, QLineEdit, QCheckBox, QDialogButtonBox, QScrollArea, QSpinBox)
-from agent_core import AGENT_NAME, ProjectTools, run_agent_zero as run_agent, restore_checkpoint, set_active_remote, set_agent_preferences, set_active_provider
+from agent_core import AGENT_NAME, ProjectTools, run_agent_zero as run_agent, run_conversation, restore_checkpoint, set_active_remote, set_agent_preferences, set_active_provider
 from routing import choose_route, ensure_local_model, ensure_local_runtime, matching_model
 from model_library import DEFAULT_LOCAL_MODEL, QWEN_LOCAL_MODEL, DownloadCancelled
-from ssh_tools import SSHProfile, SSHSession, load_profiles, save_profiles
+from ssh_tools import SSHProfile, SSHSession, load_profiles, save_profiles, validate_alias
 from providers import ProviderProfile, load_profiles as load_provider_profiles, save_profiles as save_provider_profiles
 from desktop_inventory import inspect_desktop
 from session_store import load_tasks, save_tasks, matches_task
@@ -44,6 +44,32 @@ from offline_workbench import LocalToolsDialog, format_report
 from attachment_ingest import MAX_FILES, MAX_TOTAL_CHARS, read_attachment, attachment_context
 from conversation_export import format_conversation, save_conversation
 from project_templates import create_project_template
+from model_storage import clean_stale_partials
+
+
+_TOOL_REQUEST = re.compile(
+    r'^(?:(?:please|first|then|now)\s+|(?:can|could|would|will) you\s+|I (?:want|need) you to\s+)*'
+    r'(?:open|launch|control|take over|click|scroll|type|save|run|read|inspect|search|look up|'
+    r'browse|find|check|use|edit|update|fix|install|download|list|show|summari[sz]e)\b', re.I)
+_TOOL_TARGET = re.compile(
+    r'\b(?:my (?:computer|screen|email|mail|files)|window|desktop|browser|Chrome|Brave|Edge|Firefox|'
+    r'Notepad|Excel|folder|project|repository|directory|inbox|Gmail|Blender|Godot|Unity|terminal|'
+    r'PC Pilot|MCP|plugins?|online|the (?:web|internet)|web for|file (?:named|called)|'
+    r'(?:my|this|the) (?:local )?files?|unit tests?|test suite)\b|https?://|[A-Za-z]:[\\/]', re.I)
+
+
+def chat_requests_tools(text):
+    """Use tools on an explicit operational request. Chat also offers a manual override."""
+    if requests_remote_work(text):
+        return True
+    if re.match(r'^(?:(?:please|can you|could you|would you)\s+)*(?:show|give|find|tell|teach)\s+(?:me\s+)?(?:how\b|(?:some\s+)?(?:ideas|examples|tips|advice)\b)',text,re.I):
+        return False
+    return bool(_TOOL_REQUEST.match(text) and _TOOL_TARGET.search(text))
+
+
+def local_model_name(model):
+    names={DEFAULT_LOCAL_MODEL.casefold():'OpenZero 1.7B',QWEN_LOCAL_MODEL.casefold():'Qwen3.6 35B A3B'}
+    return names.get(str(model).casefold(),model)
 
 
 def conversation_prose(content):
@@ -78,6 +104,7 @@ QPushButton#accent { background:#8ce5cd; color:#10202b; font-weight:700; border-
 QPushButton#workspace { text-align:left; font-size:14px; font-weight:600; padding:11px 13px; }
 QPushButton#workspace:checked { background:#214a54; border-color:#8ce5cd; color:#eafff8; }
 QComboBox { background:#1a2837; border:1px solid #34495b; border-radius:6px; padding:6px 10px; }
+QComboBox QAbstractItemView { background-color:#192b3a; color:#edf5ff; border:1px solid #526d83; selection-background-color:#315362; selection-color:white; outline:0; }
 QLineEdit { background:#162331; border:1px solid #34495b; border-radius:6px; padding:7px; selection-background-color:#435f70; }
 QCheckBox { spacing:8px; }
 QCheckBox::indicator { width:15px; height:15px; border:1px solid #777; border-radius:3px; background:#252525; }
@@ -100,6 +127,10 @@ QScrollBar::add-page, QScrollBar::sub-page { background:none; }
 QFrame#composer { background:#192b3a; border:1px solid #5c7884; border-radius:14px; }
 QFrame#composer QPlainTextEdit { background:transparent; border:0; }
 QFrame#composer QWidget { background:transparent; }
+QFrame#composer QComboBox { combobox-popup:0; background-color:#1a2837; }
+QFrame#composer QComboBox QAbstractItemView, QFrame#composer QComboBox QAbstractItemView QWidget {
+    background-color:#192b3a; color:#edf5ff; selection-background-color:#315362; selection-color:white;
+}
 QFrame#composer QPushButton#accent { background:#8ce5cd; color:#10202b; }
 QTabWidget::pane { border:1px solid #304458; }
 QTabBar::tab { background:#172534; padding:9px 10px; font-size:12px; color:#adc0d0; }
@@ -189,7 +220,7 @@ class Studio(QMainWindow):
             'active_ssh_alias': '',
             'active_ssh_path': '',
             'active_provider': '',
-            'preferred_route': 'local',
+            'preferred_route': None,
             'auto_install_openzero': True,
             'access_mode': 'full_user',
             'pc_pilot': True,
@@ -211,11 +242,15 @@ class Studio(QMainWindow):
                 os.environ[environment]=str(self.config[key])
         self.provider_profiles = load_provider_profiles(PROVIDERS)
         self.tasks, recovery_notice = load_tasks(SESSION)
+        if not self.config.get('preferred_route'):
+            self.config['preferred_route']='local' if self.tasks else 'auto'
         for task in self.tasks:
             for job in task.get('jobs',[]):
                 if job.get('state')=='running':job['state']='interrupted';job['note']='Previous app session; no current process attached.'
         self.task = None
-        self.workspace = 'code'
+        previous = self.config.get('last_workspace')
+        self.workspace = previous if previous in ('chat','code') else next(
+            (t.get('kind','code') for t in self.tasks if not t.get('archived')), 'chat')
         self.build()
         if self.config.get('preferred_route') in ('local','server','local_large'):
             self.route.setCurrentIndex(('auto','local','server','local_large').index(self.config['preferred_route']))
@@ -246,6 +281,7 @@ class Studio(QMainWindow):
         self.install_tray()
         self.refresh_connection_label()
         self.refresh_access_label()
+        threading.Thread(target=clean_stale_partials,args=(STATE/'models',),daemon=True).start()
         if recovery_notice:
             self.recovery_label.setText(recovery_notice + '  ·  More → Open app data folder')
             self.recovery_label.show()
@@ -312,7 +348,7 @@ class Studio(QMainWindow):
         self.task_list.setContextMenuPolicy(Qt.CustomContextMenu);self.task_list.customContextMenuRequested.connect(self.task_context_menu)
         self.button('⚙  Settings', self.settings, side)
         self.button('About & updates', self.updates_dialog, side)
-        self.button('⌁  Connections', self.connections_dialog, side)
+        self.connections_button=self.button('⌁  Connections', self.connections_dialog, side)
         self.gmail_button = self.button('Connect Gmail', lambda:self.connect_mail('Gmail'), side)
         self.mail_status_label = QLabel('Mail: checking connections…');self.mail_status_label.setWordWrap(True);self.mail_status_label.setObjectName('muted');side.addWidget(self.mail_status_label)
         more=QPushButton('More  ·  tools && help');more_menu=QMenu(more)
@@ -337,7 +373,9 @@ class Studio(QMainWindow):
         self.workbench_button.setToolTip('Inspect task evidence, saved workflows and experiment comparisons.')
         self.local_tools_button=self.button('Local tools',self.local_tools,bar)
         self.local_tools_button.setToolTip('Find files, check Python syntax, inspect your project or create a starter. No model or API needed.')
-        self.button('Workspace  ▥', lambda: self.right.setVisible(not self.right.isVisible()), bar)
+        self.workspace_button=self.button('Workspace  ▥', lambda: self.right.setVisible(not self.right.isVisible()), bar)
+        self.chat_models=self.button('Models',self.models_dialog,bar)
+        self.chat_models.setToolTip('Choose, install or remove a model')
         chat.addLayout(bar)
         self.recovery_label=QLabel();self.recovery_label.setWordWrap(True);self.recovery_label.setObjectName('muted');self.recovery_label.hide();chat.addWidget(self.recovery_label)
         self.code_actions=QWidget();shortcuts=QHBoxLayout(self.code_actions);shortcuts.setContentsMargins(0,0,0,0)
@@ -374,7 +412,17 @@ class Studio(QMainWindow):
         self.run_card.hide();chat.addWidget(self.run_card)
         self.transcript = QTextBrowser(); self.transcript.setOpenExternalLinks(False); self.transcript.document().setDefaultStyleSheet('p {line-height:1.6;} pre {background:#242424; padding:12px;} code {font-family:Consolas;} h2 {font-size:17px;}')
         chat.addWidget(self.transcript,1)
-        self.status = QLabel('Ready'); self.status.setObjectName('muted'); chat.addWidget(self.status)
+        self.chat_welcome=QWidget();welcome=QVBoxLayout(self.chat_welcome)
+        welcome.setContentsMargins(18,12,18,12);welcome.setSpacing(16);welcome.addStretch()
+        greeting=QLabel('What’s on your mind?');greeting.setAlignment(Qt.AlignCenter)
+        greeting.setStyleSheet('font-size:32px; font-weight:600; color:#e8f5f1;')
+        welcome.addWidget(greeting)
+        ideas=QHBoxLayout();ideas.addStretch()
+        for label,draft in [('Explain something','Explain how '),('Help me write','Help me write '),('Plan my day','Help me plan my day. ')]:
+            self.button(label,lambda checked=False,text=draft:self.fill_chat_draft(text),ideas)
+        ideas.addStretch();welcome.addLayout(ideas);welcome.addStretch()
+        self.chat_welcome.hide();chat.addWidget(self.chat_welcome,1)
+        self.status = QLabel('Ready'); self.status.setObjectName('muted'); self.status.setWordWrap(True); chat.addWidget(self.status)
         self.control_banner=QLabel();self.control_banner.setTextFormat(Qt.PlainText);self.control_banner.setWordWrap(True)
         self.control_banner.setStyleSheet('background:#173a35;color:#d9fff1;border:1px solid #65bea5;border-radius:7px;padding:8px;')
         self.control_banner.hide();chat.addWidget(self.control_banner)
@@ -393,7 +441,11 @@ class Studio(QMainWindow):
         options = QHBoxLayout()
         self.route = QComboBox(); self.route.addItems(['Auto', 'Local', 'Server', 'Local large', 'API · optional provider']);self.refresh_route_labels();options.addWidget(self.route)
         self.route.currentIndexChanged.connect(self.refresh_model_setup)
+        self.route.activated.connect(self.remember_route)
         self.mode = QComboBox(); self.mode.addItems(['Act', 'Plan']); self.mode.setToolTip('Act permits file edits and host commands. Plan only reads project files. Commands are not OS-sandboxed.'); options.addWidget(self.mode)
+        self.chat_tools=QCheckBox('Use tools');self.chat_tools.setToolTip('Ask Agent Zero to use tools for the next message. Choose Plan for read-only work or Act for actions.')
+        self.chat_tools.toggled.connect(lambda checked:self.mode.setVisible(self.workspace=='code' or checked))
+        options.addWidget(self.chat_tools)
         self.step_budget=QComboBox()
         for steps in (16,32,64):self.step_budget.addItem(f'{steps} steps',steps)
         self.step_budget.setCurrentIndex(1);self.step_budget.setToolTip('Maximum model/tool cycles per code request. Stop or steer at any time. Larger budgets can use more time and provider tokens.');options.addWidget(self.step_budget)
@@ -403,13 +455,16 @@ class Studio(QMainWindow):
         self.work_duration.setCurrentIndex(max(0,self.work_duration.findData(self.config.get('work_session_minutes',120))))
         self.work_duration.currentIndexChanged.connect(self.save_work_duration);options.addWidget(self.work_duration)
         options.addStretch()
+        self.retry_button=self.button('Retry reply',lambda:self.send(retry=True),options)
+        self.retry_button.setToolTip('Try your last message again with the selected model')
+        self.retry_button.hide()
         self.stop = self.button('Stop', self.stop_task, options); self.stop.setEnabled(False)
         self.send_button = self.button('↑  Send', self.send, options, True)
         composer.addLayout(options); chat.addWidget(box)
         self.mode_hint=QLabel();self.mode_hint.setObjectName('muted');self.mode_hint.setWordWrap(True)
         def show_mode():self.mode_hint.setText('Act: the agent can edit files and run project commands.' if self.mode.currentText()=='Act' else 'Plan: read-only research and planning. Select Act to build or edit your project.')
         self.mode.currentTextChanged.connect(show_mode);show_mode();chat.addWidget(self.mode_hint)
-        hint=QLabel('Enter to send  ·  Shift+Enter for a new line  ·  Drag files onto the message  ·  Ctrl+O to open a project'); hint.setObjectName('muted'); chat.addWidget(hint)
+        self.compose_hint=QLabel();self.compose_hint.setObjectName('muted');chat.addWidget(self.compose_hint)
         self.performance_label=QLabel('Auto prefers a verified coding route, then falls back when unavailable.');self.performance_label.setObjectName('muted');chat.addWidget(self.performance_label)
         self.performance_label.setWordWrap(True)
         split.addWidget(center)
@@ -563,9 +618,8 @@ class Studio(QMainWindow):
         if self.busy or kind not in ('chat','code'):return
         if self.task:self.task['draft']=self.prompt.toPlainText()
         self.workspace=kind
-        self.chat_space.setChecked(kind=='chat');self.code_space.setChecked(kind=='code')
-        self.new_button.setText('+  New chat' if kind=='chat' else '+  New code task')
-        self.space_label.setText('CHAT CONVERSATIONS' if kind=='chat' else 'CODE CONVERSATIONS')
+        self.config['last_workspace']=kind
+        self.write_config()
         self.task_search.clear();self.task_view.setCurrentIndex(0)
         self.refresh_tasks()
         if self.task_list.count():self.select_task(0)
@@ -803,7 +857,7 @@ class Studio(QMainWindow):
     def new_task(self):
         if self.busy: return
         self.task_search.clear();self.task_view.setCurrentIndex(0)
-        task={'id':uuid.uuid4().hex,'title':'New task','project':self.task['project'] if self.task else self.config['project'],'messages':[],'changes':[],'pinned':False,'archived':False,'kind':self.workspace,'keep_going':bool(self.config.get('keep_going',False))}
+        task={'id':uuid.uuid4().hex,'title':'New chat' if self.workspace=='chat' else 'New task','project':self.task['project'] if self.task else self.config['project'],'messages':[],'changes':[],'pinned':False,'archived':False,'kind':self.workspace,'keep_going':bool(self.config.get('keep_going',False))}
         self.tasks.insert(0,task); self.refresh_tasks(); self.select_task_by_id(task['id']); self.persist()
 
     def select_task(self,row):
@@ -815,9 +869,26 @@ class Studio(QMainWindow):
         self.task=next((task for task in self.tasks if task.get('id')==task_id), None)
         if not self.task:return
         kind=self.task.get('kind','code')
+        is_chat=kind=='chat'
+        self.chat_space.setChecked(is_chat);self.code_space.setChecked(not is_chat)
+        self.new_button.setText('+  New chat' if is_chat else '+  New code task')
+        self.space_label.setText('CHATS' if is_chat else 'CODE CONVERSATIONS')
+        self.task_search.setPlaceholderText('Search chats…' if is_chat else 'Search chats & projects…')
+        self.chat_tools.setChecked(False)
+        for widget in (self.project_button,self.project_label,self.access_label,self.connections_button,
+                       self.gmail_button,self.mail_status_label,self.connection_label,self.health_label,self.reconnect_button,
+                       self.workbench_button,self.local_tools_button,self.workspace_button,self.mode,self.step_budget,
+                       self.mode_hint,self.performance_label,self.stop):
+            widget.setVisible(not is_chat)
+        self.chat_tools.setVisible(is_chat);self.chat_models.setVisible(is_chat)
+        self.retry_button.setVisible(is_chat and self.retry_index() is not None)
+        self.status.setText('' if is_chat else 'Ready')
+        self.refresh_attachments()
+        self.compose_hint.setText('Enter to send  ·  Shift+Enter for a new line' if is_chat else 'Enter to send  ·  Shift+Enter for a new line  ·  Drag files onto the message  ·  Ctrl+O to open a project')
         self.keep_going.blockSignals(True);self.keep_going.setChecked(bool(self.task.setdefault('keep_going',self.config.get('keep_going',False))));self.keep_going.blockSignals(False);self.keep_going.setVisible(kind=='code');self.work_duration.setVisible(kind=='code')
-        self.mode.setCurrentText('Plan' if kind=='chat' or self.config.get('approval_policy')=='plan' else 'Act')
-        self.prompt.setPlaceholderText(f'Ask {AGENT_NAME} a question…' if kind=='chat' else f'Ask {AGENT_NAME} to find your game and fix its menu…')
+        self.mode.setCurrentText('Plan' if self.config.get('approval_policy')=='plan' else 'Act')
+        self.prompt.setPlaceholderText('Message TalkToAi…' if is_chat else f'Ask {AGENT_NAME} to find your game and fix its menu…')
+        self.prompt.setFixedHeight(76 if is_chat else 104)
         self.right.setVisible(kind=='code')
         self.code_actions.setVisible(kind=='code')
         self.partial=''; self.current_file=None; self.editor.clear(); self.output.clear()
@@ -830,29 +901,76 @@ class Studio(QMainWindow):
         self.project_label.setToolTip(self.task['project']); self.render(); self.refresh_changes();self.refresh_plan();self.refresh_jobs()
         self.files.clear(); self.filter_label.setText('Double-click a file to edit · Refresh to list')
 
+    def fill_chat_draft(self,text):
+        if not self.prompt.toPlainText().strip():
+            self.prompt.setPlainText(text);self.prompt.moveCursor(QTextCursor.End)
+        self.prompt.setFocus()
+
     def render(self):
         parts=[];hidden_protocol=False
-        for m in self.task['messages']:
+        is_chat=self.task.get('kind','code')=='chat'
+        user_heading='#### You' if is_chat else '## You'
+        assistant_heading='#### TalkToAi' if is_chat else '## TalkToAi Code'
+        messages=self.task['messages']
+        for index,m in enumerate(messages):
             if m['role']=='tool': continue
             content=(m.get('display_content',m.get('content')) or '').strip()
+            if (m.get('source')=='app' and content.startswith('App pause report\nTask paused after 0 model steps.')
+                    and index+1<len(messages) and messages[index+1].get('content','').startswith('Task error:')):
+                continue
             if m['role']=='assistant' and m.get('source')!='local':
                 content,hidden=conversation_prose(content);hidden_protocol=hidden_protocol or hidden
-            if content:parts.append(('## You' if m['role']=='user' else '## TalkToAi Code')+'\n\n'+content)
+            if content:
+                heading=user_heading if m['role']=='user' else assistant_heading
+                if is_chat and m.get('source')=='chat_error':heading='#### Reply interrupted'
+                if is_chat and m.get('auto_model'):heading+=' · '+str(m['auto_model'])
+                parts.append(heading+'\n\n'+content)
         partial,hidden=conversation_prose(self.partial);hidden_protocol=hidden_protocol or hidden
-        if partial:parts.append('## TalkToAi Code\n\n'+partial)
-        if hidden_protocol:parts.append('Model protocol text is hidden from this conversation view. Actual tool activity appears in Tools; protocol text alone does not establish execution.')
-        if not self.busy and not self.task.get('pause_summary') and self.task.get('goal_checkpoint',{}).get('state')=='paused':
+        if partial:parts.append(assistant_heading+'\n\n'+partial)
+        if hidden_protocol and not is_chat:parts.append('Model protocol text is hidden from this conversation view. Actual tool activity appears in Tools; protocol text alone does not establish execution.')
+        if not is_chat and not self.busy and not self.task.get('pause_summary') and self.task.get('goal_checkpoint',{}).get('state')=='paused':
             parts.append('## Task pause report\n\n'+self.pause_report(self.task['goal_checkpoint']))
-        if not parts:
-            if self.task.get('kind','code')=='chat':
-                parts=['# Start a conversation\n\nAsk a question, explore an idea, or plan your next move. Chat starts in **Plan** mode so it can read relevant files without changing them. Switch to **Act** if you want it to take action.\n\nPinned chats stay at the top of this space. Use the conversation menu to rename, branch, archive, or move a chat into Code.']
-            else:
-                parts=['# Tell TalkToAi what you want done\n\nDescribe a result in ordinary words. Start with **Help me start** for editable examples, or type your own request. TalkToAi can inspect the selected project, find project folders on your Desktop when asked, check relevant public documentation, edit code in **Act**, run project checks, and show actual tool results.\n\nTry **“Find my game on Desktop, improve its menu, and check it runs.”** Or **“Make a playable game about a haunted station.”** For an existing OpenSSH alias, try **“Connect to my server and inspect my app.”**\n\n**Plan** keeps work read-only. **Act** permits edits and commands using your account. Server authentication remains in OpenSSH; handle passwords and two-factor prompts yourself. Automatic web research uses generic topic queries; say **“offline”** to skip it. Review changed files and evidence before relying on a result.']
+        self.chat_welcome.setVisible(is_chat and not parts)
+        self.transcript.setVisible(bool(parts) or not is_chat)
+        if not parts and not is_chat:
+            parts=['# Tell TalkToAi what you want done\n\nDescribe a result in ordinary words. Start with **Help me start** for editable examples, or type your own request. TalkToAi can inspect the selected project, find project folders on your Desktop when asked, check relevant public documentation, edit code in **Act**, run project checks, and show actual tool results.\n\nTry **“Find my game on Desktop, improve its menu, and check it runs.”** Or **“Make a playable game about a haunted station.”** For an existing OpenSSH alias, try **“Connect to my server and inspect my app.”**\n\n**Plan** keeps work read-only. **Act** permits edits and commands using your account. Server authentication remains in OpenSSH; handle passwords and two-factor prompts yourself. Automatic web research uses generic topic queries; say **“offline”** to skip it. Review changed files and evidence before relying on a result.']
             parts.append('**No model connected?** Open **Local tools** to inspect this folder, find code, check Python syntax, or create a working offline starter. Try **“check python syntax”** or **“find files *.gd”** directly in the composer.')
         scroll=self.transcript.verticalScrollBar();follow=scroll.value()>=scroll.maximum()-40;position=scroll.value()
-        self.transcript.setMarkdown('\n\n---\n\n'.join(parts))
+        self.transcript.setMarkdown(('\n\n' if is_chat else '\n\n---\n\n').join(parts))
+        if is_chat:self.format_chat_turns()
         if follow:self.transcript.moveCursor(QTextCursor.End)
         else:scroll.setValue(position)
+
+    def format_chat_turns(self):
+        document=self.transcript.document()
+        cursor=QTextCursor(document)
+        cursor.beginEditBlock()
+        block=document.begin()
+        speaker=None
+        while block.isValid():
+            fmt=block.blockFormat()
+            text=block.text()
+            if fmt.headingLevel()==4 and (text in ('You','TalkToAi','Reply interrupted') or text.startswith('TalkToAi · ')):
+                speaker=text
+                cursor.setPosition(block.position())
+                cursor.movePosition(QTextCursor.EndOfBlock,QTextCursor.KeepAnchor)
+                label=QTextCharFormat()
+                label.setFontPointSize(10)
+                label.setFontWeight(QFont.DemiBold)
+                color='#b7cbd9' if speaker=='You' else '#f1cc92' if speaker=='Reply interrupted' else '#8ce5cd'
+                label.setForeground(QColor(color))
+                cursor.mergeCharFormat(label)
+                fmt.setTopMargin(6 if block==document.begin() else 22)
+                fmt.setBottomMargin(5)
+                fmt.setAlignment(Qt.AlignRight if speaker=='You' else Qt.AlignLeft)
+                cursor.setBlockFormat(fmt)
+            elif speaker=='You' and not block.textList() and fmt.headingLevel()==0 and not fmt.nonBreakableLines():
+                cursor.setPosition(block.position())
+                fmt.setAlignment(Qt.AlignRight)
+                fmt.setLeftMargin(40)
+                cursor.setBlockFormat(fmt)
+            block=block.next()
+        cursor.endEditBlock()
 
     def paint_stream(self):
         if self.stream_dirty:self.stream_dirty=False;self.render()
@@ -860,6 +978,15 @@ class Studio(QMainWindow):
     def tick(self):
         if self.busy and self.started_at:
             now=time.monotonic();quiet=max(0,int(now-(self.last_observed_at or self.started_at)))
+            if self.execution_kind=='conversation':
+                if self.run_phase=='Waiting for reply':
+                    seconds=int(now-self.started_at)
+                    text=(self.chat_recovery+'  ' if self.chat_recovery else '')+f'Waiting for {self.chat_model} · {seconds}s'
+                    if seconds>=15 and self.chat_local:
+                        text+='   The first reply can take longer while Ollama loads a model. To try a smaller one, choose Stop, then Models.'
+                    self.status.setText(text)
+                elif self.run_phase=='Model responding':self.status.setText('Writing a reply…')
+                return
             if self.execution_kind=='local':
                 self.performance_label.setText(f'Local program · {int(now-self.started_at)}s elapsed · no model request')
                 self.run_card_title.setText(self.run_phase)
@@ -988,7 +1115,7 @@ class Studio(QMainWindow):
         self.started_at=time.monotonic();self.route_description='Local program · no model request'
         self.prompt.clear();self.task['draft']='';self.partial=''
         self.task['messages'].append({'role':'user','content':text})
-        if self.task['title']=='New task':
+        if self.task['title'] in ('New chat','New task'):
             self.task['title']=text.splitlines()[0][:45];self.title.setText(self.task['title']);self.refresh_tasks()
         self.set_busy(True);self.render();self.persist()
 
@@ -1047,7 +1174,7 @@ class Studio(QMainWindow):
         request=recognize_request(text)
         if request:
             self.start_local_request(text,request);return True
-        if normalized in ('help','faq','how to','/help'):
+        if normalized in ('faq','/help') or (self.workspace=='code' and normalized in ('help','how to')):
             self.prompt.clear();self.faq_dialog();return True
         if normalized=='check my desktop for server logins':normalized='check desktop for server logins'
         if normalized in ('open connections','ssh connections','manage connections'):
@@ -1086,7 +1213,9 @@ class Studio(QMainWindow):
             else:path=Path.home()/'Desktop' if normalized in ('open desktop','open my desktop') else Path(text.strip()[13:].strip().strip('"'))
             if not path.is_dir():self.error('That project folder does not exist.');return True
             self.new_task();self.task['project']=str(path.resolve());self.project_label.setText(path.name);self.refresh_files();reply='Opened project: '+str(path.resolve())
-        if normalized in controls:self.route.setCurrentIndex(controls[normalized]);reply='Model route set to '+self.route.currentText()+'.'
+        if normalized in controls:
+            index=controls[normalized];self.route.setCurrentIndex(index);self.remember_route(index)
+            reply='Model route set to '+self.route.currentText()+'.'
         elif normalized in ('plan mode','switch to plan mode','act mode','switch to act mode'):
             self.mode.setCurrentText('Plan' if 'plan' in normalized else 'Act');reply='Mode set to '+self.mode.currentText()+'.'
         if reply:
@@ -1148,8 +1277,10 @@ class Studio(QMainWindow):
             note=' · truncated excerpt' if item['truncated'] else ''
             self.attachment_list.addItem(f"{item['name']} · {item['kind']} · {len(item['content']):,} characters{note}")
         count=len(self.attachments)
-        self.attachment_label.setText((f'{count}/{MAX_FILES} attached · {sum(len(a["content"]) for a in self.attachments):,}/{MAX_TOTAL_CHARS:,} characters · sent to selected model route' if count else 'No files attached'))
+        self.attachment_label.setText((f'{count}/{MAX_FILES} attached · {sum(len(a["content"]) for a in self.attachments):,}/{MAX_TOTAL_CHARS:,} characters · sent to selected model route' if count else 'No files attached' if self.workspace=='code' else ''))
         self.attachment_list.setVisible(bool(count))
+        for widget in (self.remove_attachment_button,self.clear_attachments_button):
+            widget.setVisible(bool(count) or self.workspace=='code')
         self.remove_attachment_button.setEnabled(bool(count))
         self.clear_attachments_button.setEnabled(bool(count))
 
@@ -1161,8 +1292,34 @@ class Studio(QMainWindow):
     def clear_attachments(self):
         self.attachments.clear();self.refresh_attachments()
 
-    def send(self):
-        text=self.prompt.toPlainText().strip()
+    def retry_index(self):
+        if self.task.get('kind','code')!='chat':return None
+        index=self.task.get('chat_retry_index')
+        messages=self.task['messages']
+        if index is None:
+            # Recover a pending conversational turn after an app exit or an 8.8 error.
+            index=next((i for i in reversed(range(len(messages))) if messages[i].get('role')=='user'),None)
+            if index is None or chat_requests_tools(messages[index].get('typed_content') or messages[index].get('content') or ''):
+                return None
+        if (type(index) is int and 0<=index<len(messages) and messages[index].get('role')=='user'
+                and all(m.get('role')=='assistant' and (m.get('source') in ('chat_error','chat_partial')
+                        or (m.get('content') or '').startswith('Task error: ')
+                        or (m.get('source')=='app' and (m.get('content') or '').startswith('App pause report\nTask paused after 0 model steps.')))
+                        for m in messages[index+1:])):
+            return index
+        return None
+
+    def send(self,checked=False,*,retry=False):
+        if self.busy and self.execution_kind=='conversation':
+            return  # A second Enter during a reply leaves the next draft in place.
+        index=self.retry_index() if not self.busy else None
+        messages=self.task['messages']
+        resubmitted=(not retry and index is not None and not self.attachments and not self.chat_tools.isChecked()
+                     and self.prompt.toPlainText().strip()==messages[index].get('content'))
+        if resubmitted:retry=True
+        if retry and index is None:return
+        original=messages[index] if retry else None
+        text=original.get('typed_content',original['content']) if retry else self.prompt.toPlainText().strip()
         if not text and self.attachments:text='Please analyze the attached file(s).'
         if not text:return
         if self.busy:
@@ -1171,26 +1328,41 @@ class Studio(QMainWindow):
             self._request_stop(clear_pending=False)
             self.status.setText('Steering queued · finishing the current tool safely')
             return
-        if not self.attachments and self.natural_control(text):return
+        if not retry and not self.attachments:
+            if self.natural_control(text):return
+            text=self.prompt.toPlainText().strip()
+        is_chat=self.task.get('kind','code')=='chat'
+        conversation=is_chat and (retry or (not self.chat_tools.isChecked() and
+            (not chat_requests_tools(text) or (self.attachments and re.match(r'^(?:summari[sz]e|read|explain|analy[sz]e)\b',text,re.I)))))
         if self.route.currentIndex()==4 and not self.active_provider():
             self.status.setText('Add an API key and choose a model in your private vault to begin. Your draft is kept.')
             self.providers_dialog()
             if not self.active_provider():return
-        text=self.prompt.toPlainText().strip()
-        if not text and self.attachments:text='Please analyze the attached file(s).'
-        if not self.prepare_task_target(text):return
-        try:ProjectTools(self.task['project'])
-        except Exception as exc:self.error(exc);return
-        user_message={'role':'user','content':text}
-        if self.attachments:
-            context,summaries=attachment_context(self.attachments)
-            user_message['content']=text+context
-            user_message['typed_content']=text
-            user_message['display_content']=text+'\n\nAttached: '+', '.join(summaries)+'\n\nExtracted text was sent to the selected model route as reference material.'
-        self.prompt.clear();self.clear_attachments();self.task['messages'].append(user_message)
-        self.task['draft']=''
-        if self.task['title']=='New task':self.task['title']=text.splitlines()[0][:45];self.title.setText(self.task['title']);self.refresh_tasks()
-        self.execution_kind='model'
+        if not conversation:
+            if not self.prepare_task_target(text):return
+            try:ProjectTools(self.task['project'])
+            except Exception as exc:self.error(exc);return
+        elif not retry and requested_runtime(text,self.server_name())=='server':
+            self.route.setCurrentIndex(2)
+            if re.search(r'\balways\b',text,re.I):self.remember_route(2)
+        if retry:
+            del messages[index+1:]
+            if resubmitted:self.prompt.clear()
+        else:
+            user_message={'role':'user','content':text}
+            if self.attachments:
+                context,summaries=attachment_context(self.attachments)
+                user_message['content']=text+context
+                user_message['typed_content']=text
+                user_message['display_content']=text+'\n\nAttached: '+', '.join(summaries)
+            self.prompt.clear();self.clear_attachments();messages.append(user_message)
+            self.task['draft']=''
+        self.task.pop('chat_retry_index',None)
+        if self.task['title'] in ('New task','New chat'):self.task['title']=text.splitlines()[0][:45];self.title.setText(self.task['title']);self.refresh_tasks()
+        self.execution_kind='conversation' if conversation else 'model'
+        self.chat_tools.setChecked(False)
+        self.chat_response_received=False
+        self.chat_recovery=''
         self.partial=''; self.render(); self.persist(); self.cancel=threading.Event(); self.set_busy(True)
         preference=('auto','local','server','local_large','provider')[self.route.currentIndex()]
         self.started_at=time.monotonic();self.route_description=f'{AGENT_NAME} · selecting model';self.status.setText('Checking installed models…')
@@ -1198,24 +1370,25 @@ class Studio(QMainWindow):
         task_kind=self.task.get('kind','code');rounds=self.step_budget.currentData() if task_kind=='code' else 16
         performance=self.model_performance()
         keep_going=bool(self.keep_going.isChecked()) and task_kind=='code'
-        task_goal=copy.deepcopy(self.current_task_goal())
+        task_goal=None if conversation else copy.deepcopy(self.current_task_goal())
         auto_openzero=bool(self.config.get('auto_install_openzero',True))
-        active_remote=self.active_remote()
-        requested_ssh=act and (requests_remote_work(text) or (
-            bool(re.search(r'\b(ssh|log ?in|connect)\b',text,re.I)) and
-            bool(re.search(r'\b(server|host|ssh)\b|\.[a-z]{2,}',text,re.I))))
-        set_active_remote(active_remote if self.config.get('remote_enabled') and self.config.get('remote_pilot',True) else None)
-        set_agent_preferences(
-            remote_allowed=bool(self.config.get('remote_pilot',True)) and (requested_ssh or (bool(self.config.get('remote_enabled')) and self.config.get('approval_policy') == 'auto_remote')),
-            auto_context=bool(self.config.get('auto_context', True)),
-            desktop_access=self.config.get('access_mode','full_user')=='full_user',
-            pc_pilot=bool(self.config.get('pc_pilot',True)),
-            remote_pilot=bool(self.config.get('remote_pilot',True)),
-            web_browser=self.config.get('web_browser','auto'),
-            web_search=self.config.get('web_search','auto'),
-            web_browser_mode=self.config.get('web_browser_mode','headless'),
-            web_browser_cdp_port=self.config.get('web_browser_cdp_port',9222),
-        )
+        if not conversation:
+            active_remote=self.active_remote()
+            requested_ssh=act and (requests_remote_work(text) or (
+                bool(re.search(r'\b(ssh|log ?in|connect)\b',text,re.I)) and
+                bool(re.search(r'\b(server|host|ssh)\b|\.[a-z]{2,}',text,re.I))))
+            set_active_remote(active_remote if self.config.get('remote_enabled') and self.config.get('remote_pilot',True) else None)
+            set_agent_preferences(
+                remote_allowed=bool(self.config.get('remote_pilot',True)) and (requested_ssh or (bool(self.config.get('remote_enabled')) and self.config.get('approval_policy') == 'auto_remote')),
+                auto_context=bool(self.config.get('auto_context', True)),
+                desktop_access=self.config.get('access_mode','full_user')=='full_user',
+                pc_pilot=bool(self.config.get('pc_pilot',True)),
+                remote_pilot=bool(self.config.get('remote_pilot',True)),
+                web_browser=self.config.get('web_browser','auto'),
+                web_search=self.config.get('web_search','auto'),
+                web_browser_mode=self.config.get('web_browser_mode','headless'),
+                web_browser_cdp_port=self.config.get('web_browser_cdp_port',9222),
+            )
         def work():
             try:
                 try:benchmarks=json.loads((HOME/'benchmark-results.json').read_text(encoding='utf-8'))
@@ -1230,17 +1403,24 @@ class Studio(QMainWindow):
                     if preference in ('local','local_large'):
                         requested_model=self.config['local_model'] if preference=='local' else self.config.get('local_large_model', self.config['local_model'])
                         ensure_local_model(requested_model, self.bus.event.emit, cancel=self.cancel, allow_default_download=auto_openzero)
-                    if preference in ('auto','server'):
-                        ready,detail=ensure_amd_tunnel(self.config)
+                    ready=False
+                    try:alias=validate_alias(self.config.get('active_ssh_alias',''))
+                    except ValueError:alias=None
+                    if preference=='server' or (preference=='auto' and alias):
+                        ready,detail=ensure_amd_tunnel(self.config,cancel=self.cancel)
                         if not ready and preference=='server':
                             raise ConnectionError(detail)
                         if not ready:
                             self.bus.event.emit('status',detail+' Checking local fallback…')
                     if preference=='auto' and not ready:
-                        self.bus.event.emit('status','Starting local Ollama fallback…')
-                        ensure_local_runtime()
+                        self.bus.event.emit('status','Connecting to local Ollama…')
+                        ensure_local_runtime(cancel=self.cancel)
+                        if self.cancel.is_set():return
                     try:
-                        selected=choose_route(self.config,preference,benchmarks)
+                        if conversation and preference=='auto':
+                            selected=choose_route(self.config,preference,benchmarks,include_server=ready)
+                        else:
+                            selected=choose_route(self.config,preference,benchmarks)
                     except ConnectionError:
                         if preference!='auto' or not auto_openzero or self.config.get('local_model')!=DEFAULT_LOCAL_MODEL:
                             raise
@@ -1248,6 +1428,27 @@ class Studio(QMainWindow):
                         selected=choose_route(self.config,'local',benchmarks)
                 if self.cancel.is_set():return
                 self.bus.event.emit('route',selected)
+                if conversation:
+                    from agent_core import OllamaCapacityError
+                    try:
+                        run_conversation(selected['url'],selected['model'],history,self.cancel,self.bus.event.emit,performance=performance)
+                    except OllamaCapacityError as exc:
+                        small=self.config.get('local_model','')
+                        if (self.cancel.is_set() or preference!='auto' or selected['route'] not in ('local','local_large')
+                                or not small or matching_model([selected['model']],small)):
+                            raise
+                        self.bus.event.emit('chat_recovery',
+                            f'{local_model_name(selected["model"])} needs more available memory. Trying {local_model_name(small)} on this PC.')
+                        try:
+                            ensure_local_model(small,self.bus.event.emit,cancel=self.cancel,allow_default_download=auto_openzero)
+                            if self.cancel.is_set():return
+                            fallback=choose_route(self.config,'local',benchmarks)
+                        except (ConnectionError,OSError,ValueError) as setup_error:
+                            raise RuntimeError(f'{exc} {local_model_name(small)} could not start. {setup_error}') from setup_error
+                        if self.cancel.is_set():return
+                        self.bus.event.emit('route',fallback)
+                        run_conversation(fallback['url'],fallback['model'],history,self.cancel,self.bus.event.emit,performance=performance)
+                    return
                 def job_event(kind,data):self.bus.event.emit(kind,dict(data,task_id=task_id))
                 self.job_manager=ProcessJobs(project,self.cancel,job_event)
                 run_agent(selected['url'],selected['model'],history,project,act,self.cancel,self.bus.event.emit,rounds=rounds,performance=performance,jobs=self.job_manager,task_kind=task_kind,keep_going=keep_going,task_goal=task_goal,app_preferences=self.preferences_manager,preference_change_notify=lambda result:self.bus.event.emit('app_preferences_changed',result),mcp_config=self.config.get('mcp_plugins'))
@@ -1255,9 +1456,10 @@ class Studio(QMainWindow):
                 self.bus.event.emit('status','Model download stopped')
             except Exception as exc:self.bus.event.emit('error',str(exc))
             finally:
-                set_active_remote(None)
+                if not conversation:
+                    set_active_remote(None)
+                    set_agent_preferences(False, True, False, True, False)
                 set_active_provider(None)
-                set_agent_preferences(False, True, False, True, False)
                 self.bus.event.emit('finished',None)
         threading.Thread(target=work,daemon=True).start()
 
@@ -1426,16 +1628,16 @@ class Studio(QMainWindow):
             self.output.clear();self.status.setText('Starting new run…')
             self.reasoning_excerpt='';self.model_activity.clear();self.run_card_title.setText('Request received')
             self.run_card_detail.setText('App status · checking the selected runtime. The model has not replied yet.')
-            self.run_card.show()
+            self.run_card.setVisible(self.execution_kind!='conversation')
             self.task['activity_run_start']=len(self.task.get('activity',[]))
             self.task.pop('last_metrics',None)
             self.performance_label.setToolTip('')
-            if self.execution_kind!='local':
+            if self.execution_kind=='model':
                 self.task.pop('pause_summary',None)
                 self.task.pop('run_summary',None)
                 self.task.pop('goal_checkpoint',None)
                 self.task.pop('workspace_changes',None)
-            self.refresh_changes()
+            if self.execution_kind!='conversation':self.refresh_changes()
             self.run_phase='Running local program' if self.execution_kind=='local' else 'Connecting to model'
             if self.execution_kind=='local':
                 self.run_card_title.setText('Running locally')
@@ -1446,7 +1648,7 @@ class Studio(QMainWindow):
             self.explicit_stop=threading.Event();explicit_stop=self.explicit_stop
             def escape():
                 explicit_stop.set();cancel.set();self.bus.event.emit('control_cancel',token)
-            self.global_escape=self.escape_cancel.arm(escape)
+            self.global_escape=self.execution_kind!='conversation' and self.escape_cancel.arm(escape)
         if not busy:
             self.control_cancel_token=None;self.escape_cancel.disarm();self.global_escape=False
             self.end_control_session()
@@ -1454,8 +1656,11 @@ class Studio(QMainWindow):
         self.busy=busy
         self.refresh_model_setup()
         self.escape_shortcut.setEnabled(busy and not self.global_escape)
-        for w in (self.new_button,self.project_button,self.task_list,self.task_view,self.route,self.mode,self.step_budget,self.keep_going,self.work_duration,self.goal_button,self.chat_space,self.code_space,self.skynet_button,self.local_tools_button):w.setEnabled(not busy)
-        self.prompt.setEnabled(True);self.send_button.setEnabled(True);self.send_button.setText('✦  Steer' if busy else '↑  Send')
+        for w in (self.new_button,self.project_button,self.task_list,self.task_view,self.route,self.mode,self.step_budget,self.keep_going,self.work_duration,self.goal_button,self.chat_space,self.code_space,self.skynet_button,self.local_tools_button,self.chat_models,self.chat_tools):w.setEnabled(not busy)
+        steer=busy and self.execution_kind!='conversation'
+        self.prompt.setEnabled(True);self.send_button.setEnabled(not busy or steer);self.send_button.setText('✦  Steer' if steer else '↑  Send')
+        self.stop.setVisible(busy or self.workspace=='code')
+        self.retry_button.setVisible(not busy and self.workspace=='chat' and self.retry_index() is not None)
         self.stop.setEnabled(busy)
         if self.tray:self.tray.setToolTip('TalkToAi Code — '+('working in background' if busy else 'ready'))
 
@@ -1481,7 +1686,9 @@ class Studio(QMainWindow):
         if clear_pending and self.pending_prompt:
             draft=self.prompt.toPlainText().strip();queued=self.pending_prompt;self.pending_prompt=''
             self.prompt.setPlainText(queued+('\n\n'+draft if draft and draft!=queued else ''))
-        self.cancel.set(); self.status.setText('Stopping local program…' if self.execution_kind=='local' else 'Stopping · waiting for model or running command to yield')
+        self.cancel.set()
+        self.status.setText('Stopping reply…' if self.execution_kind=='conversation' else
+                            'Stopping local program…' if self.execution_kind=='local' else 'Stopping · waiting for model or running command to yield')
         self.observe_progress('Stopping')
         if self.control_active:
             self.control_overlay.show_stopping();self.control_banner.setText('TalkToAi is stopping…\nWaiting for the current action to finish safely.')
@@ -1496,9 +1703,17 @@ class Studio(QMainWindow):
             return
         if kind=='control_cancel':
             if self.busy and data is self.control_cancel_token:self.stop_task()
+        elif kind=='chat_recovery':
+            self.chat_recovery=data
+            self.status.setText(data)
         elif kind=='delta':self.partial+=data;self.stream_dirty=True;self.observe_progress('Model responding')
         elif kind=='model_wait':
             if isinstance(data,dict):
+                if self.execution_kind=='conversation':
+                    if not self.cancel.is_set():
+                        self.run_phase='Model responding' if self.partial else 'Waiting for reply'
+                        self.tick()
+                    return
                 self.run_phase='Waiting for model'
                 self.run_step=int(data.get('step') or self.run_step or 0)
                 self.run_card_title.setText('Waiting for model')
@@ -1564,7 +1779,12 @@ class Studio(QMainWindow):
         elif kind=='verification':
             self.observe_progress('Check result received')
             self.task['verification']=data;self.refresh_plan();self.persist()
-        elif kind=='message':self.task['messages'].append(data);self.partial='';self.persist();self.render()
+        elif kind=='message':
+            self.task['messages'].append(data);self.partial=''
+            if self.execution_kind=='conversation':
+                self.chat_response_received=True
+                if self.chat_recovery:data['auto_model']=self.chat_model
+            self.persist();self.render()
         elif kind=='tool':
             name=data['name'];self.run_tool_counts[name]=self.run_tool_counts.get(name,0)+1
             if name in ('read_file','read_project_files','list_files','project_info','search_code','project_map','git_changes'):phase='Inspecting project'
@@ -1646,6 +1866,10 @@ class Studio(QMainWindow):
             self.route_description=label+' · '+data['model'];self.status.setText(self.route_description+' · '+data['reason'])
             if data['route'] in ('local','local_large'):
                 self._record_local_model(data['model'])
+            if self.execution_kind=='conversation':
+                self.chat_model=local_model_name(data['model'])
+                self.chat_local=data['route'] in ('local','local_large')
+                self.observe_progress('Waiting for reply');self.tick()
         elif kind=='metrics':
             self.observe_progress('Model response received',data.get('step',self.run_step))
             self.task['last_metrics']=data
@@ -1666,12 +1890,16 @@ class Studio(QMainWindow):
         elif kind=='change':self.task['changes'].append(data);self.persist();self.refresh_changes();self.observe_progress('File edit recorded')
         elif kind=='status':
             if not (self.busy and self.cancel.is_set()):self.status.setText(data)
+            if self.execution_kind=='conversation':return
             step=re.search(r'\bstep\s+(\d+)\b',str(data),re.I)
             if step:self.observe_progress('Waiting for model',int(step.group(1)))
             elif str(data).lower().startswith(('retrying','repairing')):self.observe_progress('Retrying model response')
         elif kind=='api_route':
             self.route_description='API · '+data['label']+' · '+data['model']
-            self.observe_progress('Using '+data['label'])
+            if self.execution_kind=='conversation':
+                self.chat_model=data['model']
+                self.observe_progress('Waiting for reply')
+            else:self.observe_progress('Using '+data['label'])
             self.task.setdefault('api_routes',[]).append({'provider':data['label'],'model':data['model'],'fallback':data['fallback']})
         elif kind=='health':self.health_label.setText(data)
         elif kind=='local_model_state':
@@ -1685,15 +1913,44 @@ class Studio(QMainWindow):
             self.status.setText(data)
             self.refresh_mail_status()
         elif kind=='error':
+            if self.execution_kind=='conversation':
+                if self.cancel.is_set():return
+                self.observe_progress('Failed')
+                if self.partial:
+                    self.task['messages'].append({'role':'assistant','source':'chat_partial','content':self.partial})
+                    self.partial=''
+                detail=str(data).strip() or 'The model returned an empty error.'
+                self.task['messages'].append({'role':'assistant','source':'chat_error','content':'Couldn’t finish this reply. '+detail})
+                self.status.setText('Choose Retry reply or select another model.')
+                self.persist();self.render();return
             self.observe_progress('Failed')
             self.end_control_session()
+            summary=self.task.get('pause_summary')
+            if (summary and self.task.get('goal_checkpoint',{}).get('steps')==0 and self.task['messages']
+                    and self.task['messages'][-1].get('source')=='app' and self.task['messages'][-1].get('content')==summary):
+                self.task['messages'].pop()
+                for key in ('pause_summary','goal_checkpoint','run_summary'):self.task.pop(key,None)
             if not self.prompt.toPlainText().strip():
-                previous=next((m.get('content','') for m in reversed(self.task['messages']) if m.get('role')=='user'), '')
+                previous=next((m.get('typed_content',m.get('content','')) for m in reversed(self.task['messages']) if m.get('role')=='user'), '')
                 self.prompt.setPlainText(previous)
             self.status.setText('Request failed · local tool; review the details and try again' if self.execution_kind=='local' else 'Request failed · prompt restored; adjust model/settings and send again');self.output.appendPlainText(str(data));self.right.setCurrentIndex(2)
             self.task.setdefault('activity',[]).append('Task error: '+str(data))
-            self.task['messages'].append({'role':'assistant','content':'Task error: '+str(data)});self.persist();self.render()
+            self.task['messages'].append({'role':'assistant','source':'app','content':'Task error: '+str(data)});self.persist();self.render()
         elif kind=='finished':
+            if self.execution_kind=='conversation':
+                if self.partial:
+                    self.task['messages'].append({'role':'assistant','source':'chat_partial','content':self.partial})
+                    self.partial=''
+                last=self.task['messages'][-1]
+                if not self.chat_response_received:
+                    if self.cancel.is_set():self.status.setText('Reply stopped. You can retry or send a new message.')
+                    self.task['chat_retry_index']=next(i for i in range(len(self.task['messages'])-1,-1,-1) if self.task['messages'][i].get('role')=='user')
+                elif last.get('finish_reason')=='length':
+                    self.status.setText('The reply reached the model’s length limit. Send “Continue” to keep going.')
+                elif self.chat_recovery:self.status.setText('Replied with '+self.chat_model+' after the first model ran out of memory.')
+                else:self.status.clear()
+                self.set_busy(False);self.task['draft']=self.prompt.toPlainText();self.persist();self.render()
+                return
             if self.explicit_stop.is_set():
                 failure_status=self.status.text() if self.status.text().startswith('Request failed') else ''
                 self._request_stop(clear_pending=True)
@@ -1749,14 +2006,19 @@ class Studio(QMainWindow):
     def refresh_model_setup(self):
         state=self.local_model_state
         index=self.route.currentIndex()
-        if self.busy or state is None or index not in (1,3):
+        if self.busy or state is None or index not in (0,1,3):
             self.model_setup.hide()
             return
         model=self.config['local_large_model' if index==3 else 'local_model']
-        if state['state']=='reachable' and matching_model(state['models'],model):
+        names=state.get('models',[]) if state['state']=='reachable' else []
+        if (matching_model(names,model) or (index==0 and (
+                matching_model(names,self.config['local_large_model']) or self.config.get('active_ssh_alias')))):
             self.model_setup.hide()
             return
-        if state['state']!='reachable':
+        if index==0 and model==DEFAULT_LOCAL_MODEL and self.config.get('auto_install_openzero'):
+            message=('Send a message to set up OpenZero 1.7B on this PC (about 1.1 GB), or choose a model.'
+                     if state['state']=='reachable' else 'Send a message to start local AI. TalkToAi checks for installed models first. OpenZero is about 1.1 GB if needed.')
+        elif state['state']!='reachable':
             message='Connect Ollama to run models on this computer.'
         elif model==DEFAULT_LOCAL_MODEL:
             message='OpenZero 1.7B is ready to install for Local.'
@@ -1848,6 +2110,7 @@ class Studio(QMainWindow):
         if self.busy:return
         from provider_dialog import ProviderDialog
         ProviderDialog(self,PROVIDERS).exec()
+        self.refresh_route_labels()
 
     def connections_dialog(self):
         if self.busy:return
@@ -2068,13 +2331,21 @@ Use an available local or server model, stop a task, or steer it into a smaller 
 
     def refresh_route_labels(self):
         name=self.server_name()
-        labels=['Auto · '+name+' / local fallback',
-                'Local · '+str(self.config.get('local_model','configured model')),
+        labels=['Auto · available models',
+                'Local · '+local_model_name(str(self.config.get('local_model','configured model'))),
                 name+' · '+str(self.config.get('server_model','configured model')),
-                'Local large · '+str(self.config.get('local_large_model','configured model'))]
+                'Local large · '+local_model_name(str(self.config.get('local_large_model','configured model')))]
+        profile=self.active_provider()
+        labels.append('API · '+(profile.label+' / '+profile.model if profile else 'Set up a provider…'))
         for index,label in enumerate(labels):
             self.route.setItemText(index,label[:72]);self.route.setItemData(index,label,Qt.ToolTipRole)
+        self.route.setItemData(1,self.config.get('local_model'),Qt.ToolTipRole)
+        self.route.setItemData(3,self.config.get('local_large_model'),Qt.ToolTipRole)
         self.reconnect_button.setText('Reconnect '+name+' model')
+
+    def remember_route(self,index):
+        self.config['preferred_route']=('auto','local','server','local_large','provider')[index]
+        self.write_config()
 
     def model_performance(self):
         selected=self.config.get('num_ctx',8192)
@@ -2260,7 +2531,8 @@ Use an available local or server model, stop a task, or steer it into a smaller 
         from model_library_dialog import ModelLibraryDialog
 
         dialog=ModelLibraryDialog(self,STATE/'models',self._select_downloaded_model,self._on_local_model_removed,
-                                  self.diagnose_models,self.compare_installed_models,self.providers_dialog)
+                                  self.diagnose_models,self.compare_installed_models,self.providers_dialog,
+                                  configured_models={'Local':self.config.get('local_model',''),'Local large':self.config.get('local_large_model','')})
         try:
             dialog.exec()
         finally:

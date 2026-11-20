@@ -22,6 +22,7 @@ class LongSessionTests(unittest.TestCase):
         transport.assert_called_once_with('127.0.0.1', 11434, timeout=10)
         connection.sock.settimeout.assert_called_once_with(600)
         connection.sock.dup.return_value.close.assert_called_once()
+        connection.getresponse.return_value.close.assert_called_once()
 
     def test_unsupported_ollama_thinking_retries_without_it(self):
         received = []

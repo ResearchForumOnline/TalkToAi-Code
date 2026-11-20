@@ -8,12 +8,80 @@ from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
 from pathlib import Path
 
 
+_MODEL_FIXTURE = b'GGUFtalktoai-store-fixture'
+
+
+def _check_store_model_upgrade(folder, port):
+    """Exercise a real HTTP range transfer using the exact 8.8 Store Qwen cache keys."""
+    import hashlib
+    from unittest.mock import patch
+    import model_library
+    from model_storage import display_path, native_path
+
+    entry = model_library.ModelFile(model_library.QWEN_FILE.name, len(_MODEL_FIXTURE),
+                                    hashlib.sha256(_MODEL_FIXTURE).hexdigest())
+    with tempfile.TemporaryDirectory(dir=native_path(folder)) as temp:
+        root = (Path(temp) / 'AppData' / 'Local' / 'Packages' / 'talktoai.TalkToAiCode-AICodingStudio_hj8h1ht46zkh6'
+                / 'LocalCache' / 'Local' / 'TalkToAiCodeStore' / 'models')
+        legacy = (root / '.partial' / 'd3c802c79ad2855215276e1093f5332d495ffde32f28322c4513398b92ce39ad'
+                  / 'a33b3ef7ee7f07bcfed9405d1af59fdec88d96134efb43e76e945b717b61ca1c')
+        legacy.parent.mkdir(parents=True)
+        legacy.write_bytes(_MODEL_FIXTURE[:4])
+        args = (model_library.QWEN_REPO, model_library.QWEN_REVISION, [entry], display_path(root),
+                '', threading.Event(), lambda *_: None)
+        with patch.object(model_library, 'HF_URL', f'http://127.0.0.1:{port}/model-check'):
+            _, [verified] = model_library.download_files(*args)
+            model_library.download_files(*args)
+        return len(str(display_path(legacy))) > 260 and not legacy.exists() and verified.read_bytes() == _MODEL_FIXTURE
+
+
 def smoke(destination):
+    from runtime_diagnostics import REPLY_CHECK_PROMPT, last_reply_check, measure_local_reply
     result={}
+    chat_requests=[]
+    model_ranges=[]
     desktop_worker_check=os.name=='nt' and os.environ.get('TALKTOAI_VERIFY_WINDOWS_WORKER')=='1'
     class Handler(BaseHTTPRequestHandler):
         def log_message(self,*args):pass
+        def do_POST(self):
+            if self.path != '/api/chat':
+                self.send_error(404)
+                return
+            request = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+            chat_requests.append(request)
+            text = 'I will remember Luna.' if len(chat_requests) == 1 else 'Luna.'
+            if request['messages'][-1]['content'] == REPLY_CHECK_PROMPT:
+                text = '5'
+            body = (json.dumps({'message': {'content': text}, 'done': True}) + '\n').encode()
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/x-ndjson')
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
         def do_GET(self):
+            if self.path == '/api/tags':
+                data = json.dumps({'models':[{'name':'fixture-chat','digest':'a'*64}]}).encode()
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Content-Length', str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+                return
+            if self.path.startswith('/model-check/'):
+                requested = self.headers.get('Range')
+                model_ranges.append(requested)
+                data = _MODEL_FIXTURE
+                if requested == 'bytes=4-':
+                    self.send_response(206)
+                    self.send_header('Content-Range', f'bytes 4-{len(data)-1}/{len(data)}')
+                    data = data[4:]
+                else:
+                    self.send_response(200)
+                self.send_header('Content-Length', str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+                return
             self.send_response(200);self.send_header('Content-Type','text/html');self.end_headers()
             if self.path=='/report':
                 self.wfile.write(b'<title>Report</title><h1>Packaged report ready</h1>')
@@ -48,7 +116,32 @@ def smoke(destination):
         from browser_tools import BrowserTools
         server=ThreadingHTTPServer(('127.0.0.1',0),Handler)
         threading.Thread(target=server.serve_forever,daemon=True).start()
+        import agent_core
+        previous_provider, previous_pool = agent_core.ACTIVE_PROVIDER, agent_core.ACTIVE_PROVIDER_POOL
+        chat_history = []
+        visible_replies = []
+        try:
+            agent_core.set_active_provider(None)
+            for prompt in ('Remember Luna.', 'What was her name?'):
+                chat_history.append({'role': 'user', 'content': prompt})
+                events = []
+                agent_core.run_conversation(f'http://127.0.0.1:{server.server_port}', 'fixture-chat', chat_history,
+                                             threading.Event(), lambda kind, value: events.append((kind, value)))
+                visible_replies.append(''.join(value for kind, value in events if kind == 'delta'))
+                chat_history.extend(value for kind, value in events if kind == 'message')
+        finally:
+            agent_core.set_active_provider(previous_provider, previous_pool)
+        result['conversation_round_trip'] = (visible_replies == ['I will remember Luna.', 'Luna.']
+            and len(chat_requests) == 2 and all('tools' not in request for request in chat_requests)
+            and chat_requests[1]['messages'][1:] == chat_history[:3]
+            and chat_history[-1] == {'role': 'assistant', 'content': 'Luna.'})
         with tempfile.TemporaryDirectory(prefix='talktoai-release-') as folder:
+            check_directory = Path(folder, 'model-checks')
+            check = measure_local_reply('fixture-chat', threading.Event(), lambda *_: None,
+                                        port=server.server_port, history_dir=check_directory)
+            saved = last_reply_check(check_directory, check['digest'])
+            result['installed_model_reply_check'] = (check['outcome'] == 'verified' and check['saved']
+                and saved is not None and saved['outcome'] == 'verified' and 'preview' not in saved)
             from process_jobs import ProcessJobs
             from workspace_outputs import read_batch, register_output
             from agent_core import ProjectTools
@@ -141,6 +234,8 @@ def smoke(destination):
                                      and repository_id('https://huggingface.co/'+QWEN_REPO)==QWEN_REPO
                                      and gguf_selection([QWEN_FILE])
                                      and QWEN_FILE.size>OPENZERO_FILE.size>0)
+            result['store_model_download_upgrade'] = (_check_store_model_upgrade(folder, server.server_port)
+                                                      and model_ranges == ['bytes=4-'])
             if getattr(__import__('sys'), 'frozen', False):
                 from asset_library import PACKS, install_pack
                 project = Path(folder) / 'offline-kenney-assets'
@@ -172,7 +267,9 @@ def smoke(destination):
             result['browser_tabs']=len(report['tabs'])==2 and 'Hello Builder' in browser.execute('switch',home_tab)
             browser.close();browser=None
         result['passed']=all(result.get(key,False) for key in ('free_provider_policy','offline_program','offline_starter','operating_policy','bundled_example','browser_interaction','browser_popup','browser_screenshot','vision_attachment','read_only_chain','remote_intent','named_project_target','batch_read','output_registration','project_playbooks','research_comparison','source_change_evidence','audited_preferences','routing_audit','candidate_controls_imported')) and (os.name!='nt' or (result.get('managed_process',False) and result.get('escape_hook_registration',False)))
-        result['passed']=result['passed'] and all(result.get(key,False) for key in ('browser_tabs','model_library','mcp_plugins','project_data'))
+        result['passed']=result['passed'] and all(result.get(key,False) for key in
+                                                  ('browser_tabs','model_library','store_model_download_upgrade','mcp_plugins','project_data'))
+        result['passed'] = result['passed'] and result['conversation_round_trip'] and result['installed_model_reply_check']
         if desktop_worker_check:result['passed']=result['passed'] and result.get('desktop_worker',False)
         if getattr(__import__('sys'),'frozen',False):result['passed']=result['passed'] and result.get('bundled_game_assets',False)
         if os.name=='nt' and getattr(__import__('sys'),'frozen',False):result['passed']=result['passed'] and result.get('per_monitor_v2',False)

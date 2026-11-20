@@ -85,17 +85,21 @@ def _json_request(port, path, timeout=3):
     return data
 
 
-def list_models(port=LOCAL_PORT, *, timeout=3):
-    """Read installed model names, distinguishing an empty list from an offline daemon."""
+def installed_model_records(port=LOCAL_PORT, *, timeout=3):
+    """Read the daemon's model names, manifest identities and reported sizes."""
     try:
         models = _json_request(port, '/api/tags', timeout=timeout).get('models')
         if not isinstance(models, list) or not all(
             isinstance(item, dict) and isinstance(item.get('name'), str) and item['name'] for item in models
         ):
             raise ValueError('Ollama returned an invalid inventory.')
-        return [item['name'] for item in models]
+        return models
     except (OSError, ValueError, HTTPException) as exc:
         raise ConnectionError(f'Ollama model inventory is unavailable on 127.0.0.1:{port}.') from exc
+
+
+def list_models(port=LOCAL_PORT, *, timeout=3):
+    return [item['name'] for item in installed_model_records(port, timeout=timeout)]
 
 def inventory(port):
     try:
@@ -182,10 +186,10 @@ def require_local_runtime(cancel=None, notify=None, *, timeout=35):
     finally:
         _LOCAL_START_LOCK.release()
 
-def ensure_local_runtime():
+def ensure_local_runtime(cancel=None, notify=None):
     """Start an installed local Ollama service without downloading a model."""
     try:
-        require_local_runtime()
+        require_local_runtime(cancel, notify)
         return True
     except ConnectionError:
         return False
@@ -250,21 +254,29 @@ def ensure_local_model(model, emit=None, timeout=7200, cancel=None, allow_defaul
             detail = f' · {100 * completed // total}%' if total else ''
             emit('status', f'{model} · {status}{detail}')
     if model == DEFAULT_LOCAL_MODEL and allow_default_download:
-        return bool(install_model(model, cancel, progress, timeout=timeout))
+        try:
+            return bool(install_model(model, cancel, progress, timeout=timeout))
+        except OllamaMissingError:
+            if sys.platform != 'win32':
+                raise
+            from runtime_setup import require_model_runtime
+            require_model_runtime(cancel, progress)
+            return bool(install_model(model, cancel, progress, timeout=timeout))
     require_local_runtime(cancel, progress)
     if matching_model(list_models(LOCAL_PORT), model):
         return True
     raise ConnectionError('Open Model downloads and install the selected model, or choose one already installed.')
 
-def choose_route(config, preference='auto', benchmarks=None):
+def choose_route(config, preference='auto', benchmarks=None, *, include_server=True):
     ports={'local':LOCAL_PORT,'server':SERVER_PORT,'local_large':LOCAL_PORT}
-    routes=[preference] if preference in ports else ['server','local']
+    routes = [preference] if preference in ports else (['server'] if include_server else []) + ['local', 'local_large']
+    endpoints = list(dict.fromkeys(ports[route] for route in routes))
     with ThreadPoolExecutor(max_workers=2) as pool:
-        available=dict(zip(routes,pool.map(lambda r:inventory(ports[r]),routes)))
+        available = dict(zip(endpoints, pool.map(inventory, endpoints)))
     valid={}
     for route in routes:
-        model=config[route+'_model']
-        if installed := matching_model(available[route], model):
+        model = config.get(route + '_model', '')
+        if model and (installed := matching_model(available[ports[route]], model)):
             valid[route]=installed
     if not valid:raise ConnectionError('Selected models are unavailable. Start Ollama or reconnect your server, then check the model IDs in Settings.')
     scores={r['route']:r['elapsed_seconds'] for r in (benchmarks or {}).get('results',[]) if r.get('success') and r.get('quality_pass',False) and r.get('agent_pass',False) and r.get('model') in (config.get(r['route']+'_model'),valid.get(r['route']))}

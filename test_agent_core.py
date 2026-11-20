@@ -59,6 +59,14 @@ class CoreTests(unittest.TestCase):
             result=choose_route(config,benchmarks={'results':[{'route':'local','model':'old','elapsed_seconds':1,'success':True}]})
             self.assertEqual(result['route'],'server')
 
+    def test_auto_finds_installed_large_model_with_missing_old_preferences(self):
+        config = {'local_model': 'obsolete', 'local_large_model': 'qwen3.6:35b'}
+        with patch('routing.inventory', side_effect=lambda port: ['qwen3.6:35b'] if port == 11434 else []) as inventory:
+            selection = choose_route(config)
+        self.assertEqual(selection['model'], 'qwen3.6:35b')
+        self.assertEqual(selection['route'], 'local_large')
+        self.assertEqual(inventory.call_count, 2)
+
     def test_targeted_edit_and_check(self):
         with tempfile.TemporaryDirectory() as folder:
             p=Path(folder)/'game.py';p.write_text('score = 1\n',encoding='utf-8')

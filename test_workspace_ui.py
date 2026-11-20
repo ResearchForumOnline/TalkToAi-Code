@@ -23,6 +23,7 @@ class WorkspaceUITests(unittest.TestCase):
         self.stack.enter_context(patch.object(studio.Studio,'install_tray'))
         self.escape_hook=self.stack.enter_context(patch('studio.EscapeCancel')).return_value
         self.escape_hook.arm.return_value=False
+        (self.root/'config.json').write_text('{"last_workspace":"code"}',encoding='utf-8')
         self.window=studio.Studio()
         self.window.route.setCurrentIndex(0)  # Existing tests exercise isolated local routing.
 

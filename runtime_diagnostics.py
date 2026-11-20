@@ -1,11 +1,15 @@
 """Read-only, bounded diagnostics for the app's local and tunnel endpoints."""
 import json
+import math
+import re
 import shutil
 import time
+from datetime import datetime, timezone
 from http.client import HTTPException
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from model_library import ollama_store
+from routing import matching_model
 from updates import VERSION
 
 MAX_BYTES = 256 * 1024
@@ -91,7 +95,7 @@ def diagnose(config, include_server=True):
     for route, port in routes:
         state = states[port]
         model = str(config.get(route + '_model', '')).strip()
-        present = bool(model) and (model in state['models'] or model + ':latest' in state['models'])
+        present = bool(model and matching_model(state['models'], model))
         if state['state'] == 'invalid':
             action = 'The endpoint returned an invalid model inventory. Check that this port serves Ollama.'
         elif state['state'] == 'unreachable':
@@ -100,8 +104,10 @@ def diagnose(config, include_server=True):
             action = 'Set this model ID in Settings.'
         elif not present:
             action = 'Choose an installed model ID in Settings, or install the intended model on its inference machine.'
+        elif route == 'server':
+            action = 'The selected model is installed on the server.'
         else:
-            action = 'Selected model is installed. A coding trial is still needed to measure its ability and speed.'
+            action = 'The selected model is installed. Choose Test reply under Installed Ollama to check that it can answer.'
         results.append({'route': route, 'port': port, 'state': state['state'], 'model': model,
                         'installed': present, 'available': state['models'][:12], 'action': action})
     return results
@@ -130,3 +136,147 @@ def report(config):
                       'Selected: ' + item['model'], item['action'],residency_summary(running[item['port']],item['model']),
                       'Installed (up to 12): ' + ', '.join(item['available'])])
     return '\n'.join(lines)
+
+
+REPLY_CHECK_PROTOCOL = 'local-addition-v1'
+REPLY_CHECK_PROMPT = 'What is 2 + 3? Reply with just the digit.'
+_DIGEST = re.compile(r'(?:sha256:)?([0-9a-f]{64})', re.IGNORECASE)
+_MEASUREMENT_KEYS = ('protocol', 'digest', 'outcome', 'checked_at', 'elapsed_seconds', 'first_token_seconds')
+
+
+def _digest(value):
+    match = _DIGEST.fullmatch(value) if isinstance(value, str) else None
+    return match[1].lower() if match else None
+
+
+def last_reply_check(history_dir, digest):
+    """Read the latest completed check of this exact manifest and protocol."""
+    from model_storage import library_root
+    digest = _digest(digest)
+    if not digest or history_dir is None:
+        return None
+    try:
+        with (library_root(history_dir) / (digest + '.json')).open('rb') as stream:
+            raw = stream.read(2049)
+        if len(raw) > 2048:
+            return None
+        record = json.loads(raw)
+        if (not isinstance(record, dict) or record.get('protocol') != REPLY_CHECK_PROTOCOL
+                or record.get('digest') != digest or record.get('outcome') not in ('verified', 'different')):
+            return None
+        timestamp = datetime.fromisoformat(record['checked_at'])
+        if timestamp.tzinfo is None:
+            return None
+        timestamp.astimezone()  # Also validate the local display conversion.
+        for key in ('elapsed_seconds', 'first_token_seconds'):
+            value = record[key]
+            if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
+                return None
+        return {key:record[key] for key in _MEASUREMENT_KEYS}
+    except (OSError, ValueError, OverflowError, KeyError, TypeError, RecursionError):
+        return None
+
+
+def measure_local_reply(model, cancel, notify, *, history_dir=None, port=None):
+    """Run one fixed probe against local Ollama. Only completed, identified results can be saved."""
+    from agent_core import _http_stream
+    from conversation import _conversation_payload
+    from model_library import DownloadCancelled
+    from model_storage import library_root
+    from routing import LOCAL_PORT, installed_model_records, require_local_runtime
+    from session_store import atomic_write
+
+    port = LOCAL_PORT if port is None else port
+    if type(port) is not int or not 1 <= port <= 65535:
+        raise ValueError('Invalid local Ollama port.')
+    if port == LOCAL_PORT:
+        require_local_runtime(cancel, notify)
+    def inventory():
+        return {item['name']:_digest(item.get('digest')) for item in installed_model_records(port)}
+    before = inventory()
+    installed = matching_model(before, model)
+    if not installed:
+        raise ValueError('This model is no longer installed. Choose Refresh models.')
+    notify(f'Checking whether {installed} answers 2 + 3 with the digit 5. A first reply may take time to load.', 0, 0)
+    payload = _conversation_payload(installed, [{'role':'user', 'content':REPLY_CHECK_PROMPT}], {})
+    payload['options'].update(num_predict=64, temperature=0, seed=0)
+    started = time.monotonic()
+    first = None
+    preview = ''
+    has_text = False
+    exact = True
+    complete = False
+    detail = ''
+    try:
+        for frame in _http_stream(f'http://127.0.0.1:{port}', payload, cancel):
+            if frame.get('error'):
+                raise RuntimeError(str(frame['error'])[:500])
+            content = (frame.get('message') or {}).get('content')
+            if content:
+                if not isinstance(content, str):
+                    raise ValueError('Ollama returned an invalid text reply.')
+                if first is None:
+                    first = time.monotonic() - started
+                preview += content[:max(0, 241-len(preview))]
+                visible = content.strip()
+                if visible:
+                    exact = exact and not has_text and visible == '5'
+                    has_text = True
+            if frame.get('done') is True:
+                complete = frame.get('done_reason') != 'length' and has_text
+                break
+    except InterruptedError as exc:
+        raise DownloadCancelled('Reply check stopped.') from exc
+    except (OSError, HTTPException, RuntimeError, ValueError) as exc:
+        detail = str(exc)[:400]
+    if cancel.is_set():
+        raise DownloadCancelled('Reply check stopped.')
+    result = {'protocol':REPLY_CHECK_PROTOCOL, 'model':installed, 'digest':None,
+              'outcome':'incomplete' if not complete else 'verified' if exact else 'different',
+              'checked_at':datetime.now(timezone.utc).isoformat(timespec='milliseconds'),
+              'elapsed_seconds':round(time.monotonic()-started, 3),
+              'first_token_seconds':round(first, 3) if first is not None else None,
+              'preview':' '.join(preview[:240].split()) + ('…' if len(preview)>240 else ''),
+              'saved':False, 'note':detail}
+    if not complete:
+        return result
+    # The tag may have been reassigned by another app while Ollama was loading.
+    try:
+        after = inventory()
+    except ConnectionError:
+        after = {}
+    if cancel.is_set():
+        raise DownloadCancelled('Reply check stopped.')
+    if not before[installed] or after.get(installed) != before[installed]:
+        result['note'] = 'The manifest changed or could not be verified. This check was not saved.'
+        return result
+    result['digest'] = before[installed]
+    if history_dir is not None:
+        receipt = {key:result[key] for key in _MEASUREMENT_KEYS}
+        try:
+            path = library_root(history_dir) / (result['digest'] + '.json')
+            atomic_write(path, json.dumps(receipt, allow_nan=False).encode('utf-8'))
+            result['saved'] = True
+        except (OSError, ValueError):
+            result['note'] = 'The reply check finished. Its history could not be saved on this PC.'
+    return result
+
+
+def reply_check_text(result):
+    labels = {'verified':'Verified the expected answer (5)', 'different':'The model answered differently (expected 5)',
+              'incomplete':'The model did not finish a text reply'}
+    message = f'{result["model"]} · {labels[result["outcome"]]} · {result["elapsed_seconds"]:.1f}s.'
+    if result['preview']:
+        message += '\nReply: '+result['preview']
+    if result['note']:
+        message += '\n'+result['note']
+    return message
+
+
+def check_local_reply(model, cancel, notify):
+    """Retain the human-readable check for callers outside the model library."""
+    result = measure_local_reply(model, cancel, notify)
+    message = reply_check_text(result)
+    if result['outcome'] == 'incomplete':
+        raise ConnectionError(message)
+    return message

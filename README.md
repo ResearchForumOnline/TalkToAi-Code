@@ -1,6 +1,13 @@
 # TalkToAi Code — Your projects. Your AI. Your workspace.
 
-**8.8.0** improves first-run local model setup, Hugging Face links, model removal and control of open Windows apps. The Windows app includes 25 Kenney CC0 packs for offline project import. [Windows downloads](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/tag/v8.8.0) · [Model setup and game tools](docs/DESKTOP-8.8.0.md)
+**8.9.0** opens to Chat for everyday questions, writing and follow-ups. Test an installed model with a real reply, reuse weights already on your PC and manage unfinished downloads. Code and desktop tools are available for hands-on projects. [Windows downloads](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/tag/v8.9.0) · [Chat and model help](docs/DESKTOP-8.9.0.md) · [Desktop tools and offline game assets](docs/DESKTOP-8.8.0.md)
+
+![TalkToAi Code 8.9.0 Chat on Windows with three conversation starters and the message box](assets/screens/studio-chat-890.png)
+
+Start in **Chat** for a conversation. Open **Models** to check a local model, or choose **Code** to work on files and apps. The Windows edition includes 25 Kenney CC0 asset packs that you can import into a game project offline. [Microsoft Store](https://apps.microsoft.com/detail/9PPGFB30SHD9)
+
+<details>
+<summary>Earlier releases and features</summary>
 
 > **Previous Windows package 8.5.0** · [Release archive](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/tag/v8.5.0) · [Release notes](docs/RELEASE-8.5.0.md) · [Linux/macOS source ZIP](https://github.com/ResearchForumOnline/TalkToAi-Code/archive/refs/tags/v8.5.0-portable.1.zip).
 
@@ -143,6 +150,8 @@ Skynet candidates now preserve supported Godot and Unity source and small assets
 
 **Microsoft Store:** The separate 8.5.0 MSIX edition (package 1.4.0.0) passed certification and Partner Center confirmed the latest product is available in the Store on 30 September 2026. See [submission status](docs/MICROSOFT-STORE-STATUS.md) for the dated evidence. An installed upgrade on the owner's PC has not been verified. The installer above is the separate GitHub release.
 
+</details>
+
 ![TalkToAi Code connects a coding workspace to a game world](assets/talktoai-code-hero.png)
 
 ## Product tour
@@ -179,7 +188,7 @@ An independent native desktop AI assistant from TalkToAI for coding, games and g
 
 ## Install
 
-For Windows x64, use the [8.8.0 setup](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/tag/v8.8.0) and open TalkToAi Code from Start. The installer bundles Python. Agent Zero can download the default 1.1 GB OpenZero model on the first local request when Ollama is installed. Check future updates from **About & updates**.
+For Windows x64, use the [8.9.0 setup](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/tag/v8.9.0) and open TalkToAi Code from Start. The installer bundles Python. Agent Zero can download the default 1.1 GB OpenZero model on the first local request when Ollama is installed. Check future updates from **About & updates**.
 
 ## Updates and saved settings
 

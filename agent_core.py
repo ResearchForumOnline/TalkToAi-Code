@@ -24,6 +24,7 @@ from process_jobs import ProcessJobs
 from workspace_outputs import read_batch, register_output
 from progress_guard import DiscoveryProgressGuard
 from reasoning_stream import ReasoningActivity
+from conversation import conversational_reply, describe_switch, model_metrics
 from workspace_change_evidence import WorkspaceChangeTracker
 from task_goals import normalize_goal, goal_context
 from tool_protocol import has_tool_markup, parse_qwen_tool_calls, VisibleTextStream
@@ -294,13 +295,37 @@ def _provider_stream(profile, payload, cancel):
     from provider_stream import stream_provider
     yield from stream_provider(profile, payload, cancel, provider_messages)
 
+
+class OllamaCapacityError(RuntimeError):
+    """Ollama explicitly rejected a model for insufficient memory before any output."""
+
+
+def _ollama_error(status, detail, output_started=False):
+    """Give specific recovery steps without displaying local paths or raw prompts."""
+    lower = str(detail).lower().replace('_', ' ')
+    prefix = f'Ollama HTTP {status}. ' if status else 'Ollama stopped. '
+    capacity_status = status in (None, 400, 413, 422, 500, 503, 507)
+    if capacity_status and re.search(r'\brequires more (?:system |gpu )?memory\b|\bout of (?:system |gpu |device |host )?memory\b|\bcannot allocate memory\b|\b(?:insufficient|not enough) (?:vram|(?:system |gpu )?memory)\b', lower):
+        amounts = re.search(r'requires more system memory \((\d+(?:\.\d+)? [kmgt]i?b)\) than is available \((\d+(?:\.\d+)? [kmgt]i?b)\)', str(detail), re.I)
+        needed = f' It needs {amounts[1]} and reported {amounts[2]} available.' if amounts else ''
+        message = prefix + 'The model could not fit in available memory.' + needed + ' Open Models and setup and choose OpenZero, or close other apps and retry.'
+        return RuntimeError(message) if output_started else OllamaCapacityError(message)
+    if 'runner' in lower and any(word in lower for word in ('terminated', 'crashed', 'stopped', 'exited')):
+        return RuntimeError(prefix + 'The model runner stopped. Open Models and setup and try OpenZero, or restart Ollama and retry this model.')
+    if status == 404 and 'model' in lower and 'not found' in lower:
+        return RuntimeError(prefix + 'This model is missing from the selected Ollama installation. Open Models and setup to choose an installed model or download it.')
+    if 'tool' in lower and any(word in lower for word in ('not support', 'unsupported')):
+        return RuntimeError(prefix + 'This model cannot use tools. Use Chat for ordinary questions or choose a tool-capable model in Models and setup.')
+    return RuntimeError(prefix + 'The model request failed. Open Models and setup, check the Ollama connection, and verify the selected model.')
+
+
 def _http_stream(url,payload,cancel):
     """Interrupt our own HTTP socket even while a model is loading its weights."""
     parsed=urlsplit(url)
     if parsed.hostname not in ('127.0.0.1','localhost') or parsed.scheme!='http':
         raise ValueError('Model transport must use local Ollama or the loopback SSH tunnel.')
     conn=http.client.HTTPConnection(parsed.hostname,parsed.port,timeout=10)
-    completed=threading.Event();sock=None;watcher=None
+    completed=threading.Event();sock=None;watcher=None;response=None
     try:
         conn.connect()
         # A cold local model can spend minutes loading weights and processing
@@ -308,9 +333,8 @@ def _http_stream(url,payload,cancel):
         conn.sock.settimeout(OLLAMA_REQUEST_SECONDS)
         sock=conn.sock.dup()
         def watch():
-            deadline=time.monotonic()+OLLAMA_REQUEST_SECONDS
             while not completed.wait(.1):
-                if cancel.is_set() or time.monotonic()>deadline:
+                if cancel.is_set():
                     try:sock.shutdown(socket.SHUT_RDWR)
                     except OSError:pass
                     return
@@ -319,26 +343,56 @@ def _http_stream(url,payload,cancel):
         conn.request('POST',parsed.path.rstrip('/')+'/api/chat',body=json.dumps(payload).encode(),headers={'Content-Type':'application/json'})
         response=conn.getresponse()
         if response.status!=200:
-            detail=response.read(1500).decode(errors='replace')
+            detail=response.read(8192).decode(errors='replace')
+            try:
+                body = json.loads(detail)
+            except ValueError:
+                pass
+            else:
+                detail = body.get('error', '') if isinstance(body, dict) else body
+                if isinstance(detail, dict):
+                    detail = detail.get('message', '')
+                if not isinstance(detail, str):
+                    detail = ''
             lower=detail.lower()
-            if (response.status==400 and payload.get('think') is True and
+            if (response.status==400 and 'think' in payload and
                     ('think' in lower or 'reasoning' in lower) and
                     ('support' in lower or 'invalid' in lower or 'unknown' in lower)):
-                completed.set();conn.close()
-                yield {'_thinking_unavailable':True}
-                yield from _http_stream(url,dict(payload,think=False),cancel)
+                completed.set();response.close();conn.close()
+                revised = dict(payload)
+                if payload['think']:
+                    revised['think'] = False
+                    yield {'_thinking_unavailable':True}
+                else:
+                    revised.pop('think')
+                yield from _http_stream(url,revised,cancel)
                 return
-            raise RuntimeError(f'Ollama HTTP {response.status}: '+detail)
+            raise _ollama_error(response.status, detail)
+        output_started = False
         while not cancel.is_set():
             line=response.readline()
             if not line:break
-            yield json.loads(line)
+            data = json.loads(line)
+            message = data.get('message') or {}
+            if message.get('content') or message.get('thinking') or message.get('tool_calls'):
+                output_started = True
+            if data.get('error'):
+                raise _ollama_error(None, data['error'], output_started)
+            yield data
+            if data.get('done'):break
         if cancel.is_set():raise InterruptedError('Task stopped.')
     except (OSError,http.client.HTTPException) as exc:
         if cancel.is_set():raise InterruptedError('Task stopped.') from exc
+        if isinstance(exc, ConnectionRefusedError):
+            raise ConnectionError('The selected Ollama service is offline. Open Models and setup and check the Ollama connection. For a Server model, check the configured server connection.') from None
+        if isinstance(exc, TimeoutError):
+            if sock is None:
+                raise ConnectionError('The Ollama connection timed out. Check the connection in Models and setup.') from None
+            raise TimeoutError('Ollama timed out waiting for model output. In Models and setup, try the smaller OpenZero model or check the selected model and try again.') from None
         raise
     finally:
         completed.set()
+        if response is not None:response.close()
         conn.close()
         if watcher:watcher.join()
         if sock:sock.close()
@@ -914,6 +968,12 @@ def restore_checkpoint(folder):
     else:
         p.unlink()
 
+def run_conversation(url, model, history, cancel, emit, performance=None):
+    """Stream a conversational answer without starting a workspace or action loop."""
+    verify_release_policy()
+    return conversational_reply(url, model, history, cancel, emit, performance, stream_chat)
+
+
 def run_agent_zero(url, model, history, project, act, cancel, emit, rounds=16, performance=None, jobs=None, task_kind='code', keep_going=False, task_goal=None, app_preferences=None, preference_change_notify=None, mcp_config=None):
     """Run the native Agent Zero turn across the selected model and local tools."""
     tools = ProjectTools(project, act, cancel)
@@ -1424,8 +1484,7 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
                     emit('api_route',route)
                     continue
                 if data.get('_provider_switch'):
-                    switch=data['_provider_switch']
-                    emit('status',switch['label']+' reached a limit or is unavailable; checking enabled API alternatives. Cooldown '+str(switch['cooldown_seconds'])+'s.')
+                    emit('status',describe_switch(data['_provider_switch']))
                     continue
                 if cancel.is_set():
                     reasoning_finished=reasoning.finish()
@@ -1474,15 +1533,7 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
         # tool result stays in history, without repeatedly shipping screenshot bytes.
         for message in messages:message.pop('images',None)
         if not stats:raise RuntimeError('Model stream ended before completion; no tool calls were executed.')
-        metrics={'seconds':round(time.monotonic()-started,2),'first_token_seconds':round(first,2) if first else None,
-             'tokens_per_second':round(stats.get('eval_count',0)/max(stats.get('eval_duration',1)/1e9,.001),2),'tokens':stats.get('eval_count',0),'step':step+1,'api_usage':stats.get('api_usage'),'api_provider':stats.get('api_provider'),'api_model':stats.get('api_model')}
-        for source,target in (('load_duration','load_seconds'),('prompt_eval_duration','prompt_seconds'),('eval_duration','generation_seconds')):
-            value=stats.get(source)
-            if isinstance(value,(int,float)) and not isinstance(value,bool) and value>=0 and value<float('inf'):
-                metrics[target]=round(value/1e9,3)
-        prompt_tokens=stats.get('prompt_eval_count')
-        if isinstance(prompt_tokens,int) and not isinstance(prompt_tokens,bool) and prompt_tokens>=0:metrics['prompt_tokens']=prompt_tokens
-        emit('metrics',metrics)
+        emit('metrics',model_metrics(stats,started,first,step+1))
         visible_tail=visible_stream.finish()
         if visible_tail:emit('delta',visible_tail)
         truncated=stats.get('done_reason')=='length'

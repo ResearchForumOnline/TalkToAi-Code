@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Version = '1.7.1.0',
+    [string]$Version = '1.8.0.0',
     [string]$IdentityName = 'talktoai.TalkToAiCode-AICodingStudio',
     [string]$Publisher = 'CN=9B704446-6F62-4D52-954E-775436315422',
     [string]$PublisherDisplayName = 'talktoai',
@@ -57,7 +57,7 @@ $manifest = @"
   <Properties>
     <DisplayName>TalkToAi Code - AI Coding Studio</DisplayName>
     <PublisherDisplayName>$PublisherDisplayName</PublisherDisplayName>
-    <Description>Private API vault, coding and computer-use workspace</Description>
+    <Description>Everyday chat, coding and desktop tools with your chosen AI</Description>
     <Logo>Assets\icon-50.png</Logo>
   </Properties>
   <Resources><Resource Language="en-US" /></Resources>
@@ -65,7 +65,7 @@ $manifest = @"
   <Capabilities><rescap:Capability Name="runFullTrust" /></Capabilities>
   <Applications>
     <Application Id="TalkToAiCode" Executable="TalkToAiCode.exe" uap10:RuntimeBehavior="packagedClassicApp" uap10:TrustLevel="mediumIL">
-      <uap:VisualElements DisplayName="TalkToAi Code" Description="Coding and game development with your chosen AI" BackgroundColor="#081016" Square150x150Logo="Assets\icon-150.png" Square44x44Logo="Assets\icon-44.png" />
+      <uap:VisualElements DisplayName="TalkToAi Code" Description="Chat, coding and game development with your chosen AI" BackgroundColor="#081016" Square150x150Logo="Assets\icon-150.png" Square44x44Logo="Assets\icon-44.png" />
     </Application>
   </Applications>
 </Package>

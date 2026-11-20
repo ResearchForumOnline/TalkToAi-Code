@@ -12,9 +12,11 @@ import shutil
 import socket
 import threading
 import time
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.parse import quote, unquote, urlsplit
 from urllib.request import ProxyHandler, Request, build_opener, urlopen
+
+from model_storage import display_path, library_root, native_path, storage_lock, transfer_file
 
 
 OLLAMA_URL = 'http://127.0.0.1:11434'
@@ -34,7 +36,6 @@ _COMMIT = re.compile(r'[a-f0-9]{40}')
 _REPO = re.compile(r'[\w.-]+(?:/[\w.-]+)?', re.ASCII)
 _HUB_HOSTS = {'huggingface.co', 'www.huggingface.co', 'hf.co'}
 _LOCAL_HTTP = build_opener(ProxyHandler({}))
-_FILE_LOCK = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -59,13 +60,24 @@ class DownloadCancelled(RuntimeError):
     pass
 
 
+class _RepairPartial(ValueError):
+    """The previous bytes cannot be resumed. Retry once with a new partial."""
+
+
+class _IncompleteDownload(ConnectionError):
+    """The remote connection ended before the full file arrived."""
+
+
 def _check_cancel(cancel):
     if cancel.is_set():
         raise DownloadCancelled('Model download stopped.')
 
 
 def format_size(size):
-    return f'{size / 1e9:.1f} GB' if size >= 1e9 else f'{size / 1e6:.1f} MB'
+    for unit, scale in (('GB', 10**9), ('MB', 10**6), ('KB', 1000)):
+        if size >= scale:
+            return f'{size / scale:.1f} {unit}'
+    return f'{size} B'
 
 
 def _repository_id(text):
@@ -241,6 +253,8 @@ def gguf_selection(files):
 def _disk_check(folder, needed):
     probe = folder
     while not probe.exists():
+        if probe == probe.parent:
+            raise OSError(f'The model storage drive is unavailable at {display_path(folder)}.')
         probe = probe.parent
     free = shutil.disk_usage(probe).free
     if needed and free < needed + 128 * 1024**2:
@@ -284,6 +298,10 @@ def _download(url, file, target, part, token, cancel, notify):
         _hash_existing(target, digest, cancel)
         if digest is None or digest.hexdigest() == expected:
             _verify_gguf(target, file.name)
+            try:
+                part.unlink(missing_ok=True)
+            except OSError:
+                pass  # The verified export is usable; maintenance can retry later.
             notify('Verified ' + file.name, file.size, file.size)
             return
     offset = _size(part)
@@ -293,6 +311,7 @@ def _download(url, file, target, part, token, cancel, notify):
     _disk_check(part.parent, file.size - offset)
     target.parent.mkdir(parents=True, exist_ok=True)
     digest, expected = _file_digest(file)
+    resumed = bool(offset)
     if offset:
         notify('Checking partial download of ' + file.name, 0, 0)
         _hash_existing(part, digest, cancel)
@@ -300,7 +319,14 @@ def _download(url, file, target, part, token, cancel, notify):
         try:
             response = urlopen(_hf_request(url, token, offset), timeout=25)
         except HTTPError as exc:
+            if offset and exc.code == 416:
+                part.unlink(missing_ok=True)
+                raise _RepairPartial('The server rejected the old partial download.') from exc
             raise _hub_error(exc) from exc
+        except URLError as exc:
+            if isinstance(exc.reason, (TimeoutError, ConnectionResetError, ConnectionAbortedError)):
+                raise _IncompleteDownload('The network connection was interrupted.') from exc
+            raise
         with response:
             if response.status == 206:
                 match = re.fullmatch(r'bytes (\d+)-(\d+)/(\d+)', response.headers.get('Content-Range', ''))
@@ -310,6 +336,7 @@ def _download(url, file, target, part, token, cancel, notify):
                 if offset:
                     _disk_check(part.parent, file.size - offset)
                     offset = 0
+                    resumed = False
                     digest, expected = _file_digest(file)
             else:
                 raise ConnectionError('Hugging Face did not return the requested file.')
@@ -332,9 +359,11 @@ def _download(url, file, target, part, token, cancel, notify):
                         last_update = time.monotonic()
     _check_cancel(cancel)
     if offset != file.size:
-        raise ConnectionError('The download ended early. Retry to resume the partial file.')
+        raise _IncompleteDownload('The download ended early. Your partial download can be resumed.')
     if digest is not None and digest.hexdigest() != expected:
         part.unlink()
+        if resumed:
+            raise _RepairPartial('The old partial file failed verification.')
         raise ValueError('The downloaded file failed its checksum. Retry to download a fresh copy.')
     try:
         _verify_gguf(part, file.name)
@@ -350,9 +379,10 @@ def download_files(repository, commit, files, root, token, cancel, notify):
     repository = repository_id(repository)
     if not _COMMIT.fullmatch(commit) or not files:
         raise ValueError('Select files from a resolved Hugging Face revision first.')
-    root = Path(root).resolve()
+    if repository.split('/')[0].startswith('.'):
+        raise ValueError('This repository name conflicts with the model library.')
+    root = library_root(root)
     target_root = root.joinpath(*_parts(repository), commit)
-    work_root = root / '.partial' / hashlib.sha256(f'{repository}@{commit}'.encode()).hexdigest()
     targets = []
     names = set()
     for file in files:
@@ -361,19 +391,35 @@ def download_files(repository, commit, files, root, token, cancel, notify):
         if not canonical.is_relative_to(root) or canonical != target or str(canonical).casefold() in names:
             raise ValueError('The selected downloads have unsafe or overlapping local paths.')
         names.add(str(canonical).casefold())
-        part = work_root / hashlib.sha256(file.name.encode()).hexdigest()
-        if part.resolve() != part:
-            raise ValueError('The model download directory contains an unexpected link.')
-        targets.append((file, target, part))
-    with _FILE_LOCK:
+        targets.append((file, target))
+    with storage_lock(root):
+        targets = [(file, target, transfer_file(root, repository, commit, file.name)) for file, target in targets]
         needed = sum(max(0, file.size - _size(part)) for file, target, part in targets if _size(target) != file.size)
         _disk_check(root, needed)
-        work_root.mkdir(parents=True, exist_ok=True)
         for file, target, part in targets:
             _check_cancel(cancel)
             url = f'{HF_URL}/{repository}/resolve/{commit}/{quote(file.name)}?download=true'
-            _download(url, file, target, part, token, cancel, notify)
-    return target_root, [target for _, target, _ in targets]
+            try:
+                _download(url, file, target, part, token, cancel, notify)
+            except (_IncompleteDownload, _RepairPartial, TimeoutError, ConnectionResetError, HTTPException):
+                _check_cancel(cancel)
+                notify('Recovering the interrupted download of ' + file.name, _size(part), file.size)
+                _download(url, file, target, part, token, cancel, notify)
+            except FileNotFoundError as exc:
+                # Antivirus, cleaners or an interrupted upgrade can remove a working
+                # directory between mkdir and open. Hub 404s have no local filename.
+                if not exc.filename or not native_path(exc.filename).is_relative_to(root):
+                    raise
+                _check_cancel(cancel)
+                notify('Recreating the local model download folder', 0, 0)
+                part = transfer_file(root, repository, commit, file.name)
+                _download(url, file, target, part, token, cancel, notify)
+    # Keep short paths directly usable by Qt and existing callers. Preserve the
+    # Win32 prefix when a long path would otherwise fail on the host's policy.
+    def usable(path):
+        plain = display_path(path)
+        return path if os.name == 'nt' and len(str(plain)) >= 248 else plain
+    return usable(target_root), [usable(target) for _, target, _ in targets]
 
 
 def ollama_store():
@@ -561,7 +607,7 @@ class _BlobReader:
 
 def import_gguf(paths, cancel, notify):
     """Register one downloaded GGUF or one complete split quant with local Ollama."""
-    paths = [Path(path) for path in paths]
+    paths = sorted((native_path(path) for path in paths), key=lambda path: path.name.casefold())
     if not gguf_selection([ModelFile(path.name, path.stat().st_size) for path in paths]):
         raise ValueError('Select one GGUF model or one complete group of split GGUF files.')
     entries = {}

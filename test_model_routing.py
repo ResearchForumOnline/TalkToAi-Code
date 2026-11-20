@@ -12,6 +12,34 @@ import routing
 
 
 class ModelRoutingTests(unittest.TestCase):
+    def test_auto_chat_reuses_large_model_without_contacting_a_server(self):
+        config = {'local_model': 'small', 'local_large_model': QWEN_LOCAL_MODEL, 'server_model': 'remote'}
+        with patch('routing.inventory', return_value=[QWEN_LOCAL_MODEL]) as inventory:
+            route = routing.choose_route(config, include_server=False)
+        self.assertEqual(route['model'], QWEN_LOCAL_MODEL)
+        self.assertEqual(route['route'], 'local_large')
+        inventory.assert_called_once_with(routing.LOCAL_PORT)
+
+    def test_automatic_default_bootstraps_only_a_missing_windows_runtime(self):
+        cancel = threading.Event()
+        for problem, expected_setup in ((None, False), (routing.OllamaMissingError(), True),
+                                        (ConnectionError('occupied'), False)):
+            with self.subTest(problem=problem), patch.object(routing.sys, 'platform', 'win32'), patch(
+                'routing.install_model', side_effect=[problem, routing.DEFAULT_LOCAL_MODEL] if problem else [routing.DEFAULT_LOCAL_MODEL]
+            ), patch('runtime_setup.require_model_runtime') as setup:
+                if type(problem) is ConnectionError:
+                    with self.assertRaisesRegex(ConnectionError, 'occupied'):
+                        routing.ensure_local_model(routing.DEFAULT_LOCAL_MODEL, cancel=cancel, allow_default_download=True)
+                else:
+                    self.assertTrue(routing.ensure_local_model(routing.DEFAULT_LOCAL_MODEL, cancel=cancel, allow_default_download=True))
+                self.assertEqual(setup.called, expected_setup)
+
+    def test_disabled_first_run_download_leaves_setup_to_the_user(self):
+        with patch('routing.require_local_runtime', side_effect=routing.OllamaMissingError), patch('runtime_setup.require_model_runtime') as setup:
+            with self.assertRaises(routing.OllamaMissingError):
+                routing.ensure_local_model(routing.DEFAULT_LOCAL_MODEL, allow_default_download=False)
+        setup.assert_not_called()
+
     def test_first_local_start_forces_loopback_and_uses_the_configured_model_store(self):
         notify = Mock()
         with patch('routing._version', side_effect=[None, '0.40.11']), \

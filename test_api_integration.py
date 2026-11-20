@@ -106,7 +106,8 @@ class APIStartupIntegrationTests(unittest.TestCase):
             stack.enter_context(patch('studio.EscapeCancel'))
             window=studio.Studio()
             try:
-                self.assertEqual(window.route.currentIndex(),1)
+                self.assertEqual(window.route.currentIndex(),0)
+                self.assertEqual(window.config['preferred_route'],'auto')
                 self.assertEqual(window.config['local_model'],DEFAULT_LOCAL_MODEL)
                 window.route.setCurrentIndex(4)
                 window.prompt.setPlainText('Build my fixture application')

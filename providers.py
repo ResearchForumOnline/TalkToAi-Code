@@ -220,14 +220,21 @@ def api_key(profile):
     return key
 
 
-def http_error(status, code=None):
-    advice={400:'Check the model, API protocol, reasoning effort and tool support.',401:'Check your API key.',402:'Provider quota or billing limit reached.',403:'Check account/model access.',404:'Check the endpoint and model name.',429:'Check provider quota, billing or rate limits.'}
+def http_error(status, code=None, parameter=None):
+    invalid = 'Check the selected model and API protocol in your private API vault.'
+    advice={400:invalid,401:'Check your API key.',402:'Provider quota or billing limit reached.',403:'Check account/model access.',404:'Check the endpoint and model name.',422:invalid,429:'Check provider quota, billing or rate limits.'}
     if code == 'insufficient_quota':
-        advice[429] = 'Check OpenAI API credits and billing limits.'
+        advice[429] = 'Check API credits and billing limits.'
     elif code == 'context_length_exceeded':
-        advice[400] = 'Reduce Model context or start a new chat for this model.'
+        advice[400] = advice[413] = advice[422] = 'The conversation exceeds the model’s context window. Shorten the message or start a new chat.'
     elif code in ('model_not_found', 'unsupported_model'):
-        advice[400] = advice[404] = 'Fetch models and select a model your API project can use.'
+        advice[400] = advice[404] = advice[422] = 'Fetch models in the API vault and select a model your API project can use.'
+    elif code == 'tools_unsupported':
+        advice[400] = advice[404] = advice[422] = 'This model cannot use function tools. Use Chat for ordinary questions. For computer or coding actions, select a model with tool support in the API vault.'
+    elif code == 'invalid_function_parameters':
+        advice[400] = advice[422] = 'The API rejected a function schema. Check that the selected model and endpoint accept OpenAI-compatible function tools.'
+    elif parameter in {'temperature','stream_options','parallel_tool_calls','max_tokens','max_completion_tokens','max_output_tokens','reasoning','reasoning_effort','stream','store'}:
+        advice[400] = advice[422] = f'The selected API model rejected the {parameter} option. Check the model’s settings and API protocol in the vault.'
     return f'Provider HTTP {status}. '+advice.get(status,'Check provider availability and settings.')
 
 

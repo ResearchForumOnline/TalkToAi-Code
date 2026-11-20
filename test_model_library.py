@@ -136,6 +136,54 @@ class ModelLibraryTests(unittest.TestCase):
         self.assertEqual(list(self.root.rglob('*.gguf')), [])
         self.assertFalse(any(path.is_file() for path in (self.root / '.partial').rglob('*')))
 
+    def test_store_length_legacy_qwen_partial_is_adopted_and_resumed(self):
+        from model_storage import display_path, native_path
+        root = self.root / ('profile-' + 'x' * 70) / 'LocalCache' / 'Local' / 'TalkToAiCodeStore' / 'models'
+        entry = library.ModelFile(library.QWEN_FILE.name, 7, hashlib.sha256(b'GGUFabc').hexdigest())
+        # These exact 8.8 cache keys appeared in the Store user's screenshot.
+        cache = native_path(root) / '.partial'
+        legacy = (cache / 'd3c802c79ad2855215276e1093f5332d495ffde32f28322c4513398b92ce39ad'
+                  / 'a33b3ef7ee7f07bcfed9405d1af59fdec88d96134efb43e76e945b717b61ca1c')
+        self.assertGreater(len(str(display_path(legacy))), 260)
+        legacy.parent.mkdir(parents=True)
+        legacy.write_bytes(b'GGUF')
+        try:
+            with patch('model_library.urlopen', return_value=_Response(b'abc', 206, {'Content-Range':'bytes 4-6/7'})) as net:
+                _, [file] = library.download_files(library.QWEN_REPO, library.QWEN_REVISION, [entry], root, '',
+                                                   self.cancel, self.notify)
+            self.assertEqual(net.call_args.args[0].get_header('Range'), 'bytes=4-')
+            self.assertEqual(native_path(file).read_bytes(), b'GGUFabc')
+            self.assertFalse(legacy.exists())
+            with patch('model_library.urlopen', side_effect=AssertionError('Verified file was fetched again')):
+                library.download_files(library.QWEN_REPO, library.QWEN_REVISION, [entry], root, '', self.cancel, self.notify)
+        finally:
+            # Unittest's temp dir cleanup uses normal paths. Remove our long-path files first.
+            for path in sorted(native_path(self.root).rglob('*'), key=lambda p:len(p.parts), reverse=True):
+                if path.is_file():
+                    path.unlink()
+                else:
+                    path.rmdir()
+
+    def test_one_interrupted_transfer_resumes_automatically(self):
+        entry = library.ModelFile('model.gguf', 7, hashlib.sha256(b'GGUFabc').hexdigest())
+        responses = [_Response(b'GGUF'), _Response(b'abc', 206, {'Content-Range':'bytes 4-6/7'})]
+        with patch('model_library.urlopen', side_effect=responses) as net:
+            _, [file] = library.download_files(self.repo, self.revision, [entry], self.root, '', self.cancel, self.notify)
+        self.assertEqual(net.call_args_list[-1].args[0].get_header('Range'), 'bytes=4-')
+        self.assertEqual(file.read_bytes(), b'GGUFabc')
+
+    def test_damaged_legacy_partial_retries_once_from_clean_bytes(self):
+        from model_storage import native_path, transfer_file
+        entry = library.ModelFile('model.gguf', 7, hashlib.sha256(b'GGUFabc').hexdigest())
+        part = transfer_file(native_path(self.root), self.repo, self.revision, entry.name)
+        part.write_bytes(b'BAD!')
+        with patch('model_library.urlopen', side_effect=[_Response(b'abc', 206, {'Content-Range':'bytes 4-6/7'}),
+                                                        _Response(b'GGUFabc')]) as net:
+            _, [file] = library.download_files(self.repo, self.revision, [entry], self.root, '', self.cancel, self.notify)
+        self.assertEqual(net.call_count, 2)
+        self.assertIsNone(net.call_args_list[-1].args[0].get_header('Range'))
+        self.assertEqual(file.read_bytes(), b'GGUFabc')
+
     def test_non_gguf_git_blob_download(self):
         payload = b'{"model_type":"fixture"}'
         digest = hashlib.sha1(f'blob {len(payload)}\0'.encode() + payload).hexdigest()

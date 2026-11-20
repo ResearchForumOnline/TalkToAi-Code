@@ -8,12 +8,14 @@ import time
 from providers import key_identity, http_error, key_ready, validate_cost_policy, is_free_model
 
 class ProviderHTTPError(RuntimeError):
-    def __init__(self, status, retry_after=None, code=None, request_id=None):
+    def __init__(self, status, retry_after=None, code=None, request_id=None, *, parameter=None, replacement=None):
         self.status = int(status)
         self.retry_after = retry_after
         self.code = code
+        self.parameter = parameter
+        self.replacement = replacement
         # Request IDs help support trace failures without surfacing provider bodies.
-        detail = http_error(self.status, code)
+        detail = http_error(self.status, code, parameter)
         if isinstance(request_id, str) and re.fullmatch(r'req_[A-Za-z0-9_\-]{1,100}', request_id):
             detail += ' Request ID ' + request_id + '.'
         super().__init__(detail)
@@ -78,6 +80,11 @@ class ApiRouter:
             except (ProviderHTTPError,OSError) as exc:
                 if cancel.is_set():raise InterruptedError('Task stopped.') from None
                 if emitted:raise ProviderPartialResponseError() from None
+                if isinstance(exc,ProviderHTTPError) and exc.code=='tools_unsupported' and payload.get('tools'):
+                    if not primary.fallback_enabled:raise
+                    last=exc
+                    yield {'_provider_switch':{'label':profile.label,'reason':'tool_support','cooldown_seconds':0}}
+                    continue
                 if isinstance(exc,ProviderHTTPError) and exc.status not in {402,429,500,502,503,504,529}:raise
                 delay=retry_delay(exc.retry_after) if isinstance(exc,ProviderHTTPError) else 15.0
                 with self.lock:self.cooldowns[profile.base_url]=self.clock()+delay

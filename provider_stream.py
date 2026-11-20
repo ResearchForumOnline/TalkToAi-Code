@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import http.client
 import json
+import re
 import socket
 import threading
 from urllib.parse import urlsplit
@@ -53,10 +54,10 @@ def _response_request(profile, messages, payload):
         'store': False,
         'stream': True,
         'max_output_tokens': profile.max_output_tokens,
-        'parallel_tool_calls': False,
     }
     tools = payload.get('tools') or []
     if tools:
+        request['parallel_tool_calls'] = False
         # Optional parameters in the app's existing schemas must stay optional.
         request['tools'] = [{**tool['function'], 'type': 'function', 'strict': False} for tool in tools]
     if profile.model.startswith(('gpt-5', 'gpt-6', 'o1', 'o3', 'o4')):
@@ -196,8 +197,14 @@ class StreamResult:
                 replay.append(item)
 
         content = ''.join(final_text)
-        if content and not self.text:
-            yield {'message': {'content': content}, 'done': False}
+        if content:
+            # Some compatible endpoints omit the final delta but include the
+            # complete answer in response.completed. Emit only the unseen suffix.
+            streamed = ''.join(self.text)
+            if not content.startswith(streamed):
+                raise RuntimeError('Provider terminal text disagrees with its streamed answer.')
+            if len(content) > len(streamed):
+                yield {'message': {'content': content[len(streamed):]}, 'done': False}
         if self.reason != 'length' and replay:
             self.replay = {'scope': scope, 'output': replay, 'content': content,
                            'call_ids': [call['id'] for call in self.calls.values()]}
@@ -207,6 +214,70 @@ class StreamResult:
         if isinstance(usage, dict):
             self.usage = dict(usage, prompt_tokens=usage.get('input_tokens'),
                               completion_tokens=usage.get('output_tokens'))
+
+
+_PARAMETERS = ('temperature', 'stream_options', 'parallel_tool_calls', 'max_tokens', 'max_completion_tokens',
+               'max_output_tokens', 'reasoning_effort', 'reasoning', 'stream', 'store', 'tools')
+_UNSUPPORTED = re.compile(r"not supported|does(?:n't| not) support|unsupported|unrecogni[sz]ed|unknown (?:field|parameter)|"
+                          r"extra (?:inputs|fields).*not permitted|not (?:allowed|permitted)|only (?:the )?default")
+
+
+def _error_fields(body, status):
+    """Extract actionable classifications only. Provider bodies can quote private input."""
+    if not isinstance(body, dict):
+        return None, None, None
+    error = body.get('error', body.get('detail'))
+    if isinstance(error, list):
+        error = error[0] if error else {}
+    if isinstance(error, str):
+        error = {'message': error}
+    if not isinstance(error, dict):
+        return None, None, None
+    code = error.get('code') or error.get('type')
+    code = code if isinstance(code, str) else None
+    if status not in (400, 404, 413, 422):
+        return code, None, None
+    message = str(error.get('message') or error.get('msg') or '').lower()
+    parameter = error.get('param')
+    loc = error.get('loc')
+    if not parameter and isinstance(loc, list) and loc:
+        parameter = loc[-1]
+    parameter = parameter if parameter in _PARAMETERS else None
+    unsupported = (code in ('unsupported_parameter', 'unsupported_value', 'unknown_parameter', 'extra_forbidden')
+                   or _UNSUPPORTED.search(message))
+    if unsupported and not parameter:
+        # Find the rejected parameter, not every parameter mentioned in an error.
+        names = '|'.join(_PARAMETERS)
+        match = re.search(r"(?:unsupported|unrecognized|unknown|not supported)[ \t]+(?:request )?(?:argument|parameter|field|value)s?[: \t]+['\"\x60]?(" + names + r")\b", message)
+        if not match:
+            match = re.search(r"(?<![\w.])['\"\x60]?(" + names + r")['\"\x60]?(?: parameter)? (?:is |are )?(?:not supported|not permitted|unsupported|not allowed)\b", message)
+        if match:
+            parameter = match[1]
+    if ((unsupported and parameter == 'tools') or
+            re.search(r"(?:does(?:n't| not) support|no endpoints? (?:found )?(?:that )?support(?:s|ing)?) (?:the use of |use of )?(?:tools?\b|tool (?:use|calling)\b|function calling\b)|"
+                      r"(?:tool use|tool calling|function calling|tools) (?:is |are )?(?:not supported|unsupported)", message)):
+        return 'tools_unsupported', None, None
+    if code == 'context_length_exceeded' or re.search(r"maximum context length|exceeds? (?:the |this model.s )?context (?:window|length)", message):
+        return 'context_length_exceeded', None, None
+    if not parameter or not unsupported:
+        return code, None, None
+    replacement = None
+    if parameter == 'max_tokens' and re.search(r"(?:use|replaced (?:by|with)) ['\"\x60]?max_completion_tokens\b", message):
+        replacement = 'max_completion_tokens'
+    return 'unsupported_parameter', parameter, replacement
+
+
+def _compatible_request(request, exc):
+    if exc.status not in (400, 422) or exc.code != 'unsupported_parameter' or exc.parameter not in request:
+        return None
+    revised = dict(request)
+    if exc.replacement == 'max_completion_tokens' and exc.parameter == 'max_tokens':
+        revised[exc.replacement] = revised.pop(exc.parameter)
+    elif exc.parameter in ('temperature', 'stream_options', 'parallel_tool_calls'):
+        del revised[exc.parameter]
+    else:
+        return None
+    return revised
 
 
 def stream_provider(profile, payload, cancel, convert_messages):
@@ -223,16 +294,24 @@ def stream_provider(profile, payload, cancel, convert_messages):
         request.pop('think', None)
         request.pop('keep_alive', None)
         providers.configure_request(profile, request, request.pop('options', {}))
-    try:
-        yield from _stream_request(profile, request, payload.get('think', False), cancel, key, scope)
-    except ProviderHTTPError as exc:
-        if not profile.uses_responses or exc.status != 400 or exc.code != 'invalid_encrypted_content':
-            raise
-        revised = [item for item in request['input'] if item.get('type') != 'reasoning']
-        if len(revised) == len(request['input']):
-            raise
-        yield {'_openai_replay_reset': True}
-        yield from _stream_request(profile, dict(request, input=revised), payload.get('think', False), cancel, key, scope)
+    while True:
+        try:
+            yield from _stream_request(profile, request, payload.get('think', False), cancel, key, scope)
+            return
+        except ProviderHTTPError as exc:
+            # A definite input rejection precedes generation. Each repair removes
+            # the offending field, and never drops a tool, output cap or cost policy.
+            if profile.uses_responses and exc.status == 400 and exc.code == 'invalid_encrypted_content':
+                revised = [item for item in request['input'] if item.get('type') != 'reasoning']
+                if len(revised) == len(request['input']):
+                    raise
+                request = dict(request, input=revised)
+                yield {'_openai_replay_reset': True}
+            else:
+                revised = _compatible_request(request, exc)
+                if revised is None:
+                    raise
+                request = revised
 
 
 def _stream_request(profile, request, show_reasoning, cancel, key, scope):
@@ -270,15 +349,13 @@ def _stream_request(profile, request, show_reasoning, cancel, key, scope):
         conn.request('POST', path, body=json.dumps(request).encode(), headers=headers)
         response = conn.getresponse()
         if response.status != 200:
-            code = None
-            if profile.uses_responses or profile.is_openai:
-                try:
-                    body = json.loads(response.read(64_000))
-                    error = body.get('error') if isinstance(body, dict) else None
-                    code = error.get('code') if isinstance(error, dict) else None
-                except (ValueError, OSError, http.client.HTTPException):
-                    pass
-            raise ProviderHTTPError(response.status, response.getheader('Retry-After'), code, response.getheader('X-Request-ID'))
+            try:
+                body = json.loads(response.read(64_000))
+            except (ValueError, OSError, http.client.HTTPException):
+                body = {}
+            code, parameter, replacement = _error_fields(body, response.status)
+            raise ProviderHTTPError(response.status, response.getheader('Retry-After'), code,
+                                    response.getheader('X-Request-ID'), parameter=parameter, replacement=replacement)
 
         for data in _wire_events(response):
             if cancel.is_set():
@@ -309,7 +386,11 @@ def _stream_request(profile, request, show_reasoning, cancel, key, scope):
             raise RuntimeError('API stream disconnected before completion.')
         final = {}
         if result.calls and result.reason in ('tool_calls', 'function_call', 'stop'):
-            final['tool_calls'] = [result.calls[k] for k in sorted(result.calls)]
+            calls = [result.calls[k] for k in sorted(result.calls)]
+            identifiers = [call['id'] for call in calls if call['id']]
+            if len(identifiers) != len(set(identifiers)):
+                raise RuntimeError('Provider repeated a tool call identifier in the response.')
+            final['tool_calls'] = calls
         event = {'message': final, 'done': True, 'done_reason': result.reason, 'eval_count': 0, 'eval_duration': 1,
                  'api_usage': result.usage, 'api_provider': profile.label, 'api_model': profile.model}
         if result.replay:
