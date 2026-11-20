@@ -10,6 +10,7 @@ import agent_core as core
 
 
 class ComputerRouteTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == 'nt', 'Windows-only PC Pilot coordinate input')
     def test_text_model_point_click_is_blocked_before_computer_session_starts(self):
         with tempfile.TemporaryDirectory() as project:
             tools = core.ProjectTools(project, True, threading.Event())
@@ -24,6 +25,16 @@ class ComputerRouteTests(unittest.TestCase):
             self.assertEqual(tools.execute('computer', {'action': 'click_point', 'value': '20,20'}),
                              'Input delivered.')
             tools.computer.execute.assert_called_once_with('click_point', '', '20,20')
+
+    @unittest.skipIf(os.name == 'nt', 'Portable native-control gate')
+    def test_portable_native_control_is_blocked_before_computer_session_starts(self):
+        with tempfile.TemporaryDirectory() as project:
+            tools = core.ProjectTools(project, True, threading.Event())
+            tools.desktop = object()
+            tools.vision_enabled = True
+            with self.assertRaisesRegex(PermissionError, 'interactive Windows desktop'):
+                tools.execute('computer', {'action': 'windows'})
+            self.assertIsNone(tools.computer)
 
     @unittest.skipUnless(os.name == 'nt', 'Windows PC Pilot schema')
     def test_tool_schema_offers_point_click_only_to_vision_models(self):

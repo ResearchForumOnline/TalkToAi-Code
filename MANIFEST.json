@@ -5,7 +5,7 @@
   },
   {
     "path": ".github/workflows/portable-desktop-smoke.yml",
-    "sha256": "0b91eb923a32524e75a04ed6af9a1786312ce0eb02bf70a2155c600f1ba8a8e2"
+    "sha256": "42b1488e6040659f84965917b34b8b1b01d1f9f95f360874a7aa57a21ed585ad"
   },
   {
     "path": ".gitignore",
@@ -753,7 +753,7 @@
   },
   {
     "path": "test_computer_route.py",
-    "sha256": "3f9cc5cd3c20a6aeed33b9c220f49d7c298fd70d1838676ecd80874aeef70fcc"
+    "sha256": "2b9f6aba140600572709aaf538e3dc9b1ca12c60541e058700001127c40ab3fc"
   },
   {
     "path": "test_context_window.py",
