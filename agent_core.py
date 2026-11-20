@@ -5,7 +5,6 @@ import json
 import os
 from pathlib import Path
 import subprocess
-import shlex
 import signal
 import threading
 import urllib.request
@@ -159,10 +158,14 @@ PLAYBOOK_TOOLS = [
 PLAYBOOK_TOOLS[0]['function']['parameters']['required']=[]
 PLAYBOOK_TOOLS[1]['function']['parameters']['required'].remove('evidence_paths')
 GAME_TOOLS = [
-    schema('run_checks', 'Detect and run existing project checks: Godot import, pytest/unittest, npm/pnpm/yarn scripts, Rust or .NET tests. Stops on failure; does not install dependencies. Returns actual output.', {}),
-    schema('launch_game', 'Launch the selected Godot project in a native game window.', {}),
+    schema('run_checks', 'Run detected project checks, including Godot import or Unity batch import/compile. Returns native output and exit code.', {}),
+    schema('launch_game', 'Launch a Godot game or open a Unity project in its editor.', {}),
     schema('capture_screenshot', 'Capture the desktop to a project PNG as requested by the user. Does not analyze the image.', {}),
 ]
+ASSET_TOOLS = [
+    schema('find_game_assets', 'Find installed Kenney assets in the selected project by name, type or pack. Returns engine resource paths for Godot, Unity or Blender. Search before referencing an asset.', {'query':'Filename, extension or pack substring','engine':'auto, godot, unity or blender'}),
+]
+ASSET_TOOLS[0]['function']['parameters']['required'] = []
 BLENDER_TOOLS = [
     schema('run_blender_script', 'Run a project Python script using Blender and return its actual exit code. Start from the factory scene or open a project .blend first. The script can author, inspect, export or render assets as the signed-in user. Save generated files to the project and verify them.', {'path':'Project-relative .py script','blend':'Optional project-relative .blend to load before the script','timeout_seconds':'Optional 1–1800 seconds, default 180','background_job':'Optional true for a long job. Poll the returned job id with poll_process.'}),
 ]
@@ -567,7 +570,27 @@ class ProjectTools:
                 if any((p/x).exists() for x in ('project.godot','package.json','pyproject.toml','ProjectSettings/ProjectVersion.txt')):children.append(p.name)
         from project_checks import detect_checks
         checks=detect_checks(self.root)
-        return {'project':str(self.root),'engine':checks['engine'] if checks['engine']!='General' else engine,'godot':godot,'blender':blender,'child_projects':children[:40],'checks':checks}
+        result={'project':str(self.root),'engine':checks['engine'] if checks['engine']!='General' else engine,'godot':godot,'blender':blender,'child_projects':children[:40],'checks':checks}
+        if (self.root/'ProjectSettings/ProjectVersion.txt').is_file():
+            from engine_discovery import find_unity
+            result['unity']=find_unity(self.root)
+        return result
+
+    def _engine_command(self, label, executable, arguments, timeout):
+        jobs=ProcessJobs(self.root,self.cancel)
+        try:
+            job=jobs.start(executable,arguments,timeout_seconds=timeout)
+            while job['state']=='running':
+                job=jobs.status(job['id'],wait_seconds=.2)
+            output=job['output']
+            while job['has_more']:
+                job=jobs.status(job['id'],cursor=job['next_cursor'])
+                output=(output+job['output'])[-14000:]
+            if job['state'] in ('timed_out','cancelled','output_limit','cancel_failed'):
+                raise RuntimeError(label+' job '+job['state']+'\n'+output[-4000:])
+            return f"Exit {job['exit_code']}\n"+output
+        finally:
+            jobs.close()
 
     def execute(self, name, args):
         if self.cancel.is_set():
@@ -578,6 +601,10 @@ class ProjectTools:
         if name == 'inspect_project_data':
             from project_data_plugin import inspect_project_data
             result=inspect_project_data(self.path(args['path']))
+            return json.dumps(result,ensure_ascii=False)
+        if name == 'find_game_assets':
+            from asset_library import find_game_assets
+            result=find_game_assets(self.root,args.get('query',''),args.get('engine','auto'),self.cancel)
             return json.dumps(result,ensure_ascii=False)
         if name == 'mcp_plugin':
             if not self.act or self.plugins is None:
@@ -779,21 +806,10 @@ class ProjectTools:
                 if self.jobs is None:
                     self.jobs=ProcessJobs(self.root,self.cancel)
                 return json.dumps(self.jobs.start(blender,invocation,timeout_seconds=timeout))
-            jobs=ProcessJobs(self.root,self.cancel)
-            try:
-                job=jobs.start(blender,invocation,timeout_seconds=timeout)
-                while job['state']=='running':
-                    job=jobs.status(job['id'],wait_seconds=.2)
-                output=job['output']
-                while job['has_more']:
-                    job=jobs.status(job['id'],cursor=job['next_cursor'])
-                    output=(output+job['output'])[-14000:]
-                if job['state'] in ('timed_out','cancelled','output_limit','cancel_failed'):
-                    raise RuntimeError('Blender job '+job['state']+'\n'+output[-4000:])
-                return f"Exit {job['exit_code']}\n"+output
-            finally:
-                jobs.close()
+            return self._engine_command('Blender',blender,invocation,timeout)
         if name in ('run_checks','launch_game'):
+            if not self.act:
+                raise PermissionError('Running project checks or opening a game requires Act mode.')
             if (self.root/'project.godot').exists():
                 from engine_discovery import find_godot
                 home=Path(os.environ.get('TALKTOAI_CODE_HOME',str(Path(__file__).resolve().parent)))
@@ -802,7 +818,19 @@ class ProjectTools:
                 if name=='launch_game':
                     p=subprocess.Popen([godot,'--path',str(self.root)],cwd=self.root)
                     return f'Game launched. Process {p.pid}. Playability has not been verified.'
-                command=("& '"+godot.replace("'","''")+"' --headless --path . --editor --quit" if os.name=='nt' else shlex.quote(godot)+' --headless --path . --editor --quit')
+                console=Path(godot).with_name(Path(godot).stem+'_console.exe')
+                if os.name=='nt' and console.is_file():
+                    godot=str(console)
+                return self._engine_command('Godot',godot,['--headless','--path',str(self.root),'--import'],300)
+            if (self.root/'ProjectSettings/ProjectVersion.txt').is_file():
+                from engine_discovery import find_unity
+                unity=find_unity(self.root)
+                if not unity:
+                    raise ValueError('Install the Editor version from ProjectSettings/ProjectVersion.txt in Unity Hub, or select its Unity executable in Settings.')
+                if name=='launch_game':
+                    p=subprocess.Popen([unity,'-projectPath',str(self.root)],cwd=self.root)
+                    return f'Unity Editor started. Process {p.pid}.'
+                return self._engine_command('Unity',unity,['-batchmode','-nographics','-quit','-projectPath',str(self.root),'-logFile','-'],600)
             elif name=='run_checks':
                 from project_checks import detect_checks
                 checks=detect_checks(self.root)
@@ -816,8 +844,7 @@ class ProjectTools:
                         results.append('UNVERIFIED: zero tests were discovered. Inspect the test framework and correct the command.');break
                     if not result.startswith('Exit 0\n'):break
                 return '\n\n'.join(results)
-            else:raise ValueError('launch_game requires a Godot project.')
-            return self.execute('run_command',{'command':command})
+            raise ValueError('Select a Godot or Unity project to open it in its engine.')
         if name in ('write_file','write_file_checked'):
             p=self.path(args['path'])
             old=p.read_bytes() if p.exists() else None
@@ -948,6 +975,7 @@ _BROWSER_APP=re.compile(r'\b(chrome|brave|chromium|firefox|microsoft\s+edge)\b')
 _EDGE_TASK=re.compile(r'\b(?:in|use|open|launch|with|to)\s+(edge)\b(?!\s+cases?)|\b(edge)\s+(?:browser|tab|window)\b')
 _BROWSER_TASK=re.compile(r'\b(?:browser|browse|web ?page|website|web (?:app|game|search))\b|https?://')
 _NATIVE_BROWSER_TASK=re.compile(r'\b(?:browser (?:toolbar|menu)|desktop (?:window|controls)|windows accessibility|uia|native (?:browser|window|controls)|default profile)\b')
+_OPEN_BROWSER_TASK=re.compile(r'\b(?:(?:already open|current|existing|running) (?:browser|chrome|brave|(?:microsoft )?edge|firefox|chromium)|take over)\b')
 _ACTIONABLE_CODE=re.compile(r'\b(?:build|create|make|fix|edit|upgrade|improve|add|implement|refactor|remove|delete|change|install|deploy|launch|run|test)\b')
 
 
@@ -1101,13 +1129,19 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
     named_browser=_BROWSER_APP.search(latest)
     requested_browser=named_browser.group(1).split()[-1] if named_browser else ('edge' if _EDGE_TASK.search(latest) else '')
     explicit_browser=bool(requested_browser or _BROWSER_TASK.search(latest))
+    native_browser_requested=False
     if act and not worker_mode and not improvement_mode and (explicit_browser or WEB_BROWSER_MODE=='visible'):
         browser_name=requested_browser or WEB_BROWSER
-        wants_native=bool(_NATIVE_BROWSER_TASK.search(latest))
+        can_attach=WEB_BROWSER_MODE=='attach' and (not requested_browser or WEB_BROWSER==requested_browser)
+        native_browser_requested=explicit_browser and (bool(_NATIVE_BROWSER_TASK.search(latest)) or
+                                 (not can_attach and bool(_OPEN_BROWSER_TASK.search(latest))))
         browser_mode='headless'
-        if wants_native:
-            messages[0]['content']+=' For the requested existing Windows browser window or browser toolbar, use the computer tool if it is available.'
-        elif WEB_BROWSER_MODE=='attach' and (not requested_browser or WEB_BROWSER==requested_browser):
+        if native_browser_requested:
+            if DESKTOP_ACCESS and PC_PILOT and os.name=='nt':
+                messages[0]['content']+=' Use the computer tool for this existing Windows browser window. Start with windows and choose its handle.'
+            else:
+                messages[0]['content']+=' Existing browser-window control needs a connected Chromium profile, or PC Pilot and Desktop access on Windows. Report if neither is available.'
+        elif can_attach:
             browser_mode='attach'
             messages[0]['content']+=' Use the browser tool for this request. Start with tabs and switch to select the requested connected tab. open creates a new tab if none is selected.'
         elif WEB_BROWSER_MODE=='visible' or requested_browser:
@@ -1126,8 +1160,11 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
         active_tools+=MAIL_TOOLS
     if auto_query or explicit_browser or (not small_context and any(w in latest for w in ('online','internet','look up','research the web'))) or (task_kind=='chat' and public_freshness_request(latest)):active_tools+=BROWSER_TOOLS
     if AUTO_CONTEXT or any(w in latest for w in ('search','find','where','map','overview','inspect','review','git','refactor')):active_tools+=CONTEXT_TOOLS
-    if not small_context and any(w in latest for w in ('game','godot','screenshot')):active_tools+=GAME_TOOLS
+    engine_requested=bool(re.search(r'\b(?:godot|unity)\b',latest))
+    if (engine_requested or (not small_context and any(w in latest for w in ('game','screenshot')))):active_tools+=GAME_TOOLS
     elif act:active_tools+=GAME_TOOLS[:1]
+    if re.search(r'\b(?:kenney|game assets?|asset pack|sprites?|textures?|tilesets?|glb|fbx)\b',latest):
+        active_tools+=ASSET_TOOLS
     blender_requested=bool(re.search(r'\bblender\b|\.blend\b|\bbpy\b',latest))
     if act and blender_requested:
         active_tools+=BLENDER_TOOLS+[tool for tool in JOB_TOOLS if tool['function']['name']=='poll_process']
@@ -1161,20 +1198,22 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
                 value+='; window-relative x,y for click_point from a fresh screenshot'
             else:
                 description+=' This model has no screenshot vision; use accessibility text and control ids. Screenshots are saved evidence only.'
-            active_tools += [schema('computer',description,{'action':actions,'target':'Window handle for inspect; control id for click/fill/select/focus; otherwise empty','value':value})]
+            computer_tool=schema('computer',description,{'action':actions,'target':'Window handle for inspect; control id for click/fill/select/focus; otherwise omit','value':value})
+            computer_tool['function']['parameters']['required']=['action']
+            active_tools.append(computer_tool)
     if (ACTIVE_REMOTE_ALLOWED and REMOTE_PILOT) or any(w in latest for w in ('desktop','server login','login','ssh','remote','connection')):
         active_tools += DISCOVERY_TOOLS
     preference_request=bool(re.search(r'\b(?:settings?|preferences?|configure|configuration|context window|keep going)\b', latest))
     if tools.app_preferences and preference_request:
         active_tools += APP_PREFERENCE_TOOLS if act else APP_PREFERENCE_TOOLS[:2]
-    if not act:active_tools=[t for t in active_tools if t['function']['name'] in ('invoke_chain','browser','list_files','read_file','read_project_files','file_fingerprint','project_info','inspect_project_data','search_code','project_map','git_changes','review_changes','triage_failures','desktop_server_inventory','desktop_projects','desktop_list','desktop_read_file','remote_status','remote_project_info','audit_routing_evaluation','inspect_app_preferences','history_app_preferences') or t['function']['name'] in {mail['function']['name'] for mail in MAIL_TOOLS}]
+    if not act:active_tools=[t for t in active_tools if t['function']['name'] in ('invoke_chain','browser','list_files','read_file','read_project_files','file_fingerprint','project_info','inspect_project_data','find_game_assets','search_code','project_map','git_changes','review_changes','triage_failures','desktop_server_inventory','desktop_projects','desktop_list','desktop_read_file','remote_status','remote_project_info','audit_routing_evaluation','inspect_app_preferences','history_app_preferences') or t['function']['name'] in {mail['function']['name'] for mail in MAIL_TOOLS}]
     delegation_tool=schema('delegate_review','Delegate a focused read-only project investigation to one bounded worker on this model. No edits, shell, desktop or nested workers; at most two workers.',{'role':'reviewer, investigator or test_planner','task':'Self-contained question and relevant paths; no secrets'})
     catalog=None
     if not worker_mode:
         packs={'context':CONTEXT_TOOLS,'discovery':DISCOVERY_TOOLS,'browser':BROWSER_TOOLS,
                'research':RESEARCH_TOOLS if act else [RESEARCH_TOOLS[0],RESEARCH_TOOLS[2],RESEARCH_TOOLS[3]],
                'playbooks':PLAYBOOK_TOOLS if act else PLAYBOOK_TOOLS[:1],
-               'goals':GOAL_TOOLS,'delegation':[delegation_tool],'project_data':PROJECT_DATA_TOOLS}
+               'goals':GOAL_TOOLS,'delegation':[delegation_tool],'project_data':PROJECT_DATA_TOOLS,'game_assets':ASSET_TOOLS}
         blocked={}
         if tools.app_preferences:packs['preferences']=APP_PREFERENCE_TOOLS if act else APP_PREFERENCE_TOOLS[:2]
         else:blocked['preferences']='This agent turn is not attached to the app settings manager.'
@@ -1195,6 +1234,10 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
         # Desktop/SSH schemas otherwise consume most of an 8K local context even
         # for a plain project edit. They remain available through enable_tools.
         eager_names=set()
+        if act and (native_browser_requested or _NATIVE_BROWSER_TASK.search(latest) or re.search(
+                r'\b(?:computer use|pc pilot|desktop app|(?:inspect|list|activate) (?:the |a |open )?windows?|'
+                r'(?:control|use) (?:my |the )?(?:computer|desktop|windows)|notepad|file explorer)\b',latest)):
+            eager_names.add('computer')
         if DESKTOP_ACCESS and re.search(r'\b(?:desktop|documents)\b',latest):
             eager_names.add('desktop_projects')
             if re.search(r'\b(?:files?|folders?|read)\b',latest):

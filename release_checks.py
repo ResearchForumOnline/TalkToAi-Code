@@ -141,6 +141,13 @@ def smoke(destination):
                                      and repository_id('https://huggingface.co/'+QWEN_REPO)==QWEN_REPO
                                      and gguf_selection([QWEN_FILE])
                                      and QWEN_FILE.size>OPENZERO_FILE.size>0)
+            if getattr(__import__('sys'), 'frozen', False):
+                from asset_library import PACKS, install_pack
+                project = Path(folder) / 'offline-game'
+                project.mkdir()
+                pack = next(item for item in PACKS if item['slug'] == 'tiny-dungeon')
+                bundle = Path(__file__).resolve().parent / 'assets' / 'kenney-cc0.zip'
+                result['bundled_game_assets'] = bundle.is_file() and install_pack(project, pack, threading.Event()) > 0
             from integration_dialog import integration_dialog
             from mcp_plugins import McpPlugins
             plugins=McpPlugins(folder,{'fixture':{'command':'fixture-command','enabled':True}},threading.Event())
@@ -167,6 +174,7 @@ def smoke(destination):
         result['passed']=all(result.get(key,False) for key in ('free_provider_policy','offline_program','offline_starter','operating_policy','bundled_example','browser_interaction','browser_popup','browser_screenshot','vision_attachment','read_only_chain','remote_intent','named_project_target','batch_read','output_registration','project_playbooks','research_comparison','source_change_evidence','audited_preferences','routing_audit','candidate_controls_imported')) and (os.name!='nt' or (result.get('managed_process',False) and result.get('escape_hook_registration',False)))
         result['passed']=result['passed'] and all(result.get(key,False) for key in ('browser_tabs','model_library','mcp_plugins','project_data'))
         if desktop_worker_check:result['passed']=result['passed'] and result.get('desktop_worker',False)
+        if getattr(__import__('sys'),'frozen',False):result['passed']=result['passed'] and result.get('bundled_game_assets',False)
         if os.name=='nt' and getattr(__import__('sys'),'frozen',False):result['passed']=result['passed'] and result.get('per_monitor_v2',False)
     except Exception as exc:result.update(passed=False,error=f'{type(exc).__name__}: {exc}')
     finally:

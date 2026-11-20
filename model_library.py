@@ -31,7 +31,8 @@ _LIMIT = 12 * 1024 * 1024
 _SHARD = re.compile(r'(.+)-(\d{5})-of-(\d{5})\.gguf', re.I)
 _SHA256 = re.compile(r'[a-f0-9]{64}')
 _COMMIT = re.compile(r'[a-f0-9]{40}')
-_REPO = re.compile(r'[\w.-]+/[\w.-]+', re.ASCII)
+_REPO = re.compile(r'[\w.-]+(?:/[\w.-]+)?', re.ASCII)
+_HUB_HOSTS = {'huggingface.co', 'www.huggingface.co', 'hf.co'}
 _LOCAL_HTTP = build_opener(ProxyHandler({}))
 _FILE_LOCK = threading.Lock()
 
@@ -67,16 +68,64 @@ def format_size(size):
     return f'{size / 1e9:.1f} GB' if size >= 1e9 else f'{size / 1e6:.1f} MB'
 
 
-def repository_id(text):
-    text = text.strip().rstrip('/')
-    if text.startswith(('https://', 'http://')):
-        parsed = urlsplit(text)
-        if parsed.scheme != 'https' or parsed.netloc.lower() != 'huggingface.co':
-            raise ValueError('Enter a Hugging Face model URL or owner/repository.')
-        text = unquote(parsed.path.strip('/'))
+def _repository_id(text):
     if not _REPO.fullmatch(text) or any(part in ('.', '..') for part in text.split('/')):
         raise ValueError('Enter a Hugging Face model URL or owner/repository.')
     return text
+
+
+def _revision(value):
+    value = value.strip() or 'main'
+    if not re.fullmatch(r'[\w./-]{1,160}', value, re.ASCII) or any(
+        part in ('', '.', '..') for part in value.split('/')
+    ):
+        raise ValueError('Use a Hugging Face branch, tag or commit hash for the revision.')
+    return value
+
+
+def _reference(text, revision):
+    text = text.strip().rstrip('/')
+    if text.partition('/')[0].lower() in _HUB_HOSTS:
+        text = 'https://' + text
+    if '://' not in text:
+        return _repository_id(text), _revision(revision), None, False
+    parsed = urlsplit(text)
+    if parsed.scheme not in ('http', 'https') or parsed.netloc.lower() not in _HUB_HOSTS:
+        raise ValueError('Enter a Hugging Face model URL or owner/repository.')
+    parts = [unquote(part) for part in parsed.path.strip('/').split('/')]
+    # A one-part legacy model ID can have the marker immediately after the ID.
+    # A two-part repository ID is tried first, so e.g. owner/tree remains valid.
+    for boundary in (2, 1):
+        tail = parts[boundary:]
+        if len(parts) < boundary or tail and tail[0] not in {'tree', 'blob', 'resolve'}:
+            continue
+        if tail and len(tail) == 1:
+            continue
+        repo = _repository_id('/'.join(parts[:boundary]))
+        if not tail:
+            return repo, _revision(revision), None, False
+        kind, ref, *path_parts = tail
+        if ref == 'refs' and len(path_parts) >= 2 and path_parts[0] in {'heads', 'tags', 'pr'}:
+            ref = '/'.join([ref, *path_parts[:2]])
+            path_parts = path_parts[2:]
+        folder = kind == 'tree'
+        path = '/'.join(path_parts) if path_parts else None
+        if path:
+            _parts(path)
+        elif not folder:
+            raise ValueError('The Hugging Face file URL is missing its filename.')
+        return repo, _revision(ref), path, folder
+    raise ValueError('Enter a Hugging Face model repository, tree, blob, or resolve URL.')
+
+
+def parse_repository_reference(text, revision='main'):
+    """Parse a Hub model ID or URL into repository ID, revision and optional path."""
+    repo, ref, path, _ = _reference(text, revision)
+    return repo, ref, path
+
+
+def repository_id(text):
+    return parse_repository_reference(text)[0]
 
 
 def _parts(path):
@@ -113,10 +162,7 @@ def _hub_error(exc):
 
 
 def repository_files(repository, revision='main', token=''):
-    repository = repository_id(repository)
-    revision = revision.strip() or 'main'
-    if not re.fullmatch(r'[\w./-]{1,160}', revision, re.ASCII) or '..' in revision.split('/'):
-        raise ValueError('Use a Hugging Face branch, tag or commit hash for the revision.')
+    repository, revision, _, _ = _reference(repository, revision)
     url = f'{HF_URL}/api/models/{repository}/revision/{quote(revision, safe="")}?blobs=true'
     try:
         with urlopen(_hf_request(url, token), timeout=25) as response:
@@ -126,7 +172,7 @@ def repository_files(repository, revision='main', token=''):
     if len(raw) > _LIMIT:
         raise ValueError('The repository file listing is too large.')
     data = json.loads(raw)
-    commit, siblings = data.get('sha'), data.get('siblings')
+    commit, siblings = (data.get('sha'), data.get('siblings')) if isinstance(data, dict) else (None, None)
     if not isinstance(commit, str) or not _COMMIT.fullmatch(commit) or not isinstance(siblings, list):
         raise ValueError('Hugging Face did not return a valid repository file list.')
     files = []
@@ -147,6 +193,22 @@ def repository_files(repository, revision='main', token=''):
                                sha if isinstance(sha, str) and _SHA256.fullmatch(sha) else '',
                                git_sha1 if not lfs and isinstance(git_sha1, str) and _COMMIT.fullmatch(git_sha1) else ''))
     return commit, sorted(files, key=lambda item: (not item.name.lower().endswith('.gguf'), item.name.lower()))
+
+
+def resolve_hf_selection(text, revision='main', token=''):
+    """Resolve a pasted repository or file URL to an immutable downloadable revision."""
+    repository, revision, path, folder = _reference(text, revision)
+    commit, files = repository_files(repository, revision, token)
+    if not path:
+        return repository, commit, files, None
+    if folder:
+        matches = [file for file in files if file.name.startswith(path + '/')]
+        if not matches:
+            raise FileNotFoundError('The selected Hugging Face folder contains no downloadable files.')
+        return repository, commit, matches, None
+    if not any(file.name == path for file in files):
+        raise FileNotFoundError('The file in this Hugging Face link was not found in the resolved revision.')
+    return repository, commit, files, path
 
 
 def selected_files(files, selected):
@@ -314,7 +376,7 @@ def download_files(repository, commit, files, root, token, cancel, notify):
     return target_root, [target for _, target, _ in targets]
 
 
-def _ollama_store():
+def ollama_store():
     configured = os.environ.get('OLLAMA_MODELS')
     if not configured and os.name == 'nt':
         import winreg
@@ -338,16 +400,16 @@ def _registry_layers(model):
     return data['layers']
 
 
-def _preflight_pull(model):
+def _preflight_pull(model, *, local_disk=True):
     if model not in (DEFAULT_LOCAL_MODEL, QWEN_LOCAL_MODEL):
         return
-    root = _ollama_store()
+    root = ollama_store() if local_disk else None
     try:
         layers = _registry_layers(model)
         required = sum(
             max(0, layer['size'] - _size(root / 'blobs' / layer['digest'].replace(':', '-')))
             for layer in layers if re.fullmatch(r'sha256:[a-f0-9]{64}', layer['digest'])
-        )
+        ) if local_disk else 0
     except (OSError, ValueError, KeyError, TypeError):
         layers = []
         required = QWEN_OLLAMA_ESTIMATE if model == QWEN_LOCAL_MODEL else OPENZERO_FILE.size
@@ -356,11 +418,15 @@ def _preflight_pull(model):
         for layer in layers
     ):
         raise ValueError('The OpenZero registry artifact no longer matches the selected weights. Download the pinned GGUF from Model downloads.')
-    _disk_check(root, required)
+    if local_disk:
+        _disk_check(root, required)
 
 
-def _ollama_updates(path, payload, cancel, deadline):
-    address = urlsplit(OLLAMA_URL)
+def _ollama_updates(path, payload, cancel, deadline, *, endpoint=None):
+    address = urlsplit(endpoint or OLLAMA_URL)
+    if (address.scheme != 'http' or address.hostname not in ('127.0.0.1', 'localhost', '::1')
+            or address.username or address.password or address.path or address.query or address.fragment):
+        raise ValueError('Model installation requires a local Ollama endpoint or loopback SSH tunnel.')
     conn = HTTPConnection(address.hostname, address.port, timeout=10)
     pending = Queue(maxsize=8)
     finished = threading.Event()
@@ -440,8 +506,8 @@ def _ollama_updates(path, payload, cancel, deadline):
                 pass
 
 
-def _ollama_progress(path, payload, cancel, notify, deadline):
-    updates = _ollama_updates(path, payload, cancel, deadline)
+def _ollama_progress(path, payload, cancel, notify, deadline, *, endpoint=None):
+    updates = _ollama_updates(path, payload, cancel, deadline, endpoint=endpoint)
     layers = {}
     last_update = 0.0
     previous_status = None
@@ -465,14 +531,17 @@ def _ollama_progress(path, payload, cancel, notify, deadline):
     raise ConnectionError('Ollama stopped responding before it confirmed completion. Retry to resume.')
 
 
-def pull_model(model, cancel, notify, timeout=7200):
+def pull_model(model, cancel, notify, timeout=7200, *, endpoint=None):
     """Pull through the local service so Ollama verifies its own content digests."""
     _check_cancel(cancel)
-    notify('Checking model storage', 0, 0)
-    _preflight_pull(model)
+    notify('Checking local model storage' if endpoint is None else 'Preparing model download on the selected server', 0, 0)
+    if endpoint is None:
+        _preflight_pull(model)
+    else:
+        _preflight_pull(model, local_disk=False)
     _check_cancel(cancel)
     _ollama_progress('/api/pull', {'model': model, 'name': model, 'stream': True},
-                     cancel, notify, time.monotonic() + timeout)
+                     cancel, notify, time.monotonic() + timeout, endpoint=endpoint)
 
 
 class _BlobReader:
@@ -517,7 +586,7 @@ def import_gguf(paths, cancel, notify):
             if exc.code != 404:
                 raise
             missing.append(path)
-    _disk_check(_ollama_store(), sum(path.stat().st_size for path in missing))
+    _disk_check(ollama_store(), sum(path.stat().st_size for path in missing))
     for path in missing:
         size = path.stat().st_size
         with path.open('rb') as handle:

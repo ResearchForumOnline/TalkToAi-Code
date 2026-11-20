@@ -256,6 +256,7 @@ def _slim_info(info):
         'installed_tools': {
             'godot': bool(info.get('godot')),
             'blender': bool(info.get('blender')),
+            'unity': bool(info.get('unity')),
         },
         'child_projects': [str(item)[:120] for item in info.get('child_projects', [])[:10]]
             if isinstance(info.get('child_projects'), list) else [],

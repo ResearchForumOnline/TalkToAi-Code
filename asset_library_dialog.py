@@ -9,7 +9,7 @@ from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (QAbstractItemView, QDialog, QFileDialog, QHBoxLayout, QLabel,
                                QListWidget, QListWidgetItem, QProgressBar, QPushButton, QVBoxLayout)
 
-from asset_library import PACKS, install_pack, pack_source
+from asset_library import PACKS, asset_engine, game_asset_directory, install_pack, pack_source
 
 
 class AssetSignals(QObject):
@@ -20,7 +20,8 @@ class AssetSignals(QObject):
 class AssetLibraryDialog(QDialog):
     def __init__(self, parent, project):
         super().__init__(parent)
-        self.project = Path(project)
+        self.project = Path(project).resolve()
+        self.library = game_asset_directory(self.project)
         self.cancel = None
         self.signals = AssetSignals(self)
         self.signals.progress.connect(self.show_progress)
@@ -28,7 +29,13 @@ class AssetLibraryDialog(QDialog):
         self.setWindowTitle('Game assets')
         self.resize(680, 530)
         layout = QVBoxLayout(self)
-        hint = QLabel('Free CC0 packs from Kenney. Install selected packs into assets/talktoai-library in the current project.')
+        location = self.library.relative_to(self.project).as_posix()
+        engine = asset_engine(self.project)
+        engine_note = {
+            'godot': ' Godot sees these files under res://. Run the import check from Game Lab.',
+            'unity': ' Unity will import compatible files under Assets. Run the import check from Game Lab.',
+        }.get(engine, ' Select a Godot or Unity project for engine-specific placement.')
+        hint = QLabel(f'Free CC0 packs from Kenney. New packs install in {location}.' + engine_note)
         hint.setWordWrap(True)
         layout.addWidget(hint)
         self.listing = QListWidget()
@@ -48,10 +55,12 @@ class AssetLibraryDialog(QDialog):
         self.install = QPushButton('Install selected')
         self.import_zip = QPushButton('Import verified ZIP…')
         self.source = QPushButton('Open source page')
+        self.folder = QPushButton('Open installed folder')
         self.stop = QPushButton('Stop')
         close = QPushButton('Close')
         for button, action in ((self.install, self.start), (self.import_zip, self.choose_zip),
-                               (self.source, self.open_source), (self.stop, self.stop_work), (close, self.reject)):
+                               (self.source, self.open_source), (self.folder, self.open_folder),
+                               (self.stop, self.stop_work), (close, self.reject)):
             row.addWidget(button)
             button.clicked.connect(action)
         self.refresh()
@@ -61,7 +70,7 @@ class AssetLibraryDialog(QDialog):
         selected = {item.data(Qt.UserRole)['slug'] for item in self.listing.selectedItems()}
         self.listing.clear()
         for pack in PACKS:
-            installed = (self.project / 'assets' / 'talktoai-library' / pack['slug']).is_dir()
+            installed = (self.library / pack['slug']).is_dir()
             size = f"{pack['bytes'] / 1_000_000:.1f} MB"
             caption = f"{pack['title']} · {pack['category']} · {size}"
             if installed:
@@ -72,17 +81,26 @@ class AssetLibraryDialog(QDialog):
             item.setSelected(pack['slug'] in selected)
 
     def update_actions(self):
-        count = len(self.listing.selectedItems())
+        selected = self.listing.selectedItems()
+        count = len(selected)
         running = self.cancel is not None
         self.install.setEnabled(not running and count > 0)
         self.import_zip.setEnabled(not running and count == 1)
         self.source.setEnabled(not running and count == 1)
+        self.folder.setEnabled(not running and count == 1 and
+                               (self.library / selected[0].data(Qt.UserRole)['slug']).is_dir())
         self.listing.setEnabled(not running)
         self.stop.setEnabled(running)
 
     def open_source(self):
         item = self.listing.selectedItems()[0]
         QDesktopServices.openUrl(QUrl(pack_source(item.data(Qt.UserRole))))
+
+    def open_folder(self):
+        item = self.listing.selectedItems()[0]
+        path = self.library / item.data(Qt.UserRole)['slug']
+        if path.is_dir() and path.resolve().is_relative_to(self.library):
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
 
     def choose_zip(self):
         value, _ = QFileDialog.getOpenFileName(self, 'Open original asset pack ZIP', '', 'ZIP files (*.zip)')

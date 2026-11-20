@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param(
     [string]$OutputDirectory = '',
-    [string]$BuildName = 'v6'
+    [string]$BuildName = 'v6',
+    [string]$AssetCollection = ''
 )
 $ErrorActionPreference = 'Stop'
 $studioRoot = Split-Path -Parent $PSCommandPath
@@ -17,3 +18,6 @@ python -m PyInstaller --noconfirm --noconsole --name TalkToAiCode --manifest "$s
 if ($LASTEXITCODE -ne 0) { throw 'Studio packaging failed.' }
 python "$studioRoot\scripts\package-runtime-notices.py" (Join-Path $destination 'TalkToAiCode')
 if ($LASTEXITCODE -ne 0) { throw 'Runtime license notice packaging failed.' }
+$assetArgs = if ($AssetCollection) { @('--source', $AssetCollection) } else { @() }
+python "$studioRoot\scripts\package-game-assets.py" (Join-Path $destination 'TalkToAiCode') @assetArgs
+if ($LASTEXITCODE -ne 0) { throw 'Game asset packaging failed.' }

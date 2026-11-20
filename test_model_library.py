@@ -48,6 +48,58 @@ class ModelLibraryTests(unittest.TestCase):
         self.assertEqual([(item.name, item.size) for item in files], [('weights/Q4.gguf', 123), ('params.json', 44)])
         self.assertEqual((files[0].sha256, files[1].git_sha1), ('b' * 64, 'c' * 40))
 
+    def test_hub_reference_parses_repository_revision_file_and_folder_links(self):
+        cases = [
+            ('https://hf.co/owner/model/resolve/main/weights/My%20Model.gguf?download=true',
+             ('owner/model', 'main', 'weights/My Model.gguf')),
+            ('https://huggingface.co/owner/model/blob/refs%2Fpr%2F17/config.json',
+             ('owner/model', 'refs/pr/17', 'config.json')),
+            ('huggingface.co/owner/model/tree/refs/tags/preview/models',
+             ('owner/model', 'refs/tags/preview', 'models')),
+            ('https://huggingface.co/gpt2/blob/main/config.json', ('gpt2', 'main', 'config.json')),
+            ('https://huggingface.co/owner/tree', ('owner/tree', 'stable', None)),
+        ]
+        for text, expected in cases:
+            with self.subTest(url=text):
+                self.assertEqual(library.parse_repository_reference(text, 'stable'), expected)
+        for text in ['https://huggingface.co.attacker.test/owner/model',
+                     'https://huggingface.co@attacker.test/owner/model',
+                     'https://huggingface.co/owner/model/resolve/main/%2e%2e/private.gguf',
+                     'https://huggingface.co/owner/model/resolve/main']:
+            with self.subTest(url=text), self.assertRaises(ValueError):
+                library.parse_repository_reference(text)
+
+    def test_hub_file_preselection_preserves_other_shards_and_tree_filters_scope(self):
+        files = [
+            library.ModelFile('models/Q4-00001-of-00002.gguf', 10),
+            library.ModelFile('models/Q4-00002-of-00002.gguf', 12),
+            library.ModelFile('other/README.md', 3),
+        ]
+        with patch('model_library.repository_files', return_value=(self.revision, files)) as browse:
+            repo, commit, all_files, selected = library.resolve_hf_selection(
+                'https://huggingface.co/owner/model/blob/v1/models/Q4-00002-of-00002.gguf'
+            )
+            browse.assert_called_once_with('owner/model', 'v1', '')
+            self.assertEqual((repo, commit), ('owner/model', self.revision))
+            self.assertEqual(library.selected_files(all_files, [next(f for f in all_files if f.name == selected)]), files[:2])
+            _, _, subtree, selected = library.resolve_hf_selection(
+                'https://huggingface.co/owner/model/tree/v1/models'
+            )
+            self.assertIsNone(selected)
+            self.assertEqual(subtree, files[:2])
+            with self.assertRaises(FileNotFoundError):
+                library.resolve_hf_selection('https://huggingface.co/owner/model/resolve/v1/missing.gguf')
+
+    def test_explicit_server_pull_uses_loopback_and_skips_local_disk_check(self):
+        with patch('model_library._preflight_pull') as preflight, patch('model_library._ollama_progress') as progress:
+            library.pull_model(library.QWEN_LOCAL_MODEL, self.cancel, self.notify,
+                               endpoint='http://127.0.0.1:11435')
+            preflight.assert_called_once_with(library.QWEN_LOCAL_MODEL, local_disk=False)
+            self.assertEqual(progress.call_args.kwargs['endpoint'], 'http://127.0.0.1:11435')
+        with self.assertRaisesRegex(ValueError, 'loopback'):
+            list(library._ollama_updates('/api/pull', {}, self.cancel, time.monotonic() + 1,
+                                         endpoint='http://192.0.2.1:11434'))
+
     def test_cancelled_download_resumes_on_same_commit(self):
         payload = b'GGUF' + b'weights' * 90
         entry = library.ModelFile('bits/Q4.gguf', len(payload), hashlib.sha256(payload).hexdigest())

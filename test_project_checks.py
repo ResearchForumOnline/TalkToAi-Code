@@ -31,3 +31,18 @@ class CheckDetectionTests(unittest.TestCase):
                 return 'Exit 0\nRan 0 tests\nOK' if name=='run_command' else original(name,args)
             with patch.object(tools,'execute',side_effect=execute):
                 self.assertIn('UNVERIFIED',tools.execute('run_checks',{}))
+
+    def test_unity_uses_native_batch_import_and_explicit_project_path(self):
+        with tempfile.TemporaryDirectory(prefix='Unity test project ') as folder:
+            root=Path(folder).resolve()
+            (root/'ProjectSettings').mkdir()
+            (root/'ProjectSettings/ProjectVersion.txt').write_text('m_EditorVersion: 6000.3.1f1\n')
+            tools=ProjectTools(root,True)
+            executable=str(root/'Unity Hub'/'Unity.exe')
+            with patch('engine_discovery.find_unity',return_value=executable), \
+                 patch.object(tools,'_engine_command',return_value='Exit 0\nImport completed') as invoke:
+                self.assertEqual(tools.execute('run_checks',{}),'Exit 0\nImport completed')
+                invoke.assert_called_once_with('Unity',executable,
+                    ['-batchmode','-nographics','-quit','-projectPath',str(root),'-logFile','-'],600)
+            with self.assertRaises(PermissionError):
+                ProjectTools(root,False).execute('run_checks',{})

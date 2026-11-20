@@ -1,6 +1,6 @@
 # TalkToAi Code — Your projects. Your AI. Your workspace.
 
-**8.7.0** introduces Agent Zero as the native desktop agent, with managed and connected browsers, Blender execution, Hugging Face model downloads, OpenAI Responses, Project Data, MCP stdio plugins and 25 free CC0 asset packs. [Windows release and downloads](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/tag/v8.7.0) · [Desktop guide](docs/DESKTOP-8.7.0.md)
+**8.8.0** improves first-run local model setup, Hugging Face links, model removal and control of open Windows apps. The Windows app includes 25 Kenney CC0 packs for offline project import. [Windows downloads](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/tag/v8.8.0) · [Model setup and game tools](docs/DESKTOP-8.8.0.md)
 
 > **Previous Windows package 8.5.0** · [Release archive](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/tag/v8.5.0) · [Release notes](docs/RELEASE-8.5.0.md) · [Linux/macOS source ZIP](https://github.com/ResearchForumOnline/TalkToAi-Code/archive/refs/tags/v8.5.0-portable.1.zip).
 
@@ -179,7 +179,7 @@ An independent native desktop AI assistant from TalkToAI for coding, games and g
 
 ## Install
 
-For Windows x64, use the [8.7.0 setup](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/tag/v8.7.0) and open TalkToAi Code from Start. The installer bundles Python. Agent Zero can download the default 1.1 GB OpenZero model on the first local request when Ollama is installed. Check future updates from **About & updates**.
+For Windows x64, use the [8.8.0 setup](https://github.com/ResearchForumOnline/TalkToAi-Code/releases/tag/v8.8.0) and open TalkToAi Code from Start. The installer bundles Python. Agent Zero can download the default 1.1 GB OpenZero model on the first local request when Ollama is installed. Check future updates from **About & updates**.
 
 ## Updates and saved settings
 

@@ -7,16 +7,16 @@ from runtime_diagnostics import probe, diagnose, report, MAX_BYTES, running_prob
 
 class RuntimeDiagnosticsTests(unittest.TestCase):
     def test_valid_inventory(self):
-        with patch('runtime_diagnostics.urllib.request.urlopen', return_value=io.BytesIO(b'{"models":[{"name":"a:latest"}]}')):
+        with patch('runtime_diagnostics._loopback.open', return_value=io.BytesIO(b'{"models":[{"name":"a:latest"}]}')):
             self.assertEqual(probe(11434)['models'], ['a:latest'])
 
     def test_invalid_inventory(self):
         for raw in [b'<html>no</html>', b'[]', b'{"models":[{}]}', b'{"models":null}', b'x'*(MAX_BYTES+1)]:
-            with self.subTest(raw=raw[:30]), patch('runtime_diagnostics.urllib.request.urlopen', return_value=io.BytesIO(raw)):
+            with self.subTest(raw=raw[:30]), patch('runtime_diagnostics._loopback.open', return_value=io.BytesIO(raw)):
                 self.assertEqual(probe(11435)['state'], 'invalid')
 
     def test_offline_has_no_raw_error(self):
-        with patch('runtime_diagnostics.urllib.request.urlopen', side_effect=OSError('private detail')):
+        with patch('runtime_diagnostics._loopback.open', side_effect=OSError('private detail')):
             self.assertEqual(probe(11434), {'state':'unreachable','models':[]})
 
     def test_shared_local_probe_and_latest_alias(self):
@@ -28,8 +28,8 @@ class RuntimeDiagnosticsTests(unittest.TestCase):
 
     def test_offline_actions_and_custom_label(self):
         with patch('runtime_diagnostics.probe', return_value={'state':'unreachable','models':[]}),patch('runtime_diagnostics.running_probe',return_value={'state':'unreachable','models':[]}):
-            text=report({'server_label':'AMD'})
-        self.assertIn('AMD',text);self.assertIn('SSH host alias',text);self.assertIn('Start or install Ollama',text)
+            text=report({'server_label':'AMD','preferred_route':'server'})
+        self.assertIn('AMD',text);self.assertIn('SSH host alias',text);self.assertIn('Check Ollama connection',text)
         self.assertIn('does not load or download',text)
 
     def test_empty_model_requires_setting(self):
@@ -39,11 +39,11 @@ class RuntimeDiagnosticsTests(unittest.TestCase):
     def test_truncated_and_deep_json_are_invalid(self):
         from http.client import IncompleteRead
         for error in [IncompleteRead(b'partial'),RecursionError()]:
-            with patch('runtime_diagnostics.urllib.request.urlopen',side_effect=error):
+            with patch('runtime_diagnostics._loopback.open',side_effect=error):
                 self.assertEqual(probe(11434)['state'],'invalid')
 
     def test_deadline_stops_trickling_response(self):
-        with patch('runtime_diagnostics.urllib.request.urlopen',return_value=io.BytesIO(b' ' * 20000)), patch('runtime_diagnostics.time.monotonic',side_effect=[0,0,4]):
+        with patch('runtime_diagnostics._loopback.open',return_value=io.BytesIO(b' ' * 20000)), patch('runtime_diagnostics.time.monotonic',side_effect=[0,0,4]):
                 self.assertEqual(probe(11434)['state'],'unreachable')
 
     def test_residency_cpu_gpu_missing_and_not_loaded_are_distinct(self):
@@ -59,15 +59,15 @@ class RuntimeDiagnosticsTests(unittest.TestCase):
 
     def test_running_probe_bounds_and_validates_numbers(self):
         raw=json.dumps({'models':[{'name':'a','size':100,'size_vram':False,'context_length':8192}]}).encode()
-        with patch('runtime_diagnostics.urllib.request.urlopen',return_value=io.BytesIO(raw)):
+        with patch('runtime_diagnostics._loopback.open',return_value=io.BytesIO(raw)):
             state=running_probe(11435)
         self.assertIsNone(state['models'][0]['size_vram'])
         for raw in (b'[]',b'{"models":[null]}',b'x'*(MAX_BYTES+1)):
-            with patch('runtime_diagnostics.urllib.request.urlopen',return_value=io.BytesIO(raw)):
+            with patch('runtime_diagnostics._loopback.open',return_value=io.BytesIO(raw)):
                 self.assertEqual(running_probe(11435)['state'],'invalid')
 
     def test_residency_does_not_assume_gpu_absent_when_unloaded(self):
-        with patch('runtime_diagnostics.urllib.request.urlopen',return_value=io.BytesIO(b'{"models":[]}')) as request:
+        with patch('runtime_diagnostics._loopback.open',return_value=io.BytesIO(b'{"models":[]}')) as request:
             state=running_probe(11435)
         self.assertEqual(request.call_args.args[0],'http://127.0.0.1:11435/api/ps')
         self.assertIn('GPU availability is not established',residency_summary(state,'a'))

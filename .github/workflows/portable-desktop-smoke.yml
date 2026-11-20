@@ -2,6 +2,51 @@ name: Portable desktop smoke
 on:
   workflow_dispatch:
 jobs:
+  windows-model-setup:
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install desktop dependencies
+        run: python -m pip install -r requirements-runtime.txt
+      - name: Provision Windows Package Manager if absent from the runner
+        shell: powershell
+        run: |
+          if (-not (Test-Path "$env:LOCALAPPDATA\Microsoft\WindowsApps\winget.exe")) {
+            Install-Module Microsoft.WinGet.Client -Scope CurrentUser -Repository PSGallery -Force
+            Repair-WinGetPackageManager -Force -Latest
+          }
+      - name: Test Windows setup, models and local tools
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m unittest test_model_library test_model_library_dialog test_model_routing test_runtime_setup test_runtime_diagnostics test_asset_library test_engine_discovery test_computer_route -v
+      - name: Install Ollama and use a model on a fresh Windows runner
+        shell: python
+        run: |
+          import json
+          import threading
+          import urllib.request
+          from routing import delete_local_model, install_model, model_present
+          from runtime_setup import require_model_runtime
+          cancel = threading.Event()
+          def progress(label, done, total):
+              if label != getattr(progress, 'last', ''):
+                  print(label, flush=True)
+                  progress.last = label
+          print('Ollama version', require_model_runtime(cancel, progress), flush=True)
+          model = 'smollm2:135m'
+          install_model(model, cancel, progress)
+          request = urllib.request.Request('http://127.0.0.1:11434/api/generate',
+              data=json.dumps(dict(model=model, prompt='Say hello.', stream=False, options={'num_predict': 12})).encode(),
+              headers={'Content-Type': 'application/json'})
+          with urllib.request.urlopen(request, timeout=300) as response:
+              result = json.load(response)
+          assert result.get('done') and result.get('response', '').strip(), result
+          delete_local_model(model, cancel)
+          assert not model_present(11434, model)
   launch:
     strategy:
       fail-fast: false
@@ -55,4 +100,4 @@ jobs:
             runtime="$HOME/.local/share/talktoai-code/.venv/bin/python"
           fi
           "$runtime" -m unittest test_free_provider_policy test_api_router test_api_integration test_inventory_providers test_attachment_ingest test_conversation_export test_offline_assistant test_offline_ui test_project_templates test_work_packet test_tool_chains test_first_turn_tools test_remote_intent test_task_navigation test_project_context test_context_window test_computer_route test_project_target test_skynet_mode test_candidate_apply test_app_preferences test_app_capabilities test_routing_evaluation test_agent_workflow test_progress_guard test_engine_discovery test_benchmark_models test_keep_going test_long_session test_reasoning_stream test_research_journal test_project_playbooks test_project_workbench test_workspace_change_evidence test_runtime_diagnostics test_task_goals test_tool_protocol test_control_cancel test_workspace_ui test_source_discovery test_ethics_policy -v
-          "$runtime" -m unittest test_agent_zero test_asset_library test_mcp_plugins test_model_library test_openai_provider -v
+          "$runtime" -m unittest test_agent_zero test_asset_library test_mcp_plugins test_model_library test_model_library_dialog test_model_routing test_runtime_setup test_openai_provider -v

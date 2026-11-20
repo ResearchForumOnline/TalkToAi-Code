@@ -1,18 +1,22 @@
 """Read-only, bounded diagnostics for the app's local and tunnel endpoints."""
 import json
+import shutil
 import time
 from http.client import HTTPException
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
+from model_library import ollama_store
+from updates import VERSION
 
 MAX_BYTES = 256 * 1024
+_loopback = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
 def running_probe(port):
     """Read Ollama residency without loading a model or inferring GPU inventory."""
     try:
         deadline=time.monotonic()+3
-        with urllib.request.urlopen(f'http://127.0.0.1:{port}/api/ps',timeout=3) as response:
+        with _loopback.open(f'http://127.0.0.1:{port}/api/ps',timeout=3) as response:
             chunks=[];size=0;read=getattr(response,'read1',response.read)
             while size<=MAX_BYTES:
                 if time.monotonic()>deadline:raise TimeoutError('Residency deadline')
@@ -54,7 +58,7 @@ def residency_summary(state,model):
 def probe(port):
     try:
         deadline=time.monotonic()+3
-        with urllib.request.urlopen(f'http://127.0.0.1:{port}/api/tags', timeout=3) as response:
+        with _loopback.open(f'http://127.0.0.1:{port}/api/tags', timeout=3) as response:
             chunks=[];size=0
             read=getattr(response,'read1',response.read)
             while size <= MAX_BYTES:
@@ -76,18 +80,22 @@ def probe(port):
         return {'state': 'unreachable', 'models': []}
 
 
-def diagnose(config):
+def diagnose(config, include_server=True):
+    routes = [('local', 11434), ('local_large', 11434)]
+    if include_server:
+        routes.append(('server', 11435))
+    ports = sorted({port for _, port in routes})
     with ThreadPoolExecutor(max_workers=2) as pool:
-        states = dict(zip((11434, 11435), pool.map(probe, (11434, 11435))))
+        states = dict(zip(ports, pool.map(probe, ports)))
     results = []
-    for route, port in [('local', 11434), ('local_large', 11434), ('server', 11435)]:
+    for route, port in routes:
         state = states[port]
         model = str(config.get(route + '_model', '')).strip()
         present = bool(model) and (model in state['models'] or model + ':latest' in state['models'])
         if state['state'] == 'invalid':
             action = 'The endpoint returned an invalid model inventory. Check that this port serves Ollama.'
         elif state['state'] == 'unreachable':
-            action = 'Use Reconnect server model; check the SSH host alias in Connections.' if route == 'server' else 'Start or install Ollama, then check again.'
+            action = 'Use Reconnect server model and check the SSH host alias in Connections.' if route == 'server' else 'Open Models and setup. Choose a model to install or use Check Ollama connection to start your installed runtime.'
         elif not model:
             action = 'Set this model ID in Settings.'
         elif not present:
@@ -100,11 +108,23 @@ def diagnose(config):
 
 
 def report(config):
-    lines = ['MODEL CONNECTION DIAGNOSTICS', 'Local tools run on this computer; Server changes the inference location.',
-             'This check does not load or download a model, alter settings, or test inference.']
+    route = config.get('preferred_route', 'local')
+    server = route == 'server' or bool(config.get('active_ssh_alias'))
+    ports = (11434, 11435) if server else (11434,)
+    lines = [f'TalkToAi Code {VERSION} · Model diagnostics',
+             'Selected route: ' + str(route).replace('_', ' ').title(),
+             'This check does not load or download a model.']
+    if not server:
+        lines.append('Local downloads and local chat use Ollama on this PC. SSH is optional.')
+    try:
+        path = ollama_store()
+        volume = next(p for p in (path, *path.parents) if p.exists())
+        lines.append(f'Free space on the local model drive: {shutil.disk_usage(volume).free / 2**30:.1f} GiB')
+    except (OSError, StopIteration):
+        lines.append('Free space on the configured model drive is unavailable.')
     with ThreadPoolExecutor(max_workers=2) as pool:
-        running=dict(zip((11434,11435),pool.map(running_probe,(11434,11435))))
-    for item in diagnose(config):
+        running=dict(zip(ports,pool.map(running_probe,ports)))
+    for item in diagnose(config, include_server=server):
         label = str(config.get('server_label') or 'Server') if item['route'] == 'server' else item['route'].replace('_', ' ').title()
         lines.extend(['', f"{label} — 127.0.0.1:{item['port']} — {item['state']}",
                       'Selected: ' + item['model'], item['action'],residency_summary(running[item['port']],item['model']),

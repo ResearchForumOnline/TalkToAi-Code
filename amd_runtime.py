@@ -3,26 +3,24 @@
 Legacy module/function names remain compatible with existing installations.
 """
 
-import json
 import shutil
 import socket
 import subprocess
+import tempfile
 import threading
 import time
-import urllib.request
+from routing import SERVER_PORT, list_models, matching_model
+from ssh_tools import validate_alias
 
 
-PORT = 11435
+PORT = SERVER_PORT
 _TUNNEL_LOCK = threading.Lock()
 
 
 def model_inventory(timeout=2):
     try:
-        request = urllib.request.Request(f'http://127.0.0.1:{PORT}/api/tags')
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            data = json.load(response)
-        return [model.get('name', '') for model in data.get('models', [])]
-    except (OSError, ValueError, TypeError):
+        return list_models(PORT, timeout=timeout)
+    except ConnectionError:
         return None
 
 
@@ -34,47 +32,75 @@ def port_in_use():
         return False
 
 
-def ensure_amd_tunnel(config, timeout=12):
+def ensure_amd_tunnel(config, timeout=12, *, require_model=True, cancel=None):
     """Return (ready, detail). Start a tunnel only when its loopback port is free."""
-    with _TUNNEL_LOCK:
-        return _ensure_amd_tunnel(config, timeout)
+    cancel = cancel if cancel is not None else threading.Event()
+    while not _TUNNEL_LOCK.acquire(timeout=.1):
+        if cancel.is_set():
+            return False, 'Server connection stopped.'
+    try:
+        return _ensure_amd_tunnel(config, timeout, require_model, cancel)
+    finally:
+        _TUNNEL_LOCK.release()
 
 
-def _ensure_amd_tunnel(config, timeout):
+def _ensure_amd_tunnel(config, timeout, require_model, cancel):
     label = ' '.join(str(config.get('server_label') or 'Server').split())[:60] or 'Server'
     model = str(config.get('server_model', '')).strip()
+
+    def available(names):
+        if require_model and not matching_model(names, model):
+            return False, f'{label} is reachable, but the selected model is missing. Check Model downloads.'
+        return True, f'{label} Ollama is reachable.'
+
+    if cancel.is_set():
+        return False, 'Server connection stopped.'
     names = model_inventory()
     if names is not None:
-        if model in names or model + ':latest' in names:
-            return True, f'{label} model available'
-        return False, f'{label} is reachable, but the selected model is missing. Check Model choices.'
+        return available(names)
     if port_in_use():
-        return False, 'Port 11435 is occupied but does not serve Ollama. Close that listener and retry.'
-    alias = str(config.get('active_ssh_alias', '')).strip()
-    if not alias or alias.startswith('-'):
-        return False, f'Set an SSH host alias in Connections, then retry {label}.'
+        return False, f'Port {PORT} is occupied but does not serve Ollama. Check the existing listener and retry.'
+    try:
+        alias = validate_alias(config.get('active_ssh_alias', ''))
+    except ValueError:
+        return False, f'Set a valid OpenSSH host alias in Connections, then retry {label}.'
     ssh = shutil.which('ssh')
     if not ssh:
         return False, 'OpenSSH is unavailable on this PC. Install or enable it, then retry.'
     flags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
-    try:
-        process = subprocess.Popen(
-            [ssh, '-o', 'BatchMode=yes', '-o', 'ExitOnForwardFailure=yes',
-             '-o', 'ConnectTimeout=8', '-o', 'ServerAliveInterval=20',
-             '-o', 'ServerAliveCountMax=3', '-N', '-L', '11435:127.0.0.1:11434', alias],
-            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL, creationflags=flags,
-        )
-    except OSError as exc:
-        return False, f'Could not start the {label} SSH tunnel: {exc}'
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if process.poll() is not None:
-            return False, f'SSH exited before the {label} tunnel connected. Check your SSH alias and server.'
-        names = model_inventory(timeout=1)
-        if names is not None:
-            if model in names or model + ':latest' in names:
-                return True, f'{label} tunnel connected and model available'
-            return False, f'{label} tunnel connected, but the selected model is missing. Check Model choices.'
-        time.sleep(0.4)
-    return False, f'{label} tunnel did not become ready. Check SSH connectivity and server Ollama.'
+    with tempfile.TemporaryFile() as errors:
+        try:
+            process = subprocess.Popen(
+                [ssh, '-o', 'BatchMode=yes', '-o', 'ExitOnForwardFailure=yes',
+                 '-o', 'ConnectTimeout=8', '-o', 'ServerAliveInterval=20',
+                 '-o', 'ServerAliveCountMax=3', '-N', '-T',
+                 '-L', f'127.0.0.1:{PORT}:127.0.0.1:11434', alias],
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=errors, creationflags=flags,
+            )
+        except OSError as exc:
+            return False, f'Could not start the {label} SSH tunnel: {exc}'
+        keep = False
+        try:
+            deadline = time.monotonic() + timeout
+            while not cancel.is_set() and time.monotonic() < deadline:
+                if process.poll() is not None:
+                    errors.seek(0, 2)
+                    errors.seek(max(0, errors.tell() - 512))
+                    detail = ' '.join(errors.read(512).decode(errors='replace').split())
+                    return False, f'SSH could not connect to {label}. {detail or "Check your SSH alias and server."}'
+                names = model_inventory(timeout=1)
+                if names is not None:
+                    keep = True
+                    return available(names)
+                cancel.wait(.4)
+            if cancel.is_set():
+                return False, 'Server connection stopped.'
+            return False, f'{label} tunnel did not expose Ollama. Check the remote Ollama service and SSH forwarding.'
+        finally:
+            if not keep and process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=2)

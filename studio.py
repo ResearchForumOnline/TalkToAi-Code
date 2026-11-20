@@ -5,7 +5,6 @@ from pathlib import Path
 import sys
 import threading
 import uuid
-import urllib.request
 import time
 import re
 import copy
@@ -20,7 +19,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout, 
     QTextBrowser, QPlainTextEdit, QFileDialog, QMessageBox, QFrame, QInputDialog,
     QSystemTrayIcon, QMenu, QDialog, QLineEdit, QCheckBox, QDialogButtonBox, QScrollArea, QSpinBox)
 from agent_core import AGENT_NAME, ProjectTools, run_agent_zero as run_agent, restore_checkpoint, set_active_remote, set_agent_preferences, set_active_provider
-from routing import choose_route, ensure_local_model, ensure_local_runtime
+from routing import choose_route, ensure_local_model, ensure_local_runtime, matching_model
 from model_library import DEFAULT_LOCAL_MODEL, QWEN_LOCAL_MODEL, DownloadCancelled
 from ssh_tools import SSHProfile, SSHSession, load_profiles, save_profiles
 from providers import ProviderProfile, load_profiles as load_provider_profiles, save_profiles as save_provider_profiles
@@ -151,6 +150,7 @@ class Studio(QMainWindow):
         self.bus.event.connect(self.handle_event)
         self.cancel = threading.Event()
         self.busy = False
+        self.local_model_state = None
         self.execution_kind = 'model'
         self.control_overlay=None;self.control_active=False;self.global_escape=False
         self.escape_cancel=EscapeCancel();self.control_cancel_token=None
@@ -354,6 +354,16 @@ class Studio(QMainWindow):
         self.skynet_button=self.button('⚡ Skynet Mode',self.start_skynet,shortcuts)
         self.skynet_button.setToolTip('Create and check a bounded improvement candidate in a separate copy. Review the diff before applying it.')
         chat.addWidget(self.code_actions)
+        self.model_setup=QFrame()
+        model_setup_row=QHBoxLayout(self.model_setup)
+        model_setup_row.setContentsMargins(0,0,0,0)
+        self.model_setup_label=QLabel()
+        self.model_setup_label.setTextFormat(Qt.PlainText)
+        self.model_setup_label.setWordWrap(True)
+        model_setup_row.addWidget(self.model_setup_label,1)
+        self.button('Set up local AI',self.models_dialog,model_setup_row,True)
+        self.model_setup.hide()
+        chat.addWidget(self.model_setup)
         self.run_card=QFrame();self.run_card.setObjectName('runCard')
         run_card_layout=QVBoxLayout(self.run_card);run_card_layout.setContentsMargins(14,10,14,10)
         self.run_card_title=QLabel('Request received');self.run_card_title.setStyleSheet('font-weight:600;color:#dff9f2;')
@@ -382,6 +392,7 @@ class Studio(QMainWindow):
         self.refresh_attachments()
         options = QHBoxLayout()
         self.route = QComboBox(); self.route.addItems(['Auto', 'Local', 'Server', 'Local large', 'API · optional provider']);self.refresh_route_labels();options.addWidget(self.route)
+        self.route.currentIndexChanged.connect(self.refresh_model_setup)
         self.mode = QComboBox(); self.mode.addItems(['Act', 'Plan']); self.mode.setToolTip('Act permits file edits and host commands. Plan only reads project files. Commands are not OS-sandboxed.'); options.addWidget(self.mode)
         self.step_budget=QComboBox()
         for steps in (16,32,64):self.step_budget.addItem(f'{steps} steps',steps)
@@ -418,9 +429,9 @@ class Studio(QMainWindow):
         game=QWidget(); gl=QVBoxLayout(game)
         lab=QLabel('Game Lab'); lab.setFont(QFont('Segoe UI',20,QFont.DemiBold)); gl.addWidget(lab)
         desc=QLabel('Launch a project, run an import check,\nand keep visual evidence with your task.'); desc.setWordWrap(True); desc.setObjectName('muted'); gl.addWidget(desc)
-        self.button('▶  Run Godot project',lambda:self.game_command(False),gl)
+        self.button('▶  Open in Godot or Unity',lambda:self.game_command(False),gl)
         self.button('Open example game',lambda:self.quick_command('open score arena'),gl)
-        self.button('✓  Godot import check',lambda:self.game_command(True),gl)
+        self.button('✓  Check engine import',lambda:self.game_command(True),gl)
         self.button('Open Blender',self.blender,gl)
         self.button('Game assets',self.game_assets_dialog,gl)
         self.button('Capture this app',self.capture,gl)
@@ -1441,6 +1452,7 @@ class Studio(QMainWindow):
             self.end_control_session()
             self.run_card.hide()
         self.busy=busy
+        self.refresh_model_setup()
         self.escape_shortcut.setEnabled(busy and not self.global_escape)
         for w in (self.new_button,self.project_button,self.task_list,self.task_view,self.route,self.mode,self.step_budget,self.keep_going,self.work_duration,self.goal_button,self.chat_space,self.code_space,self.skynet_button,self.local_tools_button):w.setEnabled(not busy)
         self.prompt.setEnabled(True);self.send_button.setEnabled(True);self.send_button.setText('✦  Steer' if busy else '↑  Send')
@@ -1632,6 +1644,8 @@ class Studio(QMainWindow):
         elif kind=='route':
             label=self.server_name() if data['route']=='server' else 'API' if data['route']=='provider' else 'Local'
             self.route_description=label+' · '+data['model'];self.status.setText(self.route_description+' · '+data['reason'])
+            if data['route'] in ('local','local_large'):
+                self._record_local_model(data['model'])
         elif kind=='metrics':
             self.observe_progress('Model response received',data.get('step',self.run_step))
             self.task['last_metrics']=data
@@ -1660,6 +1674,9 @@ class Studio(QMainWindow):
             self.observe_progress('Using '+data['label'])
             self.task.setdefault('api_routes',[]).append({'provider':data['label'],'model':data['model'],'fallback':data['fallback']})
         elif kind=='health':self.health_label.setText(data)
+        elif kind=='local_model_state':
+            self.local_model_state=data
+            self.refresh_model_setup()
         elif kind=='runtime_diagnostics':
             self.output.setPlainText(data);self.right.setCurrentIndex(2);self.status.setText('Model diagnostics complete; see Tools for recovery steps')
         elif kind=='mail_status':self.mail_status_label.setText(data)
@@ -1719,19 +1736,42 @@ class Studio(QMainWindow):
 
     def health(self):
         def check():
+            from runtime_diagnostics import probe
+            local=probe(11434)
+            self.bus.event.emit('local_model_state',local)
+            server=probe(11435)
             labels=[]
-            for name,port in [('Local',11434),(self.server_name(),11435)]:
-                try:
-                    with urllib.request.urlopen(f'http://127.0.0.1:{port}/api/tags',timeout=3) as r:json.load(r)
-                    labels.append(name+' online')
-                except Exception:
-                    if port==11435 and self.config.get('active_ssh_alias'):
-                        ready,_=ensure_amd_tunnel(self.config)
-                        labels.append(name+' online' if ready else name+' offline · Reconnect server')
-                    else:
-                        labels.append(name+' offline')
+            for name,state in [('Local',local), (self.server_name(),server)]:
+                labels.append(name+' '+{'reachable':'online','invalid':'check connection'}.get(state['state'],'offline'))
             self.bus.event.emit('health',' · '.join(labels))
         threading.Thread(target=check,daemon=True).start()
+
+    def refresh_model_setup(self):
+        state=self.local_model_state
+        index=self.route.currentIndex()
+        if self.busy or state is None or index not in (1,3):
+            self.model_setup.hide()
+            return
+        model=self.config['local_large_model' if index==3 else 'local_model']
+        if state['state']=='reachable' and matching_model(state['models'],model):
+            self.model_setup.hide()
+            return
+        if state['state']!='reachable':
+            message='Connect Ollama to run models on this computer.'
+        elif model==DEFAULT_LOCAL_MODEL:
+            message='OpenZero 1.7B is ready to install for Local.'
+        elif model==QWEN_LOCAL_MODEL:
+            message='Install Qwen3.6 35B A3B for Local large.'
+        else:
+            message='The selected local model is unavailable. Install it or choose an installed model.'
+        self.model_setup_label.setText(message)
+        self.model_setup.show()
+
+    def _record_local_model(self, model):
+        names = set((self.local_model_state or {}).get('models', []))
+        names.add(model)
+        self.local_model_state={'state':'reachable','models':sorted(names)}
+        self.refresh_model_setup()
 
     def reconnect_amd(self):
         self.status.setText('Checking '+self.server_name()+' model and SSH tunnel…')
@@ -1969,7 +2009,7 @@ Keys can remain in memory for this session, come from an environment variable, o
 
 ## Games and evidence
 
-Use `run tests`, `launch game`, `take a screenshot`, `map project`, `show git changes`, or the Game tab. Godot import results, screenshots, task reports and tool output appear in the workspace tabs and remain attached to the task.
+Use `run tests`, `launch game`, `take a screenshot`, `map project`, `show git changes`, or the Game tab. Godot and Unity import results, screenshots and reports appear in the workspace tabs. In Game assets, install Kenney packs into the current project. Godot uses the reported `res://` paths, Unity imports compatible files under `Assets` and Blender can import the pack's GLB, FBX or OBJ files.
 
 ## Browser testing and research
 
@@ -2069,6 +2109,15 @@ Use an available local or server model, stop a task, or steer it into a smaller 
         godot_path=QLineEdit(str(self.config.get('godot_executable','')));godot_path.setObjectName('godot_executable')
         godot_path.setPlaceholderText('Optional full path to Godot; leave blank for automatic discovery')
         form.addWidget(QLabel('Godot executable'));form.addWidget(godot_path)
+        unity_path=QLineEdit(str(self.config.get('unity_executable','')));unity_path.setObjectName('unity_executable')
+        unity_path.setPlaceholderText('Automatic discovery of the project version in Unity Hub')
+        locate_unity=QPushButton('Browse…')
+        def choose_unity():
+            path,_=QFileDialog.getOpenFileName(dialog,'Choose Unity executable',unity_path.text())
+            if path:unity_path.setText(path)
+        locate_unity.clicked.connect(choose_unity)
+        unity_row=QHBoxLayout();unity_row.addWidget(unity_path);unity_row.addWidget(locate_unity)
+        form.addWidget(QLabel('Unity executable'));form.addLayout(unity_row)
         blender_path=QLineEdit(str(self.config.get('blender_executable','')));blender_path.setObjectName('blender_executable')
         blender_path.setPlaceholderText('Automatic discovery')
         locate_blender=QPushButton('Browse…')
@@ -2161,6 +2210,9 @@ Use an available local or server model, stop a task, or steer it into a smaller 
             godot_value=godot_path.text().strip().strip('"')
             if godot_value and (not Path(godot_value).is_absolute() or not Path(godot_value).is_file()):
                 self.error('Godot executable must be an existing absolute file path.');return
+            unity_value=unity_path.text().strip().strip('"')
+            if unity_value and (not Path(unity_value).is_absolute() or not Path(unity_value).is_file()):
+                self.error('Unity executable must be an existing absolute file path.');return
             blender_value=blender_path.text().strip().strip('"')
             if blender_value and (not Path(blender_value).is_absolute() or not Path(blender_value).is_file()):
                 self.error('Blender executable must be an existing absolute file path.');return
@@ -2175,6 +2227,7 @@ Use an available local or server model, stop a task, or steer it into a smaller 
             self.config['num_ctx']=context_choice.currentData()
             self.config['auto_install_openzero']=auto_model.isChecked()
             self.config['godot_executable']=godot_value
+            self.config['unity_executable']=unity_value
             self.config['blender_executable']=blender_value
             self.config['server_label']=' '.join(server_name.text().split()) or 'Server'
             self.config.update(model_values)
@@ -2196,15 +2249,23 @@ Use an available local or server model, stop a task, or steer it into a smaller 
     def game_assets_dialog(self):
         if self.busy:return
         from asset_library_dialog import AssetLibraryDialog
-        AssetLibraryDialog(self,self.task['project']).exec()
+        try:dialog=AssetLibraryDialog(self,self.task['project'])
+        except (OSError, ValueError) as exc:
+            self.error(exc);return
+        dialog.exec()
         self.refresh_files()
 
     def models_dialog(self):
         if self.busy:return
         from model_library_dialog import ModelLibraryDialog
 
-        ModelLibraryDialog(self,STATE/'models',self.select_installed_model,self._select_downloaded_model,
-                           self.diagnose_models,self.compare_installed_models).exec()
+        dialog=ModelLibraryDialog(self,STATE/'models',self._select_downloaded_model,self._on_local_model_removed,
+                                  self.diagnose_models,self.compare_installed_models,self.providers_dialog)
+        try:
+            dialog.exec()
+        finally:
+            dialog.deleteLater()
+            self.health()
 
     def _select_downloaded_model(self, model, route):
         model_setting=route+'_model'
@@ -2218,7 +2279,20 @@ Use an available local or server model, stop a task, or steer it into a smaller 
                 raise
         self.refresh_route_labels()
         self.route.setCurrentIndex(3 if route=='local_large' else 1)
+        self._record_local_model(model)
         self.status.setText('Selected '+model)
+        self.health()
+
+    def _on_local_model_removed(self, model):
+        # The default can otherwise reinstall itself on the next Send.
+        retained=[name for name in (self.local_model_state or {}).get('models',[])
+                  if not (matching_model([name],model) or matching_model([model],name))]
+        self.local_model_state={'state':'reachable','models':retained}
+        self.refresh_model_setup()
+        if matching_model([model],DEFAULT_LOCAL_MODEL) and self.config.get('auto_install_openzero',True):
+            with self.config_write_lock:
+                self.config['auto_install_openzero']=False
+                self.write_config()
         self.health()
 
     def diagnose_models(self):
@@ -2252,16 +2326,6 @@ Use an available local or server model, stop a task, or steer it into a smaller 
             finally:self.bus.event.emit('finished',None)
         threading.Thread(target=work,daemon=True).start()
 
-    def select_installed_model(self):
-        if self.busy:return
-        try:
-            from routing import inventory
-            names=inventory(11434)
-            if not names:raise ValueError('No local models available.')
-            name,ok=QInputDialog.getItem(self,'Installed local model','Choose a downloaded model:',names,editable=False)
-            if ok:self._select_downloaded_model(name,'local')
-        except Exception as exc:self.error(exc)
-
     def export_task(self):
         folder=Path(self.task['project'])/'.talktoai-code/reports';folder.mkdir(parents=True,exist_ok=True)
         path=folder/(self.task['id']+'.md')
@@ -2288,11 +2352,11 @@ Use an available local or server model, stop a task, or steer it into a smaller 
 
     def game_command(self,smoke):
         if self.busy:return
-        root=Path(self.task['project']);godot,_=ProjectTools(root).engine_paths()
-        if not (root/'project.godot').exists() or not godot:self.error('Select a Godot project and set its Godot executable in Settings, or add godot/godot4 to PATH.');return
-        import subprocess
-        if not smoke:subprocess.Popen([str(godot),'--path',str(root)],cwd=root);self.status.setText('Game launched');return
-        self.prompt.setPlainText('Run a Godot headless import check for this project using this executable and report errors: '+str(godot)+' . Use --headless --editor --quit --path .');self.mode.setCurrentText('Act');self.send()
+        root=Path(self.task['project'])
+        if not ((root/'project.godot').is_file() or (root/'ProjectSettings/ProjectVersion.txt').is_file()):
+            self.error('Select the Godot or Unity project folder first.');return
+        self.mode.setCurrentText('Act')
+        self.natural_control('run checks' if smoke else 'launch game')
 
     def blender(self):
         from engine_discovery import find_blender

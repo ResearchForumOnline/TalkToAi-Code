@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param([string]$BuildName = '8.6.1', [string]$OutputDirectory = '')
+param([string]$BuildName = '8.8.0', [string]$OutputDirectory = '', [string]$AssetCollection = '')
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 if ($BuildName -notmatch '^\d+\.\d+\.\d+(?:-[a-zA-Z0-9]+)?$') { throw 'BuildName must identify the source release.' }
@@ -18,3 +18,6 @@ python -m PyInstaller --noconfirm --noconsole --name TalkToAiCode --manifest (Jo
 if ($LASTEXITCODE -ne 0) { throw 'Store executable build failed.' }
 python (Join-Path $root 'scripts\package-runtime-notices.py') $payload
 if ($LASTEXITCODE -ne 0) { throw 'Store dependency notice packaging failed.' }
+$assetArgs = if ($AssetCollection) { @('--source', $AssetCollection) } else { @() }
+python (Join-Path $root 'scripts\package-game-assets.py') $payload @assetArgs
+if ($LASTEXITCODE -ne 0) { throw 'Game asset packaging failed.' }

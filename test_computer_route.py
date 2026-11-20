@@ -64,6 +64,8 @@ class ComputerRouteTests(unittest.TestCase):
                                rounds=2, performance={'num_ctx': 32768})
             computer = [item for item in payloads[1]['tools'] if item['function']['name'] == 'computer']
             self.assertEqual(len(computer), 1)
+            self.assertTrue(any(item['function']['name']=='computer' for item in payloads[0]['tools']))
+            self.assertEqual(computer[0]['function']['parameters']['required'], ['action'])
             action_hint = computer[0]['function']['parameters']['properties']['action']['description']
             self.assertEqual('click_point' in action_hint, supports_vision)
 

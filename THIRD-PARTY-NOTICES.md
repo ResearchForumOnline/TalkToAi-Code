@@ -19,3 +19,7 @@ The Aider automatic-check workflow and DevSpace Personal evidence-first ideas in
 The 8.6.0 Store candidate uses the same dependency-notice process described below. Its exact bundled versions and included notices are recorded in its `LICENSES/DEPENDENCIES.json`.
 
 The 8.5.0 Windows installer and portable archive bundle Python and the required dynamic dependencies. Their `LICENSES` directory preserves the applicable installed distribution notices, and the original app license is included beside this document. Qt/PySide6 libraries remain separate replaceable DLLs in `_internal/PySide6`; no model weights or third-party browser installation are included. The source and corresponding version information for dependencies are linked above. PySide6/Shiboken 6.8.3 sources are available from the official `v6.8.3` source tag at https://code.qt.io/cgit/pyside/pyside-setup.git/tag/?h=v6.8.3 and Qt 6.8.3 source at https://download.qt.io/archive/qt/6.8/6.8.3/single/ . Installed package metadata and included notices determine each component's applicable terms.
+
+## Kenney game assets
+
+The Windows app includes 25 game asset packs created by Kenney under CC0 1.0. The bundled collection contains the original archives, individual license notices and a catalog linking each pack to its creator page. Project imports include the creator notice and source receipt. [Kenney assets](https://kenney.nl/assets) · [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/)

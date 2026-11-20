@@ -8,7 +8,7 @@ def detect_checks(root):
     if (root/'project.godot').is_file():
         return {'engine':'Godot','commands':[], 'note':'Uses the configured Godot headless import check.'}
     if (root/'ProjectSettings/ProjectVersion.txt').is_file():
-        return {'engine':'Unity','commands':[], 'note':'Unity requires the project-specific editor/test command. Inspect its documentation.'}
+        return {'engine':'Unity','commands':[], 'note':'Uses the project’s Unity Editor for a batch import and compile check.'}
     if (root/'package.json').is_file():
         data=json.loads((root/'package.json').read_text(encoding='utf-8-sig'))
         scripts=data.get('scripts',{})

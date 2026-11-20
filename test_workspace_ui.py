@@ -592,9 +592,41 @@ class WorkspaceUITests(unittest.TestCase):
         self.assertFalse(w.task_view.isEnabled());w.set_busy(False)
 
     def test_model_choice_uses_user_settings_location(self):
+        from model_library_dialog import ModelLibraryDialog
         w=self.window
-        with patch('routing.inventory',return_value=['fixture']),patch.object(studio.QInputDialog,'getItem',return_value=('fixture',True)),patch.object(w,'write_config') as save:
-            w.select_installed_model();save.assert_called_once();self.assertEqual(w.config['local_model'],'fixture')
+        dialog=ModelLibraryDialog(w,self.root/'models',w._select_downloaded_model,w._on_local_model_removed,
+                                  w.diagnose_models,w.compare_installed_models,w.providers_dialog)
+        try:
+            dialog._show_installed(['fixture'])
+            dialog.installed.setCurrentRow(0)
+            with patch.object(w,'write_config') as save:
+                dialog.use_installed.click()
+                save.assert_called_once()
+                self.assertEqual(w.config['local_model'],'fixture')
+                self.assertEqual(w.config['preferred_route'],'local')
+        finally:
+            dialog.close()
+            dialog.deleteLater()
+
+    def test_local_setup_is_driven_by_runtime_and_selected_model(self):
+        w=self.window
+        w.route.setCurrentIndex(1)
+        w.handle_event('local_model_state',{'state':'unreachable','models':[]})
+        self.assertFalse(w.model_setup.isHidden())
+        self.assertIn('Connect Ollama',w.model_setup_label.text())
+        w.handle_event('local_model_state',{'state':'reachable','models':[w.config['local_model']]})
+        self.assertTrue(w.model_setup.isHidden())
+        w.route.setCurrentIndex(3)
+        self.assertFalse(w.model_setup.isHidden())
+        w.route.setCurrentIndex(4)
+        self.assertTrue(w.model_setup.isHidden())
+
+    def test_removing_default_does_not_restore_it_on_next_send(self):
+        w=self.window
+        with patch.object(w,'write_config') as save:
+            w._on_local_model_removed(studio.DEFAULT_LOCAL_MODEL)
+            self.assertFalse(w.config['auto_install_openzero'])
+            save.assert_called_once()
 
     def test_example_game_opens_writable_copy_without_a_model(self):
         w=self.window
