@@ -745,7 +745,7 @@
   },
   {
     "path": "studio.py",
-    "sha256": "440b004d97e69f8b6b7e7aa1cd8e922de860af85c62ae98e9b8f59474574351c"
+    "sha256": "63e87039c6ebb622549d43a95dc103047e03903db7d1ff0c0521e4915482362f"
   },
   {
     "path": "task_goals.py",
@@ -809,7 +809,7 @@
   },
   {
     "path": "test_chat_ui.py",
-    "sha256": "4c6be97a4bfbd55d93f5ea5c0cbbf74e8d8b535494bcb450e82634ca9ea15900"
+    "sha256": "d937b0d1f5a0a1fdc0b4b79b2bc722ab4121c23fb6e4f9d43d97024fc2070665"
   },
   {
     "path": "test_computer.py",

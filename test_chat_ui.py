@@ -313,6 +313,17 @@ class ChatUITests(unittest.TestCase):
         self.assertEqual('60m', self.w.model_performance()['ollama_keep_alive'])
         self.assertIn('Restored the local model retention', self.w.transcript.toPlainText())
 
+    def test_model_poll_can_finish_after_its_qt_signal_is_destroyed(self):
+        from shiboken6 import delete
+
+        bus = studio.Bus()
+        received = []
+        bus.event.connect(lambda kind, data: received.append((kind, data)))
+        self.assertTrue(bus.publish('local_model_state', {'models': []}))
+        delete(bus)
+        self.assertFalse(bus.publish('health', 'Local online'))
+        self.assertEqual([('local_model_state', {'models': []})], received)
+
 
 if __name__ == '__main__':
     unittest.main()

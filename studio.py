@@ -10,6 +10,7 @@ import re
 import copy
 import subprocess
 import hashlib
+from shiboken6 import isValid
 from PySide6.QtCore import Qt, Signal, QObject, QTimer, QEvent
 from PySide6.QtGui import QFont, QTextCharFormat, QTextCursor, QKeySequence, QShortcut, QDesktopServices, QIcon, QPixmap, QPainter, QColor
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
@@ -146,6 +147,15 @@ QScrollBar::handle:vertical { background:#597489; border-radius:4px; min-height:
 
 class Bus(QObject):
     event = Signal(str, object)
+
+    def publish(self, kind, data):
+        try:
+            self.event.emit(kind, data)
+        except RuntimeError:
+            if isValid(self):
+                raise
+            return False
+        return True
 
 class Composer(QPlainTextEdit):
     submitted = Signal()
@@ -2042,17 +2052,18 @@ class Studio(QMainWindow):
     def _poll_local_models(self, *, include_server=False):
         self.local_inventory_revision+=1
         revision=self.local_inventory_revision
+        bus=self.bus
+        server_name=self.server_name() if include_server else None
 
         def check():
             from runtime_diagnostics import probe
             local=probe(11434)
-            self.bus.event.emit('local_model_state',dict(local,revision=revision))
-            if include_server:
+            if bus.publish('local_model_state',dict(local,revision=revision)) and include_server:
                 server=probe(11435)
                 labels=[]
-                for name,state in [('Local',local), (self.server_name(),server)]:
+                for name,state in [('Local',local), (server_name,server)]:
                     labels.append(name+' '+{'reachable':'online','invalid':'check connection'}.get(state['state'],'offline'))
-                self.bus.event.emit('health',' · '.join(labels))
+                bus.publish('health',' · '.join(labels))
         threading.Thread(target=check,daemon=True).start()
 
     def _accept_local_inventory(self, state):
