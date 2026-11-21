@@ -30,7 +30,8 @@ cat > "${XDG_DATA_HOME:-$HOME/.local/share}/applications/talktoai-code.desktop" 
 [Desktop Entry]
 Name=TalkToAi Code
 Comment=Local-first coding and game workspace
-Exec=$HOME/.local/bin/talktoai-code
+Exec="$HOME/.local/bin/talktoai-code"
+Icon=$APP_DIR/app-icon.png
 Terminal=false
 Type=Application
 Categories=Development;IDE;

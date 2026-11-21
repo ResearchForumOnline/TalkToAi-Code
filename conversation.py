@@ -1,6 +1,7 @@
 """A single tool-free conversational turn, shared by local and API routes."""
 import time
 
+from ollama_retention import keep_alive_for, local_port
 from reasoning_stream import ReasoningActivity
 
 
@@ -13,7 +14,7 @@ CHAT_PROMPT = (
 )
 
 
-def _conversation_payload(model, history, performance):
+def _conversation_payload(model, history, performance, *, url=None):
     turns = []
     for item in history:
         role = item.get('role')
@@ -53,9 +54,14 @@ def _conversation_payload(model, history, performance):
                 messages[-1]['content'] += '\n\n' + message['content']
             else:
                 messages.append(dict(message))
-    # A greeting should not reserve the KV cache of a long coding session.
+    # Cold short chats can fit a smaller KV cache. Reuse a suitable warm context
+    # because changing num_ctx can make Ollama reload the same model.
     context = min(capacity, 4096) if size + len(CHAT_PROMPT) <= (4096 - output_tokens - 256) * 3 else capacity
-    return {'model': model, 'messages': messages, 'stream': True, 'keep_alive': '15m',
+    resident = performance.get('resident_context')
+    if (url is None or local_port(url) is not None) and type(resident) is int and context <= resident <= capacity:
+        context = resident
+    return {'model': model, 'messages': messages, 'stream': True,
+            'keep_alive': keep_alive_for(url, performance.get('ollama_keep_alive')),
             'think': bool(performance.get('show_thinking')), 'options': {
                 'num_ctx': context, 'num_predict': output_tokens, 'temperature': .7}}
 
@@ -90,7 +96,7 @@ def describe_switch(switch):
 
 
 def conversational_reply(url, model, history, cancel, emit, performance, stream):
-    payload = _conversation_payload(model, history, performance or {})
+    payload = _conversation_payload(model, history, performance or {}, url=url)
     started = time.monotonic()
     first = None
     chunks = []

@@ -1,4 +1,8 @@
-"""Managed and explicitly connected browsers for web research and interaction."""
+"""Managed tabs with per-observation accessibility references.
+
+The reference workflow draws on Hermes' documented browser snapshots. Page
+selection and reading stay scoped to the user-authorized tab, as in BrowserQwen.
+"""
 import json
 import os
 import shutil
@@ -7,6 +11,7 @@ import subprocess
 import uuid
 import base64
 import re
+from collections import deque
 from pathlib import Path
 from urllib.parse import urlsplit, quote_plus, parse_qs
 
@@ -26,6 +31,80 @@ CHROMIUM_PROGRAMS = {
     'chromium': (('chromium', 'chromium-browser'), '', 'Chromium'),
 }
 _ACTIONS = {'search','open','tabs','switch','new_tab','inspect','click','fill','press','back','reload','screenshot'}
+_INPUT_ACTIONS = {'click', 'fill', 'press'}
+_REF = re.compile(r'(?:f[0-9]+)?e[0-9]+\Z')
+_ACCESSIBLE_NODE = re.compile(r'^(?P<indent>\s*)- (?P<role>[a-z][a-z0-9-]*)(?: (?P<name>"(?:[^"\\]|\\.)*"))?(?P<rest>.*)$')
+_NODE_PROPERTY = re.compile(r'^\s*\[([^\]\r\n]+)\]')
+_MAX_TREE = 9500
+_MAX_TEXT = 4500
+_TEXT_WALKER = r"""body => {
+  const excluded = 'script,style,template,noscript,input,textarea,select,[contenteditable],[hidden],[aria-hidden=true]';
+  const walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT);
+  const text = [];
+  let size = 0;
+  let scanned = 0;
+  while (scanned++ < 3000 && size < 5000 && walker.nextNode()) {
+    const parent = walker.currentNode.parentElement;
+    if (!parent || parent.closest(excluded)) continue;
+    if (parent.checkVisibility && !parent.checkVisibility({ opacityProperty: true, visibilityProperty: true })) continue;
+    if (getComputedStyle(parent).visibility !== 'visible') continue;
+    const range = document.createRange();
+    range.selectNodeContents(walker.currentNode);
+    if (!range.getClientRects().length) continue;
+    const line = walker.currentNode.textContent.replace(/\s+/g, ' ').trim().slice(0, 400);
+    if (line) { text.push(line); size += line.length + 1; }
+  }
+  return text.join('\n');
+}"""
+
+
+def _tree_for_model(raw, generation, visible_lines):
+    """Expose roles, names and refs, omitting ARIA scalar values and text children."""
+    lines, references = [], {}
+    used = 0
+    for line in raw[:160000].splitlines():
+        item = _ACCESSIBLE_NODE.fullmatch(line)
+        if not item:
+            continue
+        properties = []
+        rest = item['rest']
+        raw_reference = ''
+        while prop := _NODE_PROPERTY.match(rest):
+            text = prop[1]
+            rest = rest[prop.end():]
+            if text.startswith('ref=') and _REF.fullmatch(text[4:]):
+                raw_reference = text[4:]
+            elif re.fullmatch(r'[a-z]+(?:=(?:true|false|mixed|[0-9]+))?', text):
+                properties.append(prop[0].strip())
+        if not raw_reference:
+            continue
+        quoted = item['name']
+        try:
+            name = json.loads(quoted) if quoted else ''
+        except ValueError:
+            name = ''
+        name_is_text = False
+        if not name and rest.lstrip().startswith(':'):
+            # A generic clickable span may have no accessible name. Use its
+            # scalar only if independently present as rendered, non-editable text.
+            candidate = rest.lstrip()[1:].strip()
+            if candidate.startswith('"'):
+                try: candidate = json.loads(candidate)
+                except ValueError: candidate = ''
+            if isinstance(candidate, str) and candidate in visible_lines:
+                name = candidate
+                name_is_text = True
+        ref = f'{generation}:{raw_reference}'
+        record = f"{item['indent']}- {item['role']}"
+        if name:
+            record += ' ' + json.dumps(name[:250], ensure_ascii=False)
+        record += ' ' + ' '.join([f'[ref={ref}]', *properties])
+        used += len(record) + 1
+        if used > _MAX_TREE:
+            break
+        lines.append(record)
+        references[ref] = (raw_reference, item['role'], name, name_is_text)
+    return '\n'.join(lines), references
 
 
 def find_browser_program(name):
@@ -96,8 +175,8 @@ class BrowserTools:
         self.strict_browser=strict_browser
         self.cdp_port=browser_port(cdp_port) if mode=='attach' else DEFAULT_CDP_PORT
         self.runtime=None;self.browser=None;self.page=None;self.context=None
-        self.observed_page=None;self.observed_url='';self.observed_snapshot=''
-        self.errors=[]
+        self.observed_page=None;self.observed_url='';self.observed_refs={}
+        self.page_generations={};self.page_errors={}
         self.active_browser='';self.active_search='';self.search_attempts=[]
         self.tab_ids={}
         self.tab_count=0
@@ -161,8 +240,8 @@ class BrowserTools:
             raise RuntimeError('The browser could not start. '+hint+' '+ '; '.join(failures))
         self.context=self.browser.new_context(viewport={'width':1280,'height':800})
 
-    def _tabs(self):
-        pages=self._pages()
+    def _tabs(self, current_only=False):
+        pages=[self.page] if current_only and self.page else ([] if current_only else self._pages())
         self.tab_ids={page:tab_id for page,tab_id in self.tab_ids.items() if not page.is_closed()}
         tabs=[]
         for page in pages:
@@ -176,6 +255,64 @@ class BrowserTools:
         if self.observed_page is not self.page or self.observed_url!=self.page.url:
             raise ValueError('Inspect the current browser page before interacting with it.')
         if self.cancel.is_set():raise InterruptedError('Task stopped before browser input.')
+
+    def _read_visible_text(self, page):
+        visible = []
+        used = 0
+        for frame in page.frames[:8]:
+            if self.cancel.is_set(): raise InterruptedError('Task stopped.')
+            if frame.url not in ('about:blank', 'about:srcdoc') and not web_url(frame.url):
+                continue
+            try:
+                if frame is not page.main_frame:
+                    parent = frame.frame_element()
+                    try:
+                        if not parent.is_visible():
+                            continue
+                    finally:
+                        parent.dispose()
+                content = frame.locator('body').evaluate(_TEXT_WALKER, timeout=600)
+            except Exception as exc:
+                if not type(exc).__module__.startswith('playwright.'):raise
+                continue
+            visible.append(content)
+            used += len(content)
+            if used >= _MAX_TEXT:
+                break
+        return '\n'.join(visible)[:_MAX_TEXT]
+
+    def _observe(self):
+        page = self.page
+        self.observed_page = None
+        for _ in range(2):
+            if self.cancel.is_set():raise InterruptedError('Task stopped.')
+            url = page.url
+            if url!='about:blank' and not web_url(url):
+                break
+            epoch = self.page_generations.get(page, 0)
+            raw = page.aria_snapshot(mode='ai', timeout=4000)
+            visible = self._read_visible_text(page)
+            links = self._links()
+            title = page.title()
+            if page.is_closed():
+                break
+            if url==page.url and self.page_generations.get(page, 0)==epoch:
+                snapshot, references = _tree_for_model(raw, 's'+uuid.uuid4().hex[:8], set(visible.splitlines()))
+                return self._record_observation(page,url,title,snapshot,references,visible,links)
+        raise ValueError('Page contents changed while they were being inspected. Inspect the current page again.')
+
+    def _record_observation(self,page,url,title,snapshot,references,visible,links):
+        self.observed_page=page;self.observed_url=url;self.observed_refs=references
+        if visible:
+            snapshot += '\n\nVisible page text\n' + visible
+        errors=list(self.page_errors.get(page, ()))
+        return json.dumps({
+            'browser':self.active_browser,'mode':self.mode,'url':url,'title':title,
+            'page':snapshot,'target_hint':'Use a [ref=...] ID from this observation or a unique exact control name. Re-inspect after changes.',
+            'tabs':self._tabs(current_only=self.mode=='attach'),
+            'search_engine':self.active_search,'search_attempts':self.search_attempts,
+            'links':links,'errors':errors,
+        })
 
     def execute(self, action, target='', value=''):
         try:
@@ -233,8 +370,8 @@ class BrowserTools:
             self.observed_page=None
         if self.page.url!='about:blank' and not web_url(self.page.url):
             raise ValueError('Select an HTTP or HTTPS tab before using browser tools.')
-        previous_page=self.page
-        previous_pages=list(self.context.pages)
+        if action in ('search','open','back','reload'):
+            self.observed_page=None
         if action=='search':
             query=str(target).strip()[:1000]
             if not query:raise ValueError('Enter a web search query.')
@@ -255,22 +392,7 @@ class BrowserTools:
                 raise RuntimeError('Web search returned no usable source links. '+ '; '.join(self.search_attempts))
         elif action=='open':
             self.page.goto(target,wait_until='domcontentloaded',timeout=25000)
-        elif action=='click':self._click_observed(target)
-        elif action=='fill':
-            self._require_observation()
-            if not target or target not in self.observed_snapshot:
-                raise ValueError('Use an exact field label from the latest browser inspection.')
-            field=self.page.get_by_label(target,exact=True).filter(visible=True)
-            if field.count()!=1:raise ValueError('The field label does not match exactly one visible control.')
-            if field.evaluate("el => el.matches('input[type=password]')"):
-                raise ValueError('The password field requires user input.')
-            if self.cancel.is_set():raise InterruptedError('Task stopped before browser input.')
-            self.observed_page=None
-            field.fill(value)
-        elif action=='press':
-            self._require_observation()
-            self.observed_page=None
-            self.page.keyboard.press(target)
+        elif action in _INPUT_ACTIONS:self._input(action,target,value)
         elif action=='back':self.page.go_back(wait_until='domcontentloaded',timeout=15000)
         elif action=='reload':self.page.reload(wait_until='domcontentloaded',timeout=15000)
         elif action=='screenshot':
@@ -278,15 +400,6 @@ class BrowserTools:
             path=folder/('browser-'+uuid.uuid4().hex+'.png')
             self.page.screenshot(path=str(path))
             return json.dumps({'artifact':str(path),'type':'image','url':self.page.url})
-        if action in ('click','fill','press'):
-            # Follow immediate popups, not arbitrary delayed/background windows.
-            # Pump queued page events without waiting for a popup that may not exist.
-            if not previous_page.is_closed():previous_page.wait_for_timeout(50)
-            opened=[page for page in self._pages() if page not in previous_pages]
-            if len(opened)>1:
-                self.observed_page=None
-                raise ValueError('The action opened multiple browser pages. List the tabs and select the intended page.')
-            if opened:self.page=opened[0]
         if self.cancel.is_set():raise InterruptedError('Task stopped.')
         if self.page.is_closed():
             self.observed_page=None
@@ -299,39 +412,88 @@ class BrowserTools:
             self.observed_page=None
             raise ValueError('The browser navigated to a non-web page. List the tabs and select an HTTP or HTTPS page.')
         self.page.wait_for_load_state('domcontentloaded',timeout=8000)
-        snapshot=self.page.locator('body').aria_snapshot()
-        self.observed_page=self.page;self.observed_url=self.page.url;self.observed_snapshot=snapshot[:15000]
-        links=self._links()
-        return json.dumps({'browser':self.active_browser,'mode':self.mode,'tabs':self._tabs(),'search_engine':self.active_search,'search_attempts':self.search_attempts,'links':links,'url':self.page.url,'title':self.page.title(),'page':snapshot[:15000],'errors':self.errors[-8:]})
+        return self._observe()
 
     def _configure_page(self,page):
+        if page in self.page_generations:return
+        self.page_generations[page]=0
+        self.page_errors[page]=deque(maxlen=4)
         page.set_default_timeout(8000)
-        def error(value):
-            self.errors.append(str(value)[:1500]);self.errors[:]=self.errors[-8:]
-        page.on('pageerror',error)
+        # Keep diagnostics scoped to this tab without serializing exception
+        # payloads, which can contain form values or private page data.
+        page.on('pageerror',lambda _error:self.page_errors.get(page, deque()).append('Page script reported an error.'))
+        def changed(_frame):
+            if page in self.page_generations:
+                self.page_generations[page]+=1
+            if self.observed_page is page:
+                self.observed_page=None
+        page.on('framenavigated',changed)
+        page.on('frameattached',changed)
+        page.on('framedetached',changed)
+        def closed():
+            changed(None)
+            self.page_generations.pop(page,None);self.page_errors.pop(page,None)
+        page.on('close',lambda _page:closed())
 
-    def _click_observed(self,target):
-        self._require_observation()
-        roles=set()
-        for role,quoted in re.findall(r'^\s*- ([a-z]+) ("(?:[^"\\]|\\.)*")',self.observed_snapshot,re.M):
-            try:name=json.loads(quoted)
-            except ValueError:continue
-            if name==target:roles.add(role)
-        locator=None
-        for role in sorted(roles):
-            candidate=self.page.get_by_role(role,name=target,exact=True)
-            locator=candidate if locator is None else locator.or_(candidate)
-        if locator is None:
-            if not target or target not in self.observed_snapshot:
-                raise ValueError('Use a control name or text from the latest browser inspection.')
-            locator=self.page.get_by_text(target,exact=True)
+    def _target(self, target):
+        target=str(target).strip()
+        if target.startswith('[ref=') and target.endswith(']'):
+            target=target[5:-1]
+        record = self.observed_refs.get(target)
+        if not record:
+            matches=[entry for entry in self.observed_refs.values() if target and entry[2]==target]
+            if len(matches)>1:
+                raise ValueError(f'Observed name matches {len(matches)} visible controls. Use the intended control’s ref ID.')
+            if not matches:
+                raise ValueError('Use a ref ID or exact control name from the latest browser inspection.')
+            record=matches[0]
+        raw_ref, role, name, name_is_text = record
+        # Playwright 1.63 exposes this selector engine. Newer versions expose
+        # the same frame-scoped reference through the public get_by_ref API.
+        get_by_ref=getattr(self.page,'get_by_ref',None)
+        locator=get_by_ref(raw_ref) if get_by_ref else self.page.locator('aria-ref='+raw_ref)
+        if name:
+            match=(self.page.get_by_text(name,exact=True) if name_is_text else
+                   self.page.get_by_role(role,name=name,exact=True))
+            locator=locator.and_(match)
         locator=locator.filter(visible=True)
-        count=locator.count()
-        if count!=1:
-            raise ValueError(f'Observed browser target matches {count} visible controls; inspect and choose a unique name. No click was sent.')
-        if self.cancel.is_set():raise InterruptedError('Task stopped before browser input.')
-        self.observed_page=None
-        locator.click()
+        if locator.count()!=1:
+            raise ValueError('The observed browser control moved, changed or was replaced. Inspect again before acting.')
+        return locator.element_handle(timeout=600)
+
+    def _input(self,action,target,value):
+        self._require_observation()
+        page=self.page
+        element=self._target(target) if action!='press' else None
+        opened=[]
+        try:
+            if action=='fill' and element.evaluate(r"""el => el.matches('input[type=password]') ||
+                    /(?:^|\s)(?:current-password|new-password|one-time-code)(?:\s|$)/i.test(el.autocomplete || '')"""):
+                raise ValueError('The password field or verification-code field requires user input.')
+            self._require_observation()
+            self.observed_page=None
+            def on_popup(popup):
+                opened.append(popup)
+            page.on('popup',on_popup)
+            try:
+                if action=='press':page.keyboard.press(target)
+                elif action=='fill':element.fill(value,timeout=2500)
+                else:element.click(timeout=2500)
+                if not page.is_closed() and not self.cancel.is_set():
+                    page.wait_for_timeout(60)
+            finally:
+                page.remove_listener('popup',on_popup)
+        finally:
+            if element:
+                try:element.dispose()
+                except Exception as exc:
+                    if not type(exc).__module__.startswith('playwright.'):raise
+        live_popups=[popup for popup in opened if not popup.is_closed()
+                     and (popup.url=='about:blank' or web_url(popup.url))]
+        if len(live_popups)>1:
+            raise ValueError('The action opened multiple browser pages. List the tabs and select the intended page.')
+        if live_popups:
+            self.page=live_popups[0]
 
     def _links(self):
         links=self.page.locator('a[href]').evaluate_all("nodes => nodes.filter(a => (a.textContent || '').trim() && /^https?:/.test(a.href)).slice(0,100).map(a => ({title:(a.textContent || '').trim().slice(0,200),url:a.href}))")
@@ -364,4 +526,5 @@ class BrowserTools:
             try:self.runtime.stop()
             except Exception:pass
         self.runtime=None;self.browser=None;self.page=None;self.context=None;self.observed_page=None
+        self.observed_refs.clear();self.page_generations.clear();self.page_errors.clear()
         self.tab_ids.clear()

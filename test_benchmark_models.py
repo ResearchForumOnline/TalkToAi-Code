@@ -18,13 +18,14 @@ class ModelComparisonTests(unittest.TestCase):
                      if payload.get('tools') else {'content':'def clamp(value, low, high):\n    return max(low, min(value, high))'})
             yield {'message':message,'done':True,'done_reason':'stop','eval_count':20,'eval_duration':2000000000}
         config={'server_model':'server30','local_large_model':'local27'}
-        with patch.object(bench,'inventory',return_value=['server30','local27']),patch.object(bench,'_http_stream',side_effect=stream):
+        with patch.object(bench,'inventory',return_value=['server30','local27']),patch.object(bench,'running_probe',return_value={'state':'reachable','models':[]}),patch.object(bench,'_http_stream',side_effect=stream):
             report=bench.compare_routes(config,threading.Event())
         self.assertEqual(len(payloads),4)
         self.assertTrue(all(r['quality_pass'] for r in report['results']))
         self.assertTrue(all(not r['agent_pass'] for r in report['results']))
         self.assertEqual(payloads[0][1]['messages'],payloads[2][1]['messages'])
         self.assertEqual(payloads[1][1]['messages'],payloads[3][1]['messages'])
+        self.assertEqual([payload['keep_alive'] for _, payload in payloads],['5m','5m','60m','60m'])
         self.assertEqual(config,{'server_model':'server30','local_large_model':'local27'})
 
     def test_missing_models_do_not_download_and_cancel_stops(self):
@@ -37,6 +38,6 @@ class ModelComparisonTests(unittest.TestCase):
     def test_wrong_tool_and_truncated_code_fail_quality_gate(self):
         def stream(url,payload,cancel):
             yield {'message':{'content':'def clamp(value, low, high):\n    return max(low, min(value, high))'},'done':True,'done_reason':'length'}
-        with patch.object(bench,'inventory',return_value=['m']),patch.object(bench,'_http_stream',side_effect=stream):
+        with patch.object(bench,'inventory',return_value=['m']),patch.object(bench,'running_probe',return_value={'state':'reachable','models':[]}),patch.object(bench,'_http_stream',side_effect=stream):
             report=bench.compare_routes({'server_model':'m','local_large_model':'m'},threading.Event())
         self.assertTrue(all(not r['quality_pass'] for r in report['results']))

@@ -15,6 +15,7 @@ for source in ROOT.glob('*.py'):
         continue
     shutil.copy2(source,target/source.name)
 shutil.copy2(ROOT/'requirements-runtime.txt',target/'requirements-runtime.txt')
+shutil.copy2(ROOT/'assets'/'store'/'icon-150.png',target/'app-icon.png')
 for relative in ('project.godot','main.gd','main.gd.uid','main.tscn','tests/score_test.gd'):
     source=ROOT/'samples'/'score-arena'/relative
     destination=target/'samples'/'score-arena'/relative

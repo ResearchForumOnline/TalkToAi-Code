@@ -6,7 +6,9 @@ import threading
 import time
 from datetime import datetime, timezone
 from agent_core import _http_stream
-from routing import inventory
+from ollama_retention import diagnostic_keep_alive
+from routing import installed_model_records, inventory, matching_model
+from runtime_diagnostics import resident_model, running_probe
 
 
 def valid_clamp(content):
@@ -52,7 +54,7 @@ def compare_routes(config, cancel, emit=lambda *_: None, timeout_seconds=240):
         entry = {'route': route, 'model': model, 'num_ctx': 4096, 'fixtures': [],
                  'quality_pass': False, 'agent_pass': False, 'success': False}
         results.append(entry)
-        if not model or (model not in names and model + ':latest' not in names):
+        if not model or not (installed := matching_model(names, model)):
             entry['error'] = 'Configured model is not installed/reachable; no download attempted.'
             continue
         request_cancel = threading.Event()
@@ -66,13 +68,26 @@ def compare_routes(config, cancel, emit=lambda *_: None, timeout_seconds=240):
                     return
         watcher = threading.Thread(target=watch, daemon=True); watcher.start()
         try:
+            context, keep_alive = 4096, '5m'
+            if route == 'local_large':
+                running = running_probe(port)
+                if running['state'] != 'reachable':
+                    raise ConnectionError('Could not check loaded local models. Retry when Ollama can report its memory status.')
+                resident = resident_model(running, installed)
+                if resident is None and running['models']:
+                    record = next((item for item in installed_model_records(port) if item['name']==installed), {})
+                    resident = resident_model(running, installed, record.get('digest'))
+                keep_alive = diagnostic_keep_alive(config.get('ollama_keep_alive'), resident)
+                if resident and (resident.get('context_length') or 0) >= 2048:
+                    context = resident['context_length']
+            entry['num_ctx'] = context
             for kind, prompt, tools in fixtures:
                 if request_cancel.is_set():
                     raise InterruptedError('Benchmark stopped or reached its time limit.')
                 emit('status', f'Comparing {route}: {model} · {kind} fixture')
-                payload = {'model': model, 'messages': [{'role': 'user', 'content': prompt}],
-                           'stream': True, 'think': False, 'keep_alive': '5m',
-                           'options': {'num_ctx': 4096, 'num_predict': 96, 'temperature': 0}}
+                payload = {'model': installed, 'messages': [{'role': 'user', 'content': prompt}],
+                           'stream': True, 'think': False, 'keep_alive': keep_alive,
+                           'options': {'num_ctx': context, 'num_predict': 96, 'temperature': 0}}
                 if tools:
                     payload['tools'] = tools
                 started = time.monotonic(); first = None; content = ''; calls = []; stats = {}

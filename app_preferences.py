@@ -15,6 +15,8 @@ from pathlib import Path
 import threading
 import uuid
 
+from ollama_retention import DEFAULT_KEEP_ALIVE, KEEP_ALIVE_CHOICES
+
 
 _PREFERENCES = {
     'auto_context': ('Automatically include project discovery tools', True, (False, True)),
@@ -23,6 +25,8 @@ _PREFERENCES = {
     'keep_going': ('Default Keep going for new Code tasks', True, (False, True)),
     'work_session_minutes': ('Maximum Keep going duration for future requests', 120, (60, 120, 240)),
     'num_ctx': ('Context size requested for future model calls', 8192, (8192, 16384, 32768)),
+    'ollama_keep_alive': ('Time to keep a local model in memory after a reply', DEFAULT_KEEP_ALIVE, KEEP_ALIVE_CHOICES),
+    'local_worker_limit': ('Maximum local project reviewers per task', 3, (0, 1, 2, 3)),
     'web_browser': ('Preferred research browser', 'auto', ('auto', 'edge', 'chrome', 'brave', 'firefox', 'chromium')),
     'web_search': ('Preferred free browser search', 'auto', ('auto', 'duckduckgo', 'bing', 'google', 'brave')),
     'skynet_iterations': ('Default candidate iterations in Skynet Mode', 2, (1, 2, 3, 4, 5)),
@@ -86,7 +90,7 @@ class AppPreferenceManager:
         with self.lock:
             return self._committed(self._read_audit())[-limit:]
 
-    def change(self, changes: dict[str, object]) -> dict:
+    def change(self, changes: dict[str, object], *, origin=None) -> dict:
         if not isinstance(changes, dict) or not 1 <= len(changes) <= len(_PREFERENCES):
             raise ValueError('changes must be a nonempty object of allowed app preferences')
         checked = {key: _checked_value(key, value) for key, value in changes.items()}
@@ -103,7 +107,7 @@ class AppPreferenceManager:
             if not actual:
                 return {'changed': False, 'preferences': {key: before[key]['value'] for key in checked},
                         'message': 'These preferences already have the requested values.'}
-            return self._apply(actual, {key: before[key] for key in actual})
+            return self._apply(actual, {key: before[key] for key in actual}, origin=origin)
 
     def rollback(self, change_id: str) -> dict:
         if not isinstance(change_id, str) or len(change_id) != 32 or any(c not in '0123456789abcdef' for c in change_id):
@@ -129,12 +133,14 @@ class AppPreferenceManager:
                                restore_missing={key for key in target if not original['before'][key]['present']})
 
     def _apply(self, after: dict, before: dict, rollback_of: str | None = None,
-               restore_missing: set[str] | None = None) -> dict:
+               restore_missing: set[str] | None = None, origin=None) -> dict:
         change_id = uuid.uuid4().hex
         record = {'id': change_id, 'at': _stamp(), 'state': 'prepared',
                   'before': before, 'after': after}
         if rollback_of:
             record['rollback_of'] = rollback_of
+        if origin == 'local-tuning':
+            record['origin'] = origin
         self._append(record)
         try:
             for key, value in after.items():

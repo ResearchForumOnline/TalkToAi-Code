@@ -115,7 +115,8 @@ class WorkspaceUITests(unittest.TestCase):
         import json
         w=self.window
         godot=self.root/'godot';godot.write_text('fixture')
-        self.assertEqual(w.model_performance(),{'num_ctx':8192,'show_thinking':False,'work_session_minutes':120})
+        self.assertEqual(w.model_performance()['num_ctx'],8192)
+        self.assertEqual(w.model_performance()['ollama_keep_alive'],'60m')
         def save(dialog):
             choice=dialog.findChild(QComboBox,'model_context_window')
             self.assertEqual(choice.currentData(),8192)
@@ -128,7 +129,7 @@ class WorkspaceUITests(unittest.TestCase):
             return QDialog.Accepted
         with patch.object(studio.QDialog,'exec',save),patch.object(w,'set_start_with_windows'),patch('search_provider.configured',return_value=False):
             w.settings()
-        self.assertEqual(w.model_performance(),{'num_ctx':16384,'show_thinking':False,'work_session_minutes':120})
+        self.assertEqual(w.model_performance()['num_ctx'],16384)
         self.assertEqual(json.loads((self.root/'config.json').read_text())['num_ctx'],16384)
         self.assertEqual(json.loads((self.root/'config.json').read_text())['godot_executable'],str(godot.resolve()))
         self.assertEqual(json.loads((self.root/'config.json').read_text())['server_label'],'My GPU server')
@@ -144,7 +145,7 @@ class WorkspaceUITests(unittest.TestCase):
             dialog.findChild(QLineEdit,'server_label').setText('Cancelled label')
             return QDialog.Rejected
         with patch.object(studio.QDialog,'exec',cancel),patch('search_provider.configured',return_value=False):w.settings()
-        self.assertEqual(w.model_performance(),{'num_ctx':16384,'show_thinking':False,'work_session_minutes':120})
+        self.assertEqual(w.model_performance()['num_ctx'],16384)
         self.assertEqual(w.server_name(),'My GPU server')
 
     def test_generic_server_labels_and_custom_model_names(self):
@@ -509,7 +510,7 @@ class WorkspaceUITests(unittest.TestCase):
 
     def test_invalid_context_setting_falls_back_to_8k(self):
         self.window.config['num_ctx']='999999'
-        self.assertEqual(self.window.model_performance(),{'num_ctx':8192,'show_thinking':False,'work_session_minutes':120})
+        self.assertEqual(self.window.model_performance()['num_ctx'],8192)
 
     def test_invalid_model_id_does_not_save_settings(self):
         w=self.window;original=dict(w.config)
@@ -600,8 +601,11 @@ class WorkspaceUITests(unittest.TestCase):
         try:
             dialog._show_installed(['fixture'])
             dialog.installed.setCurrentRow(0)
-            with patch.object(w,'write_config') as save:
+            with patch.object(w,'write_config') as save, patch.object(
+                    dialog,'_installed_snapshot',return_value=([{'name':'fixture'}],None)), \
+                    patch('model_library_dialog.threading.Thread') as worker:
                 dialog.use_installed.click()
+                worker.call_args.kwargs['target']()
                 save.assert_called_once()
                 self.assertEqual(w.config['local_model'],'fixture')
                 self.assertEqual(w.config['preferred_route'],'local')
@@ -621,6 +625,30 @@ class WorkspaceUITests(unittest.TestCase):
         self.assertFalse(w.model_setup.isHidden())
         w.route.setCurrentIndex(4)
         self.assertTrue(w.model_setup.isHidden())
+
+    def test_authoritative_empty_inventory_removes_stale_name_without_replacing_route_config(self):
+        w=self.window
+        w.config['local_model']='custom:latest'
+        w.route.setCurrentIndex(1)
+        w.handle_event('local_model_state',{'state':'reachable','models':['custom:latest']})
+        self.assertIn('custom:latest', w.route.itemText(1))
+        w.handle_event('local_model_state',{'state':'unreachable','models':[]})
+        self.assertIn('custom:latest', w.route.itemText(1))
+        w.set_busy(True)
+        w.handle_event('local_model_state',{'state':'reachable','models':[]})
+        self.assertIn('custom:latest', w.route.itemText(1))
+        w.set_busy(False)
+        self.assertIn('choose a model', w.route.itemText(1))
+        self.assertEqual(w.config['local_model'],'custom:latest')
+        self.assertEqual(w.route.currentIndex(),1)
+
+    def test_external_openzero_removal_does_not_bootstrap_again(self):
+        w=self.window
+        self.assertTrue(w._auto_install_openzero())
+        w.handle_event('local_model_state',{'state':'reachable','models':[studio.DEFAULT_LOCAL_MODEL]})
+        w.handle_event('local_model_state',{'state':'reachable','models':[]})
+        self.assertFalse(w._auto_install_openzero())
+        self.assertEqual(w.config['local_model'],studio.DEFAULT_LOCAL_MODEL)
 
     def test_removing_default_does_not_restore_it_on_next_send(self):
         w=self.window

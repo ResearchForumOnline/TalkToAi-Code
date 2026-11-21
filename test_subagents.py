@@ -8,9 +8,16 @@ import agent_core as core
 
 
 class WorkerTests(unittest.TestCase):
+    def setUp(self):
+        self.local = 'http://127.0.0.1:11434'
+        verified = patch.object(core.project_workers, 'verify_local_model')
+        verified.start()
+        self.addCleanup(verified.stop)
+
     def test_worker_reads_evidence_and_cannot_write_or_delegate(self):
         payloads=[]
-        def stream(url,payload,cancel):
+        def stream(url,payload,cancel,*,local_only):
+            self.assertTrue(local_only)
             payloads.append(payload)
             if len(payloads)==1:
                 calls=[{'function':{'name':'read_file','arguments':{'path':'game.py'}}},
@@ -20,7 +27,7 @@ class WorkerTests(unittest.TestCase):
             return iter([{'message':{'content':'game.py returns 1; investigate scoring.'},'done':True}])
         with tempfile.TemporaryDirectory() as folder,patch.object(core,'stream_chat',side_effect=stream),patch.object(core,'model_supports_vision',return_value=False):
             file=Path(folder)/'game.py';file.write_text('return 1')
-            report=json.loads(core.run_subagent('fixture','fixture',folder,'Review game.py','reviewer',threading.Event(),lambda *_:None))
+            report=json.loads(core.run_subagent(self.local,'fixture',folder,'Review game.py','reviewer',threading.Event(),lambda *_:None))
             self.assertEqual(file.read_text(),'return 1')
         names={t['function']['name'] for t in payloads[0]['tools']}
         self.assertFalse(names & {'write_file','run_command','computer','delegate_review','remote_run_command'})
@@ -36,9 +43,9 @@ class WorkerTests(unittest.TestCase):
             {'message':{'tool_calls':[{'function':{'name':'read_file','arguments':{'path':'game.py'}}}]},'done':True},
             {'message':{'content':'The function returns one.'},'done':True},
         ])
-        with tempfile.TemporaryDirectory() as folder,patch.object(core,'stream_chat',side_effect=lambda *_:iter([next(responses)])),patch.object(core,'model_supports_vision',return_value=False):
+        with tempfile.TemporaryDirectory() as folder,patch.object(core,'stream_chat',side_effect=lambda *_, **_kwargs:iter([next(responses)])),patch.object(core,'model_supports_vision',return_value=False):
             Path(folder,'game.py').write_text('return 1')
-            report=json.loads(core.run_subagent('fixture','fixture',folder,'Review game.py','reviewer',threading.Event(),lambda *_:None))
+            report=json.loads(core.run_subagent(self.local,'fixture',folder,'Review game.py','reviewer',threading.Event(),lambda *_:None))
         self.assertEqual(report['status'],'completed')
 
     def test_cancelled_worker_never_calls_model(self):
@@ -54,6 +61,6 @@ class WorkerTests(unittest.TestCase):
             return iter([{'message':{'tool_calls':[{'function':{'name':'delegate_review','arguments':{'role':'test_planner','task':'Review test gaps'}}}]},'done':True}])
         events=[]
         with tempfile.TemporaryDirectory() as folder,patch.object(core,'stream_chat',side_effect=stream),patch.object(core,'model_supports_vision',return_value=False),patch.object(core,'run_subagent',return_value='{"report":"Missing score test"}') as worker:
-            core.run_agent('fixture','fixture',[{'role':'user','content':'Use a subagent to review tests'}],folder,False,threading.Event(),lambda k,v:events.append((k,v)))
+            core.run_agent(self.local,'fixture',[{'role':'user','content':'Use a subagent to review tests'}],folder,False,threading.Event(),lambda k,v:events.append((k,v)))
             worker.assert_called_once()
         self.assertTrue(any(k=='result' and 'Missing score test' in v for k,v in events))

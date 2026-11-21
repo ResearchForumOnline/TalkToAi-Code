@@ -87,6 +87,44 @@ class ComputerTests(unittest.TestCase):
         self.engine.execute('click',self.control_id)
         self.control.invoke.assert_called_once_with()
 
+    def test_exact_window_title_and_control_name_allow_safe_refresh(self):
+        snapshot=json.loads(self.engine.execute('inspect','fixture'))
+        self.assertEqual(snapshot['handle'],'123')
+        self.engine.execute('fill','player name','Builder')
+        self.control.set_edit_text.assert_called_once_with('Builder')
+        refreshed=json.loads(self.engine.execute('inspect'))
+        self.assertNotEqual(snapshot['controls'][0]['id'],refreshed['controls'][0]['id'])
+
+    def test_duplicate_control_names_require_current_id(self):
+        self.window.descendants.return_value=[self.control,self.control]
+        self.inspect()
+        with self.assertRaisesRegex(ValueError,'ambiguous'):
+            self.engine.execute('click','Player name')
+        self.control.invoke.assert_not_called()
+
+    def test_changed_control_id_or_label_blocks_delivery(self):
+        self.control.element_info.runtime_id=[3,4,1]
+        self.inspect()
+        self.control.element_info.runtime_id[2]=2
+        with self.assertRaisesRegex(ValueError,'changed identity'):
+            self.engine.execute('fill',self.control_id,'Builder')
+        self.control.set_edit_text.assert_not_called()
+        self.inspect()
+        self.control.window_text.return_value='Different form'
+        with self.assertRaisesRegex(ValueError,'changed identity'):
+            self.engine.execute('click','Player name')
+        self.control.invoke.assert_not_called()
+
+    def test_mouse_fallback_checks_accessibility_occlusion(self):
+        self.inspect()
+        unrelated=MagicMock()
+        unrelated.element_info.parent=None
+        self.desktop.from_point.return_value=unrelated
+        with self.assertRaisesRegex(ValueError,'covered'):
+            self.engine._control_at_point(self.control,10,10)
+        self.desktop.from_point.return_value=self.control
+        self.engine._control_at_point(self.control,10,10)
+
     def test_disabled_control_reported_and_input_rejected(self):
         self.control.is_enabled.return_value=False
         result=json.loads(self.inspect())

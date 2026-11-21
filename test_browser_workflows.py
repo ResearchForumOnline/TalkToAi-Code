@@ -1,6 +1,7 @@
 """Opt-in real browser checks against a disposable loopback HTTP fixture only."""
 import json
 import os
+import re
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import subprocess
@@ -8,7 +9,7 @@ import tempfile
 import threading
 import time
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 from urllib.request import urlopen
 from browser_tools import BrowserTools, browser_port, find_browser_program
 
@@ -18,16 +19,21 @@ class Fixture(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path.startswith('/report'):
             html='<title>Report</title><h1>Report ready</h1><button onclick="window.close()">Close report</button>'
+        elif self.path.startswith('/panel'):
+            html='''<label>Nested player <input></label><p id="inside">Nested panel ready</p>
+<button aria-label="Nested save" onclick="document.querySelector('#inside').textContent='Nested action confirmed'">Save</button>'''
         else:
             html='''<title>Fixture</title><h1>Original fixture</h1>
 <button aria-label="Save project" onclick="document.querySelector('#status').textContent='Saved successfully'">+</button>
 <p id="status">Waiting</p>
 <label>Player name <input oninput="document.querySelector('#status').textContent=this.value"></label>
 <label>Private field <input type="password"></label>
-<button aria-label="Duplicate" onclick="document.querySelector('#status').textContent='WRONG'">A</button>
-<button aria-label="Duplicate" onclick="document.querySelector('#status').textContent='WRONG'">B</button>
+<button aria-label="Duplicate" onclick="document.querySelector('#status').textContent='Selected first duplicate'">A</button>
+<button aria-label="Duplicate" onclick="document.querySelector('#status').textContent='Selected second duplicate'">B</button>
 <a target="_blank" href="/report">Open report</a>
 <button onclick="window.open('/report?1');window.open('/report?2')">Open two reports</button>'''
+            if self.path.startswith('/nested'):
+                html+=f'<iframe title="Nested panel" src="http://localhost:{self.server.server_port}/panel"></iframe>'
         body=html.encode();self.send_response(200);self.send_header('Content-Type','text/html; charset=utf-8')
         self.send_header('Content-Length',str(len(body)));self.end_headers();self.wfile.write(body)
 
@@ -52,7 +58,50 @@ class BrowserWorkflowTests(unittest.TestCase):
     def test_ambiguous_name_never_clicks(self):
         with self.assertRaisesRegex(ValueError,'2 visible controls'):
             self.tools.execute('click','Duplicate')
-        self.assertNotIn('WRONG',json.loads(self.tools.execute('inspect'))['page'])
+        self.assertIn('Waiting',self.tools.page.locator('#status').inner_text())
+    def test_unique_reference_targets_one_duplicate(self):
+        snapshot=json.loads(self.tools.execute('inspect'))['page']
+        refs=re.findall(r'button "Duplicate" \[ref=([^\]]+)\]',snapshot)
+        self.assertEqual(len(refs),2)
+        result=json.loads(self.tools.execute('click',refs[1]))
+        self.assertIn('Selected second duplicate',result['page'])
+        self.assertNotIn('Selected first duplicate',result['page'])
+    def test_reference_cannot_act_on_replacement_or_next_observation(self):
+        snapshot=json.loads(self.tools.execute('inspect'))['page']
+        old_ref=re.search(r'button "Save project" \[ref=([^\]]+)\]',snapshot).group(1)
+        self.tools.page.get_by_role('button',name='Save project').evaluate(
+            'element => element.replaceWith(element.cloneNode(true))')
+        with self.assertRaisesRegex(ValueError,'changed or was replaced'):
+            self.tools.execute('click',old_ref)
+        self.assertEqual(self.tools.page.locator('#status').inner_text(),'Waiting')
+        self.tools.execute('inspect')
+        with self.assertRaisesRegex(ValueError,'latest browser inspection'):
+            self.tools.execute('click',old_ref)
+    def test_same_dom_node_with_changed_name_requires_reinspection(self):
+        self.tools.page.get_by_role('button',name='Save project').evaluate(
+            "element => element.setAttribute('aria-label', 'Save elsewhere')")
+        with self.assertRaisesRegex(ValueError,'changed or was replaced'):
+            self.tools.execute('click','Save project')
+        self.assertEqual(self.tools.page.locator('#status').inner_text(),'Waiting')
+    def test_cross_origin_frame_references_support_edit_and_click(self):
+        snapshot=json.loads(self.tools.execute('open',self.url+'nested'))['page']
+        field=re.search(r'textbox "Nested player" \[ref=([^\]]+)\]',snapshot).group(1)
+        edited=json.loads(self.tools.execute('fill',f'[ref={field}]','Tester'))['page']
+        found=self.tools.page.frame_locator('iframe').get_by_label('Nested player')
+        self.assertEqual(found.input_value(),'Tester')
+        button=re.search(r'button "Nested save" \[ref=([^\]]+)\]',edited).group(1)
+        result=json.loads(self.tools.execute('click',button))
+        self.assertIn('Nested action confirmed',result['page'])
+    def test_editable_values_are_not_exposed_by_aria_or_visible_text(self):
+        marker='synthetic-form-fixture'
+        self.tools.page.set_content(f'''<p>Ordinary visible page text</p>
+<label>Private <input type=password role=button value="{marker}"></label>
+<textarea>{marker}</textarea><div contenteditable>{marker}</div>''')
+        result=self.tools.execute('inspect')
+        self.assertFalse(marker in result,'A synthetic form value reached the tool observation.')
+        self.assertIn('Ordinary visible page text',result)
+        with self.assertRaisesRegex(ValueError,'password field'):
+            self.tools.execute('fill','Private','typed fixture')
     def test_popup_follow_and_closed_popup_recovery(self):
         result=json.loads(self.tools.execute('click','Open report'))
         self.assertTrue(result['url'].endswith('/report'));self.assertIn('Report ready',result['page'])
@@ -71,13 +120,45 @@ class BrowserWorkflowTests(unittest.TestCase):
         self.tools.page.goto(self.url+'report')
         with self.assertRaisesRegex(ValueError,'Inspect the current'):
             self.tools.execute('click','Save project')
+    def test_reload_at_same_url_invalidates_old_observation(self):
+        self.tools.page.reload()
+        with self.assertRaisesRegex(ValueError,'Inspect the current'):
+            self.tools.execute('click','Save project')
+        self.assertEqual(self.tools.page.locator('#status').inner_text(),'Waiting')
     def test_cancel_during_target_resolution_does_not_click(self):
-        locator=MagicMock();locator.filter.return_value=locator
-        def count():self.tools.cancel.set();return 1
-        locator.count.side_effect=count
-        with patch.object(self.tools.page,'get_by_role',return_value=locator):
+        resolve=self.tools._target
+        def stop_after_resolution(target):
+            element=resolve(target)
+            self.tools.cancel.set()
+            return element
+        with patch.object(self.tools,'_target',side_effect=stop_after_resolution):
             with self.assertRaises(InterruptedError):self.tools.execute('click','Save project')
-        locator.click.assert_not_called()
+        self.assertEqual(self.tools.page.locator('#status').inner_text(),'Waiting')
+
+    def test_unrelated_tab_is_not_selected_as_action_popup(self):
+        original=self.tools.page
+        resolve=self.tools._target
+        def open_unrelated_tab(target):
+            element=resolve(target)
+            background=self.tools.context.new_page()
+            background.goto(self.url+'report')
+            return element
+        with patch.object(self.tools,'_target',side_effect=open_unrelated_tab):
+            result=json.loads(self.tools.execute('click','Save project'))
+        self.assertIs(self.tools.page,original)
+        self.assertIn('Saved successfully',result['page'])
+
+    def test_browser_errors_are_scoped_and_omit_script_payloads(self):
+        original=self.tools.page
+        background=self.tools.context.new_page()
+        background.evaluate("() => setTimeout(() => { throw Error('Other page fixture marker'); }, 0)")
+        background.wait_for_timeout(100)
+        isolated=json.loads(self.tools.execute('inspect'))
+        self.assertEqual(isolated['errors'],[])
+        original.evaluate("() => setTimeout(() => { throw Error('Selected page fixture marker'); }, 0)")
+        original.wait_for_timeout(100)
+        result=json.loads(self.tools.execute('inspect'))
+        self.assertEqual(result['errors'],['Page script reported an error.'])
 
     def test_tab_switch_and_labelled_fill(self):
         home=json.loads(self.tools.execute('open',self.url))
@@ -104,6 +185,8 @@ class BrowserWorkflowTests(unittest.TestCase):
                     result=json.loads(tools.execute('open',self.url))
                     self.assertEqual(result['browser'],name)
                     self.assertIn('Original fixture',result['page'])
+                    ref=re.search(r'button "Save project" \[ref=([^\]]+)\]',result['page']).group(1)
+                    self.assertIn('Saved successfully',json.loads(tools.execute('click',ref))['page'])
                 finally:
                     tools.close()
         if not tested:self.skipTest('No installed Chromium browser for launch')

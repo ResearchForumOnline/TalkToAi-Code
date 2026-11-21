@@ -1,6 +1,7 @@
 import json, os, pathlib, subprocess, urllib.request
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from model_library import DEFAULT_LOCAL_MODEL, QWEN_LOCAL_MODEL
+from ollama_retention import keep_alive_for
 
 ROOT = pathlib.Path(__file__).resolve().parent
 DEFAULT_PROJECT = pathlib.Path(os.environ.get('LOCAL_CODEX_PROJECT', str(ROOT.parent))).resolve()
@@ -19,8 +20,12 @@ def safe_path(project, rel):
     if p != base and base not in p.parents: raise ValueError('Path escapes the selected project')
     return p
 
-def api_chat(url, model, messages):
-    body = json.dumps({'model': model, 'messages': messages, 'stream': False, 'options': {'num_ctx': 8192, 'temperature': 0.2}}).encode()
+def api_chat(url, model, messages, retention=None):
+    payload = {'model': model, 'messages': messages, 'stream': False, 'options': {'num_ctx': 8192, 'temperature': 0.2}}
+    keep_alive = keep_alive_for(url, retention, remote_default=None)
+    if keep_alive is not None:
+        payload['keep_alive'] = keep_alive
+    body = json.dumps(payload).encode()
     req = urllib.request.Request(url.rstrip('/') + '/api/chat', data=body, headers={'Content-Type':'application/json'})
     with urllib.request.urlopen(req, timeout=600) as r: return json.loads(r.read().decode())
 
@@ -68,7 +73,7 @@ class Handler(BaseHTTPRequestHandler):
                 url='http://127.0.0.1:11434'; model=c['local_model']
                 if c.get('backend')=='server': url='http://127.0.0.1:11435'; model=c['server_model']
                 system='You are Agent Zero in the TalkToAi Code web workspace. Inspect before proposing edits, scope work to the project, favor small testable milestones, use concise answers to preserve local-model context, and never claim a file was changed unless the user saves it through this UI. Never request or expose credentials. Project root: '+c['project']
-                self.send_json(api_chat(url,model,[{'role':'system','content':system}]+data.get('messages',[]))); return
+                self.send_json(api_chat(url,model,[{'role':'system','content':system}]+data.get('messages',[]),c.get('ollama_keep_alive'))); return
             if action=='command':
                 p=subprocess.run(data.get('command',''),cwd=c['project'],shell=True,capture_output=True,text=True,timeout=120)
                 self.send_json({'returncode':p.returncode,'stdout':p.stdout[-12000:],'stderr':p.stderr[-12000:]}); return

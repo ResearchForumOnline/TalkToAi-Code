@@ -13,6 +13,22 @@ from providers import ProviderProfile
 from test_openai_provider import responses_fixture
 
 
+class LocalChatRetentionTests(unittest.TestCase):
+    def test_local_short_chat_reuses_a_sufficient_loaded_context(self):
+        history=[{'role':'user','content':'Hello'}]
+        settings={'num_ctx':8192,'resident_context':8192,'ollama_keep_alive':'4h'}
+        payload=_conversation_payload('demo',history,settings,url='http://127.0.0.1:11434')
+        self.assertEqual(payload['options']['num_ctx'],8192)
+        self.assertEqual(payload['keep_alive'],'4h')
+        for context in (2048,16384,None):
+            with self.subTest(context=context):
+                cold=_conversation_payload('demo',history,dict(settings,resident_context=context),url='http://127.0.0.1:11434')
+                self.assertEqual(cold['options']['num_ctx'],4096)
+        server=_conversation_payload('demo',history,settings,url='http://127.0.0.1:11435')
+        self.assertEqual(server['keep_alive'],'15m')
+        self.assertEqual(server['options']['num_ctx'],4096)
+
+
 @contextmanager
 def fixture(replies):
     received = []

@@ -10,6 +10,8 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 import model_library_dialog as ui
 from model_library import ModelFile, QWEN_LOCAL_MODEL
 
+EMPTY_RUNNING = {'state':'reachable','models':[]}
+
 
 class ModelDialogTests(unittest.TestCase):
     @classmethod
@@ -91,9 +93,9 @@ class ModelDialogTests(unittest.TestCase):
     def test_reopened_installed_list_shows_check_for_exact_digest_and_aliases_only(self):
         digest='a'*64
         records=[{'name':'mine:latest','digest':digest}]
-        self.dialog._finished(('inventory',records))
+        self.dialog._finished(('inventory',records,EMPTY_RUNNING))
         self.assertIn('No saved reply check',self.dialog.reply_history.text())
-        with patch('routing.require_local_runtime'), patch('routing.installed_model_records',return_value=records), patch('agent_core._http_stream',return_value=iter([{'message':{'content':'five, actually'},'done':True}])):
+        with patch('routing.require_local_runtime'), patch('runtime_diagnostics.running_probe',return_value=EMPTY_RUNNING), patch('routing.installed_model_records',return_value=records), patch('agent_core._http_stream',return_value=iter([{'message':{'content':'five, actually'},'done':True}])):
             self.dialog.test_reply.click()
             self.run_worker()
         self.assertIn('Answered differently',self.dialog.reply_history.text())
@@ -101,7 +103,7 @@ class ModelDialogTests(unittest.TestCase):
         reopened=ui.ModelLibraryDialog(None,self.root,self.selected,self.removed,Mock(),Mock(),Mock())
         try:
             reopened._finished(('inventory',[{'name':'alternate:latest','digest':'sha256:'+digest},
-                                              {'name':'mine:latest','digest':'b'*64}]))
+                                              {'name':'mine:latest','digest':'b'*64}],EMPTY_RUNNING))
             self.assertEqual(reopened._installed_name(),'alternate:latest')
             self.assertIn('Last reply check',reopened.reply_history.text())
             self.assertIn('Answered differently',reopened.reply_history.text())
@@ -168,10 +170,51 @@ class ModelDialogTests(unittest.TestCase):
     def test_ollama_aliases_and_configured_names_are_labelled(self):
         self.dialog.configured_models = {'Local': 'small'}
         self.dialog._finished(('inventory', [{'name':'small:latest','size':1024,'digest':'a'*64},
-                                             {'name':'copy:latest','size':1024,'digest':'a'*64}]))
+                                             {'name':'copy:latest','size':1024,'digest':'a'*64}],EMPTY_RUNNING))
         self.assertIn('Local', self.dialog.installed.item(0).text())
         self.assertIn('same model as copy:latest', self.dialog.installed.item(0).text())
         self.assertIn('Not selected in Studio', self.dialog.installed.item(1).text())
+
+    def test_passive_inventory_preserves_last_list_on_failure_and_removes_confirmed_deletion(self):
+        records=[{'name':'first:latest'}, {'name':'second:latest'}]
+        self.dialog._accept_inventory(records,EMPTY_RUNNING)
+        self.dialog.installed.setCurrentRow(1)
+        self.dialog._accept_inventory(None,None)
+        self.assertEqual(self.dialog.installed.count(),2)
+        self.assertFalse(self.dialog.use_installed.isEnabled())
+        self.assertIn('last confirmed',self.dialog.inventory_note.text())
+        self.dialog.inventory_epoch=2
+        self.dialog._received_inventory(1,records,EMPTY_RUNNING)
+        self.assertTrue(self.dialog.inventory_stale)
+        self.dialog._received_inventory(2,records[:1],EMPTY_RUNNING)
+        self.assertEqual(self.dialog.installed.count(),1)
+        self.assertIsNone(self.dialog._installed_name())
+        self.dialog._accept_inventory([],EMPTY_RUNNING)
+        self.assertEqual(self.dialog.installed.count(),0)
+        self.assertIn('No models are installed',self.dialog.inventory_note.text())
+        self.selected.assert_not_called()
+
+    def test_using_an_externally_removed_model_does_not_overwrite_the_route(self):
+        self.dialog._accept_inventory([{'name':'demo:latest'}],EMPTY_RUNNING)
+        with patch.object(self.dialog,'_installed_snapshot',return_value=([],EMPTY_RUNNING)):
+            self.dialog.use_installed.click()
+            self.run_worker()
+        self.selected.assert_not_called()
+        self.assertEqual(self.dialog.installed.count(),0)
+        self.assertIn('was removed',self.dialog.status.text())
+
+    def test_release_only_disappears_from_residency(self):
+        records=[{'name':'demo:latest'}]
+        running={'state':'reachable','models':[{'name':'demo:latest','context_length':4096}]}
+        self.dialog._accept_inventory(records,running)
+        self.assertTrue(self.dialog.release_loaded.isEnabled())
+        with patch.object(ui,'release_local_model',return_value=True) as release:
+            self.dialog.release_loaded.click()
+            self.run_worker()
+        self.assertEqual(release.call_args.args[0],'demo:latest')
+        self.assertFalse(self.dialog.release_loaded.isEnabled())
+        self.assertEqual(self.dialog.installed.count(),1)
+        self.removed.assert_not_called()
 
     def test_local_gguf_import_uses_user_selected_file_and_persists_local_model(self):
         model = 'talktoai-small:123'

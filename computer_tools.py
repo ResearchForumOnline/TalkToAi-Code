@@ -7,6 +7,7 @@ import os
 import sys
 import time
 import uuid
+from dataclasses import dataclass
 from itertools import islice
 from pathlib import Path
 
@@ -14,6 +15,24 @@ from pathlib import Path
 _MAX_CONTROLS = 250
 _MAX_SCANNED_CONTROLS = 1200
 _CALL_TIMEOUT = 20
+
+
+def _runtime_id(info):
+    value = getattr(info, 'runtime_id', None)
+    return tuple(value) if isinstance(value, (tuple, list)) else None
+
+
+def _bounds(rect):
+    return rect.left, rect.top, rect.right, rect.bottom
+
+
+@dataclass
+class ObservedControl:
+    wrapper: object
+    name: str
+    role: str
+    runtime_id: tuple | None
+    bounds: tuple
 
 
 class ComputerTools:
@@ -24,6 +43,7 @@ class ComputerTools:
         self.window_handle=None;self.window_identity=None
         self.native=desktop is None
         self.window_processes={}
+        self.window_titles={}
 
     def _validate_window(self):
         if self.cancel.is_set():raise InterruptedError('Computer control stopped.')
@@ -32,8 +52,7 @@ class ComputerTools:
             raise ValueError('The observed window is now hidden, disabled or replaced. List windows and inspect again.')
         if self.native and self._process(self.window_handle)!=self.window_processes.get(self.window_handle):
             raise ValueError('The observed window is owned by a different process. List windows and inspect again.')
-        identity=getattr(self.window.element_info, 'runtime_id', None)
-        if self.window_identity is not None and (tuple(identity) if isinstance(identity,(tuple,list)) else identity) != self.window_identity:
+        if self.window_identity is not None and _runtime_id(self.window.element_info) != self.window_identity:
             raise ValueError('The observed window was replaced. List windows and inspect again.')
         rect=self.window.rectangle()
         if (rect.left,rect.top,rect.right,rect.bottom)!=self.window_bounds:
@@ -94,18 +113,58 @@ class ComputerTools:
         if self.native:
             import win32con
             import win32gui
+            if win32gui.GetForegroundWindow()!=self.window_handle:
+                raise ValueError('The target window lost focus. Activate and inspect it again.')
             point_window=win32gui.WindowFromPoint((x,y))
             if not point_window or win32gui.GetAncestor(point_window, win32con.GA_ROOT)!=self.window_handle:
                 raise ValueError('Another window covers the observed point. Activate and inspect the target again.')
 
-    def _click_control(self, control):
+    def _control_for_target(self, target):
+        target=str(target).strip()
+        if target in self.controls:
+            return self.controls[target]
+        matches=[item for item in self.controls.values() if target and item.name.casefold()==target.casefold()]
+        if len(matches)>1:
+            raise ValueError('This control name is ambiguous. Use the intended control id from the latest inspect result.')
+        if not matches:
+            raise ValueError('Use a control id or unique exact name from the latest inspect result.')
+        return matches[0]
+
+    def _validate_control(self, observed):
+        control=observed.wrapper
+        if not control.is_visible() or not control.is_enabled():
+            raise ValueError('The observed control is now hidden or disabled. Inspect again before acting.')
+        info=control.element_info
+        if info.element.CurrentIsPassword:
+            raise ValueError('The observed control is now a password field. Inspect again before acting.')
+        if (observed.runtime_id is not None and _runtime_id(info)!=observed.runtime_id
+                or observed.name!=control.window_text()[:300] or observed.role!=info.control_type):
+            raise ValueError('The observed control changed identity, name or role. Inspect again before acting.')
+        return control
+
+    def _control_at_point(self, control, x, y):
+        candidate=self.desktop.from_point(x,y).element_info
+        for _ in range(24):
+            if candidate is None:break
+            if candidate==control.element_info:return
+            candidate=candidate.parent
+        raise ValueError('The observed control is covered at its click point. Inspect again or choose a visible control.')
+
+    def _click_control(self, observed):
         self._activate()
         self._validate_window()
+        control=self._validate_control(observed)
+        click_point={}
         if self.native:
             area=control.rectangle()
-            self._assert_point_visible((area.left+area.right)//2, (area.top+area.bottom)//2)
+            if _bounds(area)!=observed.bounds:
+                raise ValueError('The control moved after inspection. Inspect again before clicking.')
+            x,y=(area.left+area.right)//2,(area.top+area.bottom)//2
+            self._assert_point_visible(x,y)
+            self._control_at_point(control,x,y)
+            click_point={'coords':(x,y),'absolute':True}
         if self.cancel.is_set():raise InterruptedError('Computer control stopped.')
-        control.click_input()
+        control.click_input(**click_point)
 
     def execute(self, action, target='', value=''):
         if self.cancel.is_set():raise InterruptedError('Computer control stopped.')
@@ -114,23 +173,37 @@ class ComputerTools:
             self.window=None;self.controls={};self.observed=0
             self.window_bounds=None;self.pixel_observed=0;self.pixel_bounds=None
             self.handles.clear()
+            self.window_titles.clear()
             windows=self._windows()
             self.handles={w['handle'] for w in windows}
+            self.window_titles={w['handle']:w['title'] for w in windows}
             return json.dumps(windows)
         if action=='inspect':
-            if str(target) not in self.handles:raise ValueError('List windows first, then inspect a returned handle.')
+            selector=str(target).strip()
+            title_match=False
+            if not selector and self.window is not None:
+                selector=str(self.window_handle)
+            if selector not in self.handles:
+                ids=[key for key,title in self.window_titles.items() if selector and title.casefold()==selector.casefold()]
+                if len(ids)>1:
+                    raise ValueError('This window title is ambiguous. Inspect its returned handle.')
+                if not ids:
+                    raise ValueError('List windows first, then inspect a returned handle or exact title.')
+                selector=ids[0];title_match=True
             self.observed=0;self.controls={}
             self.window_bounds=None;self.pixel_observed=0;self.pixel_bounds=None
-            handle=int(target)
+            handle=int(selector)
             if self.native and self._process(handle)!=self.window_processes.get(handle):
                 raise ValueError('The listed window changed ownership. List windows again.')
             self.window=self.desktop.window(handle=handle).wrapper_object()
             if not self.window.is_visible() or not self.window.is_enabled():
                 self.window=None
                 raise ValueError('The listed window is now hidden or disabled. List windows again.')
+            if title_match and self.window.window_text()[:200]!=self.window_titles[selector]:
+                self.window=None
+                raise ValueError('The listed window title changed. List windows again.')
             self.window_handle=self.window.handle
-            identity=getattr(self.window.element_info, 'runtime_id', None)
-            self.window_identity=tuple(identity) if isinstance(identity,(tuple,list)) else None
+            self.window_identity=_runtime_id(self.window.element_info)
             entries=[];snapshot=uuid.uuid4().hex[:12]
             query=str(value).strip().casefold()
             items=self.window.iter_descendants() if self.native else self.window.descendants()
@@ -148,17 +221,18 @@ class ComputerTools:
                     if query and query not in name.casefold() and query not in info.control_type.casefold():continue
                     if not control.is_visible():continue
                     key=f'{snapshot}:{len(entries)}'
-                    rect=control.rectangle()
-                    entries.append({'id':key,'name':name,'type':info.control_type,
+                    bounds=_bounds(control.rectangle())
+                    observed=ObservedControl(control,name,info.control_type,_runtime_id(info),bounds)
+                    entries.append({'id':key,'name':name,'type':observed.role,
                                     'enabled':bool(control.is_enabled()),
-                                    'bounds':[rect.left,rect.top,rect.right,rect.bottom]})
-                    self.controls[key]=control
+                                    'bounds':list(bounds)})
+                    self.controls[key]=observed
                 except Exception:continue
             self.observed=time.monotonic()
             window_rect=self.window.rectangle()
             self.window_bounds=(window_rect.left,window_rect.top,window_rect.right,window_rect.bottom)
-            return json.dumps({'title':self.window.window_text(),'window_bounds':[window_rect.left,window_rect.top,window_rect.right,window_rect.bottom],'controls':entries,'scan_truncated':truncated,
-                               'instruction':'Use a returned control id from this snapshot; older ids are invalid. For a point click, take a screenshot first and use window-relative x,y from that image. Input consumes this snapshot. Inspect again after each action. Stop button cancels further actions.'})
+            return json.dumps({'title':self.window.window_text(),'handle':str(self.window_handle),'window_bounds':list(self.window_bounds),'controls':entries,'scan_truncated':truncated,
+                               'instruction':'Use a control id or unique exact name from this snapshot. Input spends it. Inspect again with no target to refresh this window. Point clicks require a fresh screenshot.'})
         if action=='wait':
             seconds=float(value or '1')
             if not 0 <= seconds <= 10:raise ValueError('Computer wait must be between 0 and 10 seconds.')
@@ -183,18 +257,12 @@ class ComputerTools:
             return json.dumps({'artifact':str(path),'type':'image','window_bounds':list(bounds),
                                'coordinate_system':'window-relative x,y',
                                'note':'Use point coordinates only from this screenshot. It expires after 30 seconds or a window move. Inspect after input; screenshot alone does not prove a task result.'})
-        control=self.controls.get(str(target))
         if action not in ('click','fill','select','focus','activate','key','scroll','click_point'):raise ValueError('Unknown computer action.')
-        if (action in ('click','fill','select','focus') or (action=='scroll' and target)) and control is None:raise ValueError('Use a control id from the latest inspect result.')
+        targets_control=action in ('click','fill','select','focus') or (action=='scroll' and target)
+        observed=self._control_for_target(target) if targets_control else None
+        control=self._validate_control(observed) if observed else None
         self.observed=0
         if self.cancel.is_set():raise InterruptedError('Computer control stopped.')
-        if action in ('click','fill','select','focus') or (action=='scroll' and control is not None):
-            # UI providers can change between observation and delivery. Do not
-            # turn a stale target into an input to an inaccessible/replaced field.
-            if not control.is_visible() or not control.is_enabled():
-                raise ValueError('The observed control is now hidden or disabled. Inspect again before acting.')
-            if control.element_info.element.CurrentIsPassword:
-                raise ValueError('The observed control is now a password field. Inspect again before acting.')
         if action=='click':
             # Invoke the observed accessibility control directly when supported.
             # This avoids DPI/occlusion problems with physical coordinates.
@@ -203,9 +271,9 @@ class ComputerTools:
             if callable(invoke):
                 try:invoke()
                 except NoPatternInterfaceError:
-                    self._click_control(control)
+                    self._click_control(observed)
             else:
-                self._click_control(control)
+                self._click_control(observed)
         elif action=='fill':control.set_edit_text(value)
         elif action=='select':control.select(value)
         elif action=='focus':control.set_focus()
@@ -234,7 +302,9 @@ class ComputerTools:
             recipient=control if control is not None else self.window
             for _ in range(count):
                 self._validate_window()
-                if not recipient.is_visible() or not recipient.is_enabled():
+                if observed:
+                    self._validate_control(observed)
+                elif not recipient.is_visible() or not recipient.is_enabled():
                     raise ValueError('The observed scroll target is now hidden or disabled. Inspect again.')
                 if self.cancel.is_set():raise InterruptedError('Computer control stopped.')
                 recipient.scroll(direction,amount,count=1,retry_interval=0)
@@ -253,13 +323,10 @@ class ComputerTools:
             except (TypeError,ValueError):
                 raise ValueError('Point coordinates must be window-relative integer x,y from the latest screenshot.') from None
             if not (0<=x<rect.width() and 0<=y<rect.height()):raise ValueError('Point must be inside the screenshot window.')
-            if self.native:
-                import win32gui
-                if win32gui.GetForegroundWindow()!=self.window_handle:
-                    raise ValueError('The target lost focus after the screenshot. Activate, inspect and take a new screenshot.')
-                self._assert_point_visible(rect.left+x,rect.top+y)
+            if self.native:self._assert_point_visible(rect.left+x,rect.top+y)
             if self.cancel.is_set():raise InterruptedError('Computer control stopped.')
-            self.window.click_input(coords=(x,y))
+            if self.native:self.window.click_input(coords=(rect.left+x,rect.top+y),absolute=True)
+            else:self.window.click_input(coords=(x,y))
         return 'Input delivered. Inspect the window again to verify the result; input delivery alone does not establish success.'
 
 

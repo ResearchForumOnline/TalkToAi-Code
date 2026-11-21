@@ -3,6 +3,7 @@ import json
 import tempfile
 import threading
 import os
+import re
 import time
 from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
 from pathlib import Path
@@ -61,8 +62,9 @@ def smoke(destination):
             self.wfile.write(body)
 
         def do_GET(self):
-            if self.path == '/api/tags':
-                data = json.dumps({'models':[{'name':DEFAULT_LOCAL_MODEL,'digest':'a'*64}]}).encode()
+            if self.path in ('/api/tags','/api/ps'):
+                models = [{'name':DEFAULT_LOCAL_MODEL,'digest':'a'*64}] if self.path == '/api/tags' else []
+                data = json.dumps({'models':models}).encode()
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json')
                 self.send_header('Content-Length', str(len(data)))
@@ -123,11 +125,11 @@ def smoke(destination):
         visible_replies = []
         try:
             agent_core.set_active_provider(None)
-            for prompt in ('Remember Luna.', 'What was her name?'):
+            for prompt, performance in (('Remember Luna.', {}), ('What was her name?', {'ollama_keep_alive':'4h'})):
                 chat_history.append({'role': 'user', 'content': prompt})
                 events = []
                 agent_core.run_conversation(f'http://127.0.0.1:{server.server_port}', 'fixture-chat', chat_history,
-                                             threading.Event(), lambda kind, value: events.append((kind, value)))
+                                             threading.Event(), lambda kind, value: events.append((kind, value)), performance)
                 visible_replies.append(''.join(value for kind, value in events if kind == 'delta'))
                 chat_history.extend(value for kind, value in events if kind == 'message')
         finally:
@@ -136,6 +138,7 @@ def smoke(destination):
             and len(chat_requests) == 2 and all('tools' not in request for request in chat_requests)
             and chat_requests[1]['messages'][1:] == chat_history[:3]
             and chat_history[-1] == {'role': 'assistant', 'content': 'Luna.'})
+        result['local_model_retention'] = [request.get('keep_alive') for request in chat_requests] == ['60m','4h']
         with tempfile.TemporaryDirectory(prefix='talktoai-release-') as folder:
             check_directory = Path(folder, 'model-checks')
             check = measure_local_reply(DEFAULT_LOCAL_MODEL, threading.Event(), lambda *_: None,
@@ -183,6 +186,16 @@ def smoke(destination):
             restored=preference_manager.rollback(changed['change_id'])
             result['audited_preferences']=(changed['changed'] and restored['changed']
                                           and preference_manager.inspect()['preferences']['keep_going'] is True)
+            from local_tuning import Phase, RetentionTrial, apply_retention, undo_retention
+            trial = RetentionTrial(DEFAULT_LOCAL_MODEL,'60m',Phase.BOUNDARY,'Checked fixture','4h','a'*64)
+            applied, setting = apply_retention(trial,preference_manager,threading.Event())
+            undone = undo_retention(preference_manager)
+            result['reversible_local_tuning'] = (applied.phase == Phase.EMERGING and setting['changed']
+                                                 and undone['rollback_of'] == setting['change_id']
+                                                 and 'ollama_keep_alive' not in preference_config)
+            from project_workers import plan_reviews
+            workers = plan_reviews('Use three agents to review the implementation, tests and README.')
+            result['local_project_reviewers'] = [worker.role for worker in workers] == ['investigator','test_planner','documenter']
             from routing_evaluation import audit_routing_evaluation
             routing_fixture={'schema':'talktoai.routing-evaluation.v1','dataset':'packaged fixture',
                 'split':'held_out','event_definition':'Review required under fixture rubric',
@@ -258,7 +271,10 @@ def smoke(destination):
             browser=BrowserTools(folder,threading.Event())
             opened=json.loads(browser.execute('open',f'http://127.0.0.1:{server.server_port}'))
             home_tab=next(tab['id'] for tab in opened['tabs'] if tab['current'])
-            browser.execute('fill','Player','Builder');browser.execute('click','Start')
+            filled = json.loads(browser.execute('fill','Player','Builder'))
+            reference = re.search(r'button "Start" \[ref=([^\]]+)\]',filled['page'])
+            result['browser_live_reference'] = bool(reference)
+            browser.execute('click', reference[1] if reference else 'Start')
             result['browser_interaction']='Hello Builder' in browser.execute('inspect')
             artifact=json.loads(browser.execute('screenshot'))
             result['browser_screenshot']=Path(artifact['artifact']).stat().st_size>1000
@@ -272,7 +288,8 @@ def smoke(destination):
         result['passed']=result['passed'] and all(result.get(key,False) for key in
                                                   ('browser_tabs','model_library','store_model_download_upgrade','mcp_plugins','project_data'))
         result['passed'] = result['passed'] and all(result[key] for key in
-            ('conversation_round_trip', 'installed_model_reply_check', 'openzero_template_prefix_clean'))
+            ('conversation_round_trip', 'installed_model_reply_check', 'openzero_template_prefix_clean',
+             'local_model_retention','reversible_local_tuning','local_project_reviewers','browser_live_reference'))
         if desktop_worker_check:result['passed']=result['passed'] and result.get('desktop_worker',False)
         if getattr(__import__('sys'),'frozen',False):result['passed']=result['passed'] and result.get('bundled_game_assets',False)
         if os.name=='nt' and getattr(__import__('sys'),'frozen',False):result['passed']=result['passed'] and result.get('per_monitor_v2',False)

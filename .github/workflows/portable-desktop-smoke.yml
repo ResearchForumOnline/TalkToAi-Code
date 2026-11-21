@@ -22,14 +22,17 @@ jobs:
       - name: Test desktop chat, storage, model setup and local tools
         env:
           QT_QPA_PLATFORM: offscreen
-        run: python -m unittest test_conversation test_chat_ui test_model_storage test_model_library test_model_library_dialog test_model_routing test_runtime_setup test_runtime_diagnostics test_asset_library test_engine_discovery test_computer_route -v
+        run: python -m unittest test_conversation test_chat_ui test_model_storage test_model_library test_model_library_dialog test_model_routing test_runtime_setup test_runtime_diagnostics test_local_tuning test_project_workers test_subagents test_asset_library test_engine_discovery test_computer_route -v
       - name: Start the default OpenZero chat on a fresh Windows runner
         shell: python
         env:
           PYTHONPATH: ${{ github.workspace }}
         run: |
+          from datetime import datetime, timezone
+          import json
           import tempfile
           import threading
+          import urllib.request
           from pathlib import Path
           from agent_core import run_conversation
           from model_library import DEFAULT_LOCAL_MODEL
@@ -59,6 +62,12 @@ jobs:
               assert not replies[0].lstrip().startswith('</think>'), repr(replies[0][:120])
               assert not any(kind == 'tool' for kind, _ in events)
               print('Studio Chat received a model reply:', replies[0][:120], flush=True)
+              with urllib.request.urlopen('http://127.0.0.1:11434/api/ps', timeout=5) as response:
+                  resident = next(m for m in json.load(response)['models'] if m['name'] == installed)
+              expiry = datetime.fromisoformat(resident['expires_at'].replace('Z', '+00:00'))
+              remaining = (expiry - datetime.now(timezone.utc)).total_seconds()
+              assert 3500 <= remaining <= 3610, remaining
+              print('Ollama reports approximately 60 minutes of model retention.', flush=True)
               with tempfile.TemporaryDirectory() as location:
                   root = Path(location)
                   check = measure_local_reply(installed, cancel, progress, history_dir=root)
@@ -86,16 +95,30 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends libegl1 libgl1 libxcb-cursor0 libxkbcommon-x11-0 libxcb-xinerama0
-      - name: Install Linux source
-        if: runner.os == 'Linux'
+      - name: Install the platform release kit
         env:
           TALKTOAI_SKIP_BROWSER_DOWNLOAD: '1'
-        run: bash install-linux.sh
-      - name: Install macOS source
-        if: runner.os == 'macOS'
-        env:
-          TALKTOAI_SKIP_BROWSER_DOWNLOAD: '1'
-        run: bash install-macos.sh
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            platform=macos
+            data="$HOME/Library/Application Support/TalkToAiCode"
+          else
+            platform=linux
+            data="$HOME/.local/state/TalkToAiCode"
+          fi
+          mkdir -p "$data" "$RUNNER_TEMP/portable-kit"
+          printf '%s\n' '{"num_ctx":16384,"ollama_keep_alive":"15m"}' > "$data/config.json"
+          archive="$(python scripts/build-portable-kit.py "$platform" "$RUNNER_TEMP/portable-kit")"
+          tar -xzf "$archive" -C "$RUNNER_TEMP/portable-kit"
+          cd "${archive%.tar.gz}"
+          bash "install-$platform.sh"
+          python - "$data/config.json" <<'PY'
+          import json, sys
+          from pathlib import Path
+          settings = json.loads(Path(sys.argv[1]).read_text())
+          assert settings == {"num_ctx": 16384, "ollama_keep_alive": "15m"}, settings
+          PY
       - name: Open Linux workspace
         if: runner.os == 'Linux'
         env:
@@ -103,15 +126,17 @@ jobs:
         run: |
           "$HOME/.local/bin/talktoai-code" --preview
           test -s "$HOME/.local/share/talktoai-code/studio-preview.png"
+          test -s "$HOME/.local/share/talktoai-code/app-icon.png"
           test ! -d "$HOME/Library/Application Support/TalkToAiCode"
       - name: Open macOS workspace
         if: runner.os == 'macOS'
         env:
           QT_QPA_PLATFORM: offscreen
         run: |
-          "$HOME/bin/talktoai-code" --preview
+          "$HOME/Applications/TalkToAi Code.app/Contents/MacOS/TalkToAiCode" --preview
           test -s "$HOME/Library/Application Support/TalkToAiCode/studio-preview.png"
-          test -x "$HOME/Applications/TalkToAi Code.app/Contents/MacOS/TalkToAiCode"
+          test -s "$HOME/Applications/TalkToAi Code.app/Contents/Resources/TalkToAiCode.icns"
+          /usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$HOME/Applications/TalkToAi Code.app/Contents/Info.plist" | grep -Fx "$(python -c 'from updates import VERSION; print(VERSION)')"
       - name: Portable agent regression checks
         env:
           QT_QPA_PLATFORM: offscreen
@@ -124,3 +149,19 @@ jobs:
           fi
           "$runtime" -m unittest test_free_provider_policy test_api_router test_api_integration test_inventory_providers test_attachment_ingest test_conversation_export test_offline_assistant test_offline_ui test_project_templates test_work_packet test_tool_chains test_first_turn_tools test_remote_intent test_task_navigation test_project_context test_context_window test_computer_route test_project_target test_skynet_mode test_candidate_apply test_app_preferences test_app_capabilities test_routing_evaluation test_agent_workflow test_progress_guard test_engine_discovery test_benchmark_models test_keep_going test_long_session test_reasoning_stream test_research_journal test_project_playbooks test_project_workbench test_workspace_change_evidence test_runtime_diagnostics test_task_goals test_tool_protocol test_control_cancel test_workspace_ui test_source_discovery test_ethics_policy -v
           "$runtime" -m unittest test_conversation test_chat_ui test_model_storage test_agent_zero test_asset_library test_mcp_plugins test_model_library test_model_library_dialog test_model_routing test_runtime_setup test_openai_provider -v
+          "$runtime" -m unittest test_local_tuning test_project_workers test_subagents -v
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            "$runtime" -m playwright install --with-deps chromium
+          else
+            "$runtime" -m playwright install chromium
+          fi
+          export TALKTOAI_BROWSER_ACCEPTANCE=1
+          "$runtime" -m unittest -v \
+            test_browser_workflows.BrowserWorkflowTests.test_unique_reference_targets_one_duplicate \
+            test_browser_workflows.BrowserWorkflowTests.test_cross_origin_frame_references_support_edit_and_click \
+            test_browser_workflows.BrowserWorkflowTests.test_reference_cannot_act_on_replacement_or_next_observation
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TalkToAi-Code-${{ runner.os }}-kit
+          path: ${{ runner.temp }}/portable-kit/*.tar.gz
+          if-no-files-found: error

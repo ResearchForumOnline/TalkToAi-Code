@@ -9,6 +9,7 @@ from http.client import HTTPException
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from model_library import ollama_store
+from ollama_retention import diagnostic_keep_alive
 from routing import matching_model
 from updates import VERSION
 
@@ -36,16 +37,31 @@ def running_probe(port):
             size=model.get('size');vram=model.get('size_vram');ctx=model.get('context_length')
             valid=lambda value:type(value) is int and value>=0
             result.append({'name':model['name'],'size':size if valid(size) else None,
-                           'size_vram':vram if valid(vram) else None,'context_length':ctx if valid(ctx) else None})
+                           'size_vram':vram if valid(vram) else None,'context_length':ctx if valid(ctx) else None,
+                           'digest':model.get('digest') if isinstance(model.get('digest'), str) else None,
+                           'expires_at':model.get('expires_at') if isinstance(model.get('expires_at'), str) else None})
         return {'state':'reachable','models':result}
     except (ValueError,UnicodeError,RecursionError,HTTPException):return {'state':'invalid','models':[]}
     except OSError:return {'state':'unreachable','models':[]}
 
 
+def resident_model(state, model, digest=None):
+    if not state or state.get('state') != 'reachable':
+        return None
+    direct = next((item for item in state['models'] if matching_model([item['name']], model)), None)
+    manifest = _digest(digest)
+    if direct:
+        loaded_manifest = _digest(direct.get('digest'))
+        if not manifest or not loaded_manifest or loaded_manifest == manifest:
+            return direct
+    if manifest:
+        return next((item for item in state['models'] if _digest(item.get('digest')) == manifest), None)
+    return None
+
+
 def residency_summary(state,model):
     if state.get('state')!='reachable':return 'Running-model residency unavailable; CPU/GPU use is unknown.'
-    aliases={model,model+':latest'}
-    current=next((item for item in state.get('models',[]) if item['name'] in aliases),None)
+    current=resident_model(state,model)
     if current is None:return 'Selected model is not loaded. The next request may need loading time; GPU availability is not established.'
     vram=current.get('size_vram');size=current.get('size')
     if vram is None:mode='CPU/GPU allocation unknown'
@@ -177,17 +193,17 @@ def last_reply_check(history_dir, digest):
         return None
 
 
-def measure_local_reply(model, cancel, notify, *, history_dir=None, port=None):
+def measure_local_reply(model, cancel, notify, *, history_dir=None, port=None, keep_alive=None, num_ctx=8192):
     """Run one fixed probe against local Ollama. Only completed, identified results can be saved."""
     from agent_core import _http_stream
     from conversation import _conversation_payload
     from model_library import DownloadCancelled
     from model_storage import library_root
-    from routing import LOCAL_PORT, installed_model_records, require_local_runtime
+    from routing import LOCAL_PORT, SERVER_PORT, installed_model_records, require_local_runtime
     from session_store import atomic_write
 
     port = LOCAL_PORT if port is None else port
-    if type(port) is not int or not 1 <= port <= 65535:
+    if type(port) is not int or not 1 <= port <= 65535 or port == SERVER_PORT:
         raise ValueError('Invalid local Ollama port.')
     if port == LOCAL_PORT:
         require_local_runtime(cancel, notify)
@@ -197,8 +213,19 @@ def measure_local_reply(model, cancel, notify, *, history_dir=None, port=None):
     installed = matching_model(before, model)
     if not installed:
         raise ValueError('This model is no longer installed. Choose Refresh models.')
+    running = running_probe(port)
+    if running['state'] != 'reachable':
+        raise ConnectionError('Could not check loaded local models. Retry when Ollama can report its memory status.')
+    resident = resident_model(running, installed, before[installed])
+    lease = diagnostic_keep_alive(keep_alive, resident)
+    loaded_context = resident.get('context_length') if resident else None
     notify(f'Checking whether {installed} answers 2 + 3 with the digit 5. A first reply may take time to load.', 0, 0)
-    payload = _conversation_payload(installed, [{'role':'user', 'content':REPLY_CHECK_PROMPT}], {})
+    fixture_context = max(num_ctx, loaded_context or 0)
+    payload = _conversation_payload(installed, [{'role':'user', 'content':REPLY_CHECK_PROMPT}],
+                                    {'num_ctx':fixture_context, 'resident_context':loaded_context})
+    if type(loaded_context) is int and loaded_context >= 2048:
+        payload['options']['num_ctx'] = loaded_context
+    payload['keep_alive'] = lease
     payload['options'].update(num_predict=64, temperature=0, seed=0)
     started = time.monotonic()
     first = None
@@ -206,6 +233,7 @@ def measure_local_reply(model, cancel, notify, *, history_dir=None, port=None):
     has_text = False
     exact = True
     complete = False
+    load_seconds = None
     detail = ''
     try:
         for frame in _http_stream(f'http://127.0.0.1:{port}', payload, cancel):
@@ -224,6 +252,9 @@ def measure_local_reply(model, cancel, notify, *, history_dir=None, port=None):
                     has_text = True
             if frame.get('done') is True:
                 complete = frame.get('done_reason') != 'length' and has_text
+                load = frame.get('load_duration')
+                if type(load) in (int, float) and 0 <= load <= 2**63-1:
+                    load_seconds = round(load / 1e9, 3)
                 break
     except InterruptedError as exc:
         raise DownloadCancelled('Reply check stopped.') from exc
@@ -236,6 +267,7 @@ def measure_local_reply(model, cancel, notify, *, history_dir=None, port=None):
               'checked_at':datetime.now(timezone.utc).isoformat(timespec='milliseconds'),
               'elapsed_seconds':round(time.monotonic()-started, 3),
               'first_token_seconds':round(first, 3) if first is not None else None,
+              'load_seconds':load_seconds, 'num_ctx':payload['options']['num_ctx'], 'was_loaded':resident is not None,
               'preview':' '.join(preview[:240].split()) + ('…' if len(preview)>240 else ''),
               'saved':False, 'note':detail}
     if not complete:

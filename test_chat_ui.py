@@ -295,6 +295,24 @@ class ChatUITests(unittest.TestCase):
         self.assertFalse(self.agent.call_args.args[4])
         self.assertFalse(w.chat_tools.isChecked())
 
+    def test_tune_runs_from_chat_and_undo_restores_retention(self):
+        from local_tuning import Phase, RetentionTrial
+
+        model = studio.DEFAULT_LOCAL_MODEL
+        trial = RetentionTrial(model,'60m',Phase.BOUNDARY,
+                              f'{model} loaded in 2.74s and 0.03s.','4h','a'*64)
+        with patch('local_tuning.measure_retention',return_value=trial) as probe:
+            self.submit('/tune')
+            self.wait_for(lambda: not self.w.busy)
+        probe.assert_called_once()
+        self.agent.assert_not_called()
+        self.assertIn('OpenZero 1.7B', self.w.transcript.toPlainText())
+        self.assertIn('four hours', self.w.transcript.toPlainText())
+        self.assertEqual('4h', self.w.model_performance()['ollama_keep_alive'])
+        self.submit('/tune undo')
+        self.assertEqual('60m', self.w.model_performance()['ollama_keep_alive'])
+        self.assertIn('Restored the local model retention', self.w.transcript.toPlainText())
+
 
 if __name__ == '__main__':
     unittest.main()

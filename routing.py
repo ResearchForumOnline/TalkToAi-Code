@@ -246,6 +246,40 @@ def delete_local_model(model, cancel=None):
     return installed
 
 
+def release_local_model(model, cancel):
+    """Release one model's local runtime memory and confirm it left residency."""
+    from runtime_diagnostics import resident_model, running_probe
+
+    def running():
+        state = running_probe(LOCAL_PORT)
+        if state['state'] != 'reachable':
+            raise ConnectionError('Ollama could not report which local models are loaded.')
+        return state
+
+    state = running()
+    resident = resident_model(state, model)
+    if resident is None and state['models']:
+        record = next((item for item in installed_model_records(LOCAL_PORT)
+                       if matching_model([item['name']], model)), {})
+        resident = resident_model(state, model, record.get('digest'))
+    if not resident:
+        return False
+    _check_cancel(cancel)
+    request = Request(
+        _endpoint(LOCAL_PORT) + '/api/generate',
+        data=json.dumps({'model':resident['name'], 'stream':False, 'keep_alive':0}).encode(),
+        headers={'Content-Type':'application/json'},
+    )
+    with _LOOPBACK_HTTP.open(request, timeout=12) as response:
+        response.read(4096)
+    deadline = time.monotonic() + 8
+    while time.monotonic() < deadline:
+        if not resident_model(running(), resident['name']):
+            return True
+        time.sleep(.3)
+    raise RuntimeError('Ollama still reports this model in memory. Wait for any active requests to finish and retry.')
+
+
 def ensure_local_model(model, emit=None, timeout=7200, cancel=None, allow_default_download=False):
     """Install a missing local Ollama model on demand; never attempts remote pulls."""
     cancel = cancel if cancel is not None else threading.Event()

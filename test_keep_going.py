@@ -24,7 +24,8 @@ class KeepGoingTests(unittest.TestCase):
         def execute(tools,name,args):
             if name=='run_checks' and checks is not None:return next(checks)
             return original_execute(tools,name,args)
-        def stream(_url,payload,_cancel):
+        def stream(_url,payload,_cancel,*,local_only=False):
+            self.assertEqual(local_only, worker)
             payloads.append(copy.deepcopy(payload))
             item=sequence[min(len(payloads)-1,len(sequence)-1)]
             if cancel_at==len(payloads):cancel.set()

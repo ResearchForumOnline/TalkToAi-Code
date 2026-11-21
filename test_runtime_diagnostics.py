@@ -5,10 +5,12 @@ import threading
 import unittest
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from datetime import datetime, timedelta, timezone
 from unittest.mock import Mock, patch
 from model_library import DownloadCancelled
 from runtime_diagnostics import check_local_reply, measure_local_reply, last_reply_check, probe, diagnose, report, MAX_BYTES, running_probe, residency_summary
 
+EMPTY_RUNNING = {'state':'reachable','models':[]}
 
 class RuntimeDiagnosticsTests(unittest.TestCase):
     def test_real_loopback_chat_probe_and_saved_result(self):
@@ -22,14 +24,15 @@ class RuntimeDiagnosticsTests(unittest.TestCase):
                 events.append(('GET',self.path,None))
                 self.send_response(200)
                 self.end_headers()
-                self.wfile.write(json.dumps({'models':[{'name':'fixture:latest','digest':digest}]}).encode())
+                models=[] if self.path=='/api/ps' else [{'name':'fixture:latest','digest':digest}]
+                self.wfile.write(json.dumps({'models':models}).encode())
 
             def do_POST(self):
                 payload=json.loads(self.rfile.read(int(self.headers['Content-Length'])))
                 events.append(('POST',self.path,payload))
                 self.send_response(200)
                 self.end_headers()
-                self.wfile.write(b'{"message":{"role":"assistant","content":"5"},"done":false}\n{"done":true,"done_reason":"stop"}\n')
+                self.wfile.write(b'{"message":{"role":"assistant","content":"5"},"done":false}\n{"done":true,"done_reason":"stop","load_duration":120000000}\n')
 
         with ThreadingHTTPServer(('127.0.0.1',0),Handler) as server, tempfile.TemporaryDirectory() as directory:
             thread=threading.Thread(target=server.serve_forever,daemon=True)
@@ -39,8 +42,11 @@ class RuntimeDiagnosticsTests(unittest.TestCase):
             finally:
                 server.shutdown()
                 thread.join(2)
-            self.assertEqual([(method,path) for method,path,_ in events],[('GET','/api/tags'),('POST','/api/chat'),('GET','/api/tags')])
-            self.assertEqual(events[1][2]['messages'][-1]['content'],'What is 2 + 3? Reply with just the digit.')
+            self.assertEqual([(method,path) for method,path,_ in events],[('GET','/api/tags'),('GET','/api/ps'),('POST','/api/chat'),('GET','/api/tags')])
+            self.assertEqual(events[2][2]['messages'][-1]['content'],'What is 2 + 3? Reply with just the digit.')
+            self.assertEqual(events[2][2]['keep_alive'],'60m')
+            self.assertEqual(result['load_seconds'],.12)
+            self.assertNotIn('load_seconds',last_reply_check(directory,digest))
             self.assertEqual(result['outcome'],'verified')
             self.assertTrue(result['saved'])
             self.assertEqual(last_reply_check(directory,digest)['checked_at'],result['checked_at'])
@@ -48,7 +54,7 @@ class RuntimeDiagnosticsTests(unittest.TestCase):
     def test_reply_check_runs_selected_local_model_and_waits_for_completion(self):
         cancel = threading.Event()
         frames = [{'message': {'content': 'Good '}}, {'message': {'content': 'morning!'}, 'done': True}]
-        with patch('routing.require_local_runtime') as start, patch('routing.installed_model_records', return_value=[{'name':'First:latest'},{'name':'Chosen:latest'}]), patch('agent_core._http_stream', return_value=iter(frames)) as stream:
+        with patch('routing.require_local_runtime') as start, patch('runtime_diagnostics.running_probe',return_value=EMPTY_RUNNING), patch('routing.installed_model_records', return_value=[{'name':'First:latest'},{'name':'Chosen:latest'}]), patch('agent_core._http_stream', return_value=iter(frames)) as stream:
             result = check_local_reply('chosen', cancel, Mock())
         start.assert_called_once()
         url, payload, event = stream.call_args.args
@@ -70,19 +76,19 @@ class RuntimeDiagnosticsTests(unittest.TestCase):
                 check_local_reply('demo', cancel, Mock())
             stream.assert_not_called()
         for frames in ([{'message': {'content': 'half'}}], [{'done': True}]):
-            with self.subTest(frames=frames), patch('routing.require_local_runtime'), patch('routing.installed_model_records', return_value=[{'name':'demo'}]), patch('agent_core._http_stream', return_value=iter(frames)):
+            with self.subTest(frames=frames), patch('routing.require_local_runtime'), patch('runtime_diagnostics.running_probe',return_value=EMPTY_RUNNING), patch('routing.installed_model_records', return_value=[{'name':'demo'}]), patch('agent_core._http_stream', return_value=iter(frames)):
                 with self.assertRaisesRegex(ConnectionError, 'did not finish'):
                     check_local_reply('demo', cancel, Mock())
 
     def test_stopping_the_reply_check_preserves_the_install(self):
-        with patch('routing.require_local_runtime'), patch('routing.installed_model_records', return_value=[{'name':'demo'}]), patch('agent_core._http_stream', side_effect=InterruptedError), patch('routing.delete_local_model') as delete:
+        with patch('routing.require_local_runtime'), patch('runtime_diagnostics.running_probe',return_value=EMPTY_RUNNING), patch('routing.installed_model_records', return_value=[{'name':'demo'}]), patch('agent_core._http_stream', side_effect=InterruptedError), patch('routing.delete_local_model') as delete:
             with self.assertRaises(DownloadCancelled):
                 check_local_reply('demo', threading.Event(), Mock())
             delete.assert_not_called()
 
     def test_exact_and_different_replies_persist_only_measurements(self):
         digest='a'*64
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, patch('runtime_diagnostics.running_probe',return_value=EMPTY_RUNNING):
             root=Path(directory)
             for reply,outcome in [(' \n5\t','verified'),('A private-looking output 5.','different')]:
                 frames=[{'message':{'content':reply[:2]}},{'message':{'content':reply[2:]},'done':True}]
@@ -108,7 +114,7 @@ class RuntimeDiagnosticsTests(unittest.TestCase):
 
     def test_incomplete_replies_do_not_replace_prior_completed_check(self):
         records=[{'name':'test:latest','digest':'a'*64}]
-        with tempfile.TemporaryDirectory() as root, patch('routing.installed_model_records',return_value=records):
+        with tempfile.TemporaryDirectory() as root, patch('runtime_diagnostics.running_probe',return_value=EMPTY_RUNNING), patch('routing.installed_model_records',return_value=records):
             with patch('agent_core._http_stream',return_value=iter([{'message':{'content':'5'},'done':True}])):
                 completed=measure_local_reply('test',threading.Event(),Mock(),port=32145,history_dir=root)
             original=last_reply_check(root,completed['digest'])
@@ -121,7 +127,7 @@ class RuntimeDiagnosticsTests(unittest.TestCase):
 
     def test_retagged_unknown_and_unwritable_measurements_still_show_reply(self):
         a,b='a'*64,'b'*64
-        with tempfile.TemporaryDirectory() as root:
+        with tempfile.TemporaryDirectory() as root, patch('runtime_diagnostics.running_probe',return_value=EMPTY_RUNNING):
             for before,after in [(a,b),(a,None),('abcd','abcd'),(None,None)]:
                 inventories=[[{'name':'test','digest':before}],[{'name':'test','digest':after}]]
                 with self.subTest(before=before,after=after), patch('routing.installed_model_records',side_effect=inventories), patch('agent_core._http_stream',return_value=iter([{'message':{'content':'5'},'done':True}])):
@@ -141,6 +147,19 @@ class RuntimeDiagnosticsTests(unittest.TestCase):
     def test_valid_inventory(self):
         with patch('runtime_diagnostics._loopback.open', return_value=io.BytesIO(b'{"models":[{"name":"a:latest"}]}')):
             self.assertEqual(probe(11434)['models'], ['a:latest'])
+
+    def test_reply_check_preserves_a_longer_lease_and_loaded_context(self):
+        deadline=(datetime.now(timezone.utc)+timedelta(hours=3)).isoformat()
+        running={'state':'reachable','models':[{'name':'another-alias:latest','digest':'sha256:'+'a'*64,
+                                                'expires_at':deadline,'context_length':8192}]}
+        with patch('runtime_diagnostics.running_probe',return_value=running), \
+                patch('routing.installed_model_records', return_value=[{'name':'fixture:latest','digest':'a'*64}]), \
+                patch('agent_core._http_stream',return_value=iter([{'message':{'content':'5'},'done':True}])) as stream:
+            result=measure_local_reply('fixture',threading.Event(),Mock(),port=32145,keep_alive='5m')
+        payload=stream.call_args.args[1]
+        self.assertGreater(payload['keep_alive'],10790)
+        self.assertEqual(payload['options']['num_ctx'],8192)
+        self.assertTrue(result['was_loaded'])
 
     def test_invalid_inventory(self):
         for raw in [b'<html>no</html>', b'[]', b'{"models":[{}]}', b'{"models":null}', b'x'*(MAX_BYTES+1)]:

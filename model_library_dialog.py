@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 import threading
 
-from PySide6.QtCore import QObject, Qt, QUrl, Signal
+from PySide6.QtCore import QObject, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QDialog, QFileDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget,
@@ -22,23 +22,27 @@ from model_storage import (
     PARTIAL_RETENTION_DAYS, clear_partials, display_path, library_root, native_path,
     partial_inventory, remove_export, reviewed_export, saved_exports, storage_lock,
 )
-from routing import delete_local_model, install_model, installed_model_records, matching_model, model_present, require_local_runtime
+from routing import delete_local_model, install_model, installed_model_records, matching_model, model_present, release_local_model, require_local_runtime
 from runtime_setup import require_model_runtime
-from runtime_diagnostics import last_reply_check, reply_check_text
+from runtime_diagnostics import last_reply_check, reply_check_text, resident_model, running_probe
 
 
 class _DownloadSignals(QObject):
     progress = Signal(str, object, object)
     finished = Signal(object)
+    inventory = Signal(int, object, object)
 
 
 class ModelLibraryDialog(QDialog):
-    def __init__(self, parent, root, select_model, model_removed, diagnose, compare, use_api, *, configured_models=None):
+    def __init__(self, parent, root, select_model, model_removed, diagnose, compare, use_api, *,
+                 configured_models=None, keep_alive=None, inventory_changed=None, tune=None):
         super().__init__(parent)
         self.root = Path(root)
         self.reply_history_dir = self.root / '.reply-checks-v1'
         self.select_model = select_model
         self.model_removed = model_removed
+        self.keep_alive = keep_alive
+        self.inventory_changed = inventory_changed
         self.configured_models = dict(configured_models or {})
         self.model_records = {}
         self.partials = []
@@ -48,9 +52,14 @@ class ModelLibraryDialog(QDialog):
         self.destination = None
         self.loaded = None
         self.inventory_loaded = False
+        self.inventory_stale = False
+        self.inventory_epoch = 0
+        self.inventory_pending = False
+        self.residency = None
         self.signals = _DownloadSignals(self)
         self.signals.progress.connect(self._progress)
         self.signals.finished.connect(self._finished)
+        self.signals.inventory.connect(self._received_inventory)
         self.setWindowTitle('Models and setup')
         self.resize(760, 540)
 
@@ -138,6 +147,8 @@ class ModelLibraryDialog(QDialog):
 
         installed = self._tab('Installed Ollama')
         installed.addWidget(self._text('These models belong to your local Ollama library. Other apps using the same Ollama service share this list.'))
+        self.inventory_note = self._text('Checking local models when this tab opens.')
+        installed.addWidget(self.inventory_note)
         self.installed = QListWidget()
         self.installed.currentItemChanged.connect(self._installed_selection_changed)
         installed.addWidget(self.installed, 1)
@@ -155,6 +166,10 @@ class ModelLibraryDialog(QDialog):
         self.test_reply.setToolTip('Ask the selected model for 2 + 3. Check the answer and time this local chat request.')
         self.test_reply.clicked.connect(self._test_reply)
         inventory_actions.addWidget(self.test_reply)
+        self.release_loaded = QPushButton('Release from memory')
+        self.release_loaded.setToolTip('Free the selected model’s RAM or VRAM. Its downloaded weights stay installed.')
+        self.release_loaded.clicked.connect(self._release_selected)
+        inventory_actions.addWidget(self.release_loaded)
         self.delete_installed = QPushButton('Remove from Ollama…')
         self.delete_installed.clicked.connect(self._remove_installed)
         inventory_actions.addWidget(self.delete_installed)
@@ -191,7 +206,10 @@ class ModelLibraryDialog(QDialog):
 
         row = QHBoxLayout()
         self.local_actions = []
-        for title, callback in (('Diagnose connection', diagnose), ('Compare models', compare)):
+        actions = [('Diagnose connection', diagnose), ('Compare models', compare)]
+        if tune:
+            actions.append(('Tune local model', tune))
+        for title, callback in actions:
             button = QPushButton(title)
             button.clicked.connect(lambda checked=False, action=callback: self._other(action))
             self.local_actions.append(button)
@@ -209,6 +227,9 @@ class ModelLibraryDialog(QDialog):
         layout.addLayout(row)
         for button in self.findChildren(QPushButton):
             button.setAutoDefault(False)
+        self.inventory_timer = QTimer(self)
+        self.inventory_timer.timeout.connect(self._poll_installed)
+        self.inventory_timer.start(5000)
         self._set_running(False)
 
     def _tab(self, title):
@@ -295,6 +316,7 @@ class ModelLibraryDialog(QDialog):
         if self.cancel is not None:
             return
         cancel = self.cancel = threading.Event()
+        self.inventory_epoch += 1
         self.stoppable = stoppable
         self._set_running(True)
         self._progress(starting, 0, 0)
@@ -363,10 +385,29 @@ class ModelLibraryDialog(QDialog):
             self._finished(('installed', model, 'local'))
             return
         elif action == 'inventory':
-            records, = data
-            self.model_records = {item['name']: item for item in records}
-            self._show_installed(list(self.model_records))
+            records, running = data
+            self._accept_inventory(records, running)
             self._set_status(f'Ollama connected · {len(records)} installed model(s).')
+            self.progress.setValue(100)
+        elif action == 'inventory_error':
+            self._accept_inventory(None, None)
+            self._set_status(data[0], error=True)
+        elif action == 'verified_selection':
+            model, records, running = data
+            self._accept_inventory(records, running)
+            if model:
+                self._finished(('installed', model, 'local'))
+                return
+            self._set_status('The selected model was removed from Ollama. Choose an installed model.')
+        elif action == 'released':
+            model, released = data
+            if self.residency and self.residency.get('state') == 'reachable':
+                loaded = resident_model(self.residency, model, self.model_records.get(model, {}).get('digest'))
+                self.residency = {'state':'reachable', 'models':[
+                    item for item in self.residency['models'] if item!=loaded
+                ]}
+                self._show_installed(list(self.model_records))
+            self._set_status(f'{model} was released from memory.' if released else f'{model} is no longer in memory.')
             self.progress.setValue(100)
         elif action == 'reply_check':
             result, = data
@@ -406,6 +447,8 @@ class ModelLibraryDialog(QDialog):
         if not self.progress.value():
             self.progress.hide()
         self._set_running(False)
+        if action in ('installed', 'removed', 'released', 'reply_check'):
+            QTimer.singleShot(0, self._poll_installed)
 
     def _install_preset(self, model, route):
         def work(cancel, notify):
@@ -463,17 +506,64 @@ class ModelLibraryDialog(QDialog):
         self._start('Preparing download…', work)
 
     def _tab_changed(self, index):
-        if self.tabs.tabText(index) == 'Installed Ollama' and not self.inventory_loaded and self.cancel is None:
-            self._load_installed()
+        if self.tabs.tabText(index) == 'Installed Ollama' and self.cancel is None:
+            self._poll_installed()
         elif self.tabs.tabText(index) == 'Saved downloads' and self.cancel is None:
             self._load_exports()
 
     def _load_installed(self):
         def work(cancel, notify):
-            require_local_runtime(cancel, notify)
-            return 'inventory', installed_model_records(11434)
+            try:
+                require_local_runtime(cancel, notify)
+                return 'inventory', *self._installed_snapshot()
+            except (ConnectionError, OSError, ValueError) as exc:
+                return 'inventory_error', str(exc)
 
         self._start('Connecting to local Ollama…', work)
+
+    @staticmethod
+    def _installed_snapshot():
+        return installed_model_records(11434), running_probe(11434)
+
+    def _poll_installed(self):
+        if (not self.isVisible() or self.tabs.tabText(self.tabs.currentIndex()) != 'Installed Ollama'
+                or self.cancel is not None or self.inventory_pending):
+            return
+        self.inventory_pending = True
+        epoch = self.inventory_epoch
+
+        def work():
+            try:
+                records, running = self._installed_snapshot()
+            except (ConnectionError, OSError, ValueError):
+                records, running = None, None
+            try:
+                self.signals.inventory.emit(epoch, records, running)
+            except RuntimeError:
+                pass  # The modal window may have been closed during the probe.
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _received_inventory(self, epoch, records, running):
+        self.inventory_pending = False
+        if epoch == self.inventory_epoch and self.cancel is None:
+            self._accept_inventory(records, running)
+
+    def _accept_inventory(self, records, running):
+        self.inventory_stale = records is None
+        if records is None:
+            self.inventory_note.setText('Ollama inventory is unavailable. The last confirmed list is shown.')
+            self._installed_selection_changed()
+            return
+        replacement = {item['name']: item for item in records}
+        if replacement != self.model_records or running != self.residency or not self.inventory_loaded:
+            self.model_records, self.residency = replacement, running
+            self._show_installed(list(replacement))
+        self.inventory_note.setText(
+            f'{len(replacement)} installed model(s).' if replacement else 'No models are installed in local Ollama.')
+        if self.inventory_changed:
+            self.inventory_changed(list(replacement))
+        self._installed_selection_changed()
 
     def _show_installed(self, names):
         selected = self._installed_name()
@@ -491,6 +581,8 @@ class ModelLibraryDialog(QDialog):
             routes = [route for route, model in self.configured_models.items() if matching_model([name], model)]
             if self.configured_models:
                 labels.extend(routes or ['Not selected in Studio'])
+            if resident_model(self.residency, name, record.get('digest')):
+                labels.append('Loaded in memory')
             digest = record.get('digest')
             group = aliases.get(digest, []) if isinstance(digest, str) else []
             if len(group) > 1:
@@ -502,8 +594,10 @@ class ModelLibraryDialog(QDialog):
             self.installed.addItem(item)
             if name == selected:
                 self.installed.setCurrentItem(item)
-        if self.installed.count() and self.installed.currentRow() < 0:
+        if self.installed.count() and selected is None and self.installed.currentRow() < 0:
             self.installed.setCurrentRow(0)
+        elif selected is not None and selected not in names:
+            self.installed.setCurrentRow(-1)
         self.inventory_loaded = True
 
     def _installed_name(self):
@@ -512,10 +606,12 @@ class ModelLibraryDialog(QDialog):
 
     def _installed_selection_changed(self):
         name = self._installed_name()
-        available = self.cancel is None and bool(name)
+        available = self.cancel is None and bool(name) and not self.inventory_stale
         self.use_installed.setEnabled(available)
         self.test_reply.setEnabled(available)
         self.delete_installed.setEnabled(available)
+        self.release_loaded.setEnabled(bool(available and resident_model(
+            self.residency, name, self.model_records.get(name, {}).get('digest'))))
         measurement = last_reply_check(self.reply_history_dir, self.model_records.get(name, {}).get('digest'))
         if measurement:
             when = datetime.fromisoformat(measurement['checked_at']).astimezone().strftime('%Y-%m-%d %H:%M %Z')
@@ -529,13 +625,26 @@ class ModelLibraryDialog(QDialog):
         model = self._installed_name()
         if model and self.cancel is None:
             def work(cancel, notify):
-                return 'reply_check', measure_local_reply(model, cancel, notify, history_dir=self.reply_history_dir)
+                return 'reply_check', measure_local_reply(model, cancel, notify, history_dir=self.reply_history_dir,
+                                                         keep_alive=self.keep_alive)
             self._start('Checking local model…', work)
 
     def _use_installed(self):
         model = self._installed_name()
-        if model and self.cancel is None:
-            self._finished(('installed', model, 'local'))
+        if model and self.cancel is None and not self.inventory_stale:
+            def work(cancel, notify):
+                records, running = self._installed_snapshot()
+                selected = matching_model((item['name'] for item in records), model)
+                return 'verified_selection', selected, records, running
+
+            self._start('Checking that the selected model is still installed…', work)
+
+    def _release_selected(self):
+        model = self._installed_name()
+        if model and self.cancel is None and not self.inventory_stale:
+            self._start(f'Releasing memory for {model}…',
+                        lambda cancel, notify: ('released', model, release_local_model(model, cancel)),
+                        stoppable=False)
 
     def _remove_installed(self):
         model = self._installed_name()

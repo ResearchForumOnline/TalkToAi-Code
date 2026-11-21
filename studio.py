@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout, 
 from agent_core import AGENT_NAME, ProjectTools, run_agent_zero as run_agent, run_conversation, restore_checkpoint, set_active_remote, set_agent_preferences, set_active_provider
 from routing import choose_route, ensure_local_model, ensure_local_runtime, matching_model
 from model_library import DEFAULT_LOCAL_MODEL, QWEN_LOCAL_MODEL, DownloadCancelled
+from ollama_retention import DEFAULT_KEEP_ALIVE, KEEP_ALIVE_CHOICES, local_port, normalize_keep_alive
 from ssh_tools import SSHProfile, SSHSession, load_profiles, save_profiles, validate_alias
 from providers import ProviderProfile, load_profiles as load_provider_profiles, save_profiles as save_provider_profiles
 from desktop_inventory import inspect_desktop
@@ -60,6 +61,9 @@ _TOOL_TARGET = re.compile(
 
 def chat_requests_tools(text):
     """Use tools on an explicit operational request. Chat also offers a manual override."""
+    from project_workers import requests_project_workers
+    if requests_project_workers(text):
+        return True
     if requests_remote_work(text):
         return True
     if re.match(r'^(?:(?:please|can you|could you|would you)\s+)*(?:show|give|find|tell|teach)\s+(?:me\s+)?(?:how\b|(?:some\s+)?(?:ideas|examples|tips|advice)\b)',text,re.I):
@@ -182,6 +186,10 @@ class Studio(QMainWindow):
         self.cancel = threading.Event()
         self.busy = False
         self.local_model_state = None
+        self.local_inventory_names = None
+        self.local_inventory_revision = 0
+        self.local_recent_model = None
+        self.local_removed_models = set()
         self.execution_kind = 'model'
         self.control_overlay=None;self.control_active=False;self.global_escape=False
         self.escape_cancel=EscapeCancel();self.control_cancel_token=None
@@ -222,6 +230,8 @@ class Studio(QMainWindow):
             'active_provider': '',
             'preferred_route': None,
             'auto_install_openzero': True,
+            'openzero_installed_once': False,
+            'ollama_keep_alive': DEFAULT_KEEP_ALIVE,
             'access_mode': 'full_user',
             'pc_pilot': True,
         }
@@ -276,6 +286,9 @@ class Studio(QMainWindow):
         QTimer.singleShot(500, self.health)
         QTimer.singleShot(700, self.refresh_mail_status)
         self.health_timer=QTimer(self);self.health_timer.timeout.connect(self.health);self.health_timer.start(60000)
+        self.model_inventory_timer=QTimer(self)
+        self.model_inventory_timer.timeout.connect(self._poll_local_models)
+        self.model_inventory_timer.start(15000)
         self.paint_timer=QTimer(self);self.paint_timer.timeout.connect(self.paint_stream);self.paint_timer.start(120)
         self.clock_timer=QTimer(self);self.clock_timer.timeout.connect(self.tick);self.clock_timer.start(1000)
         self.install_tray()
@@ -356,6 +369,9 @@ class Studio(QMainWindow):
             more_menu.addAction(title,callback)
         more_menu.addAction('Operating policy',self.operating_policy_dialog)
         more_menu.addAction('Project workbench · playbooks & experiments',self.project_workbench)
+        performance_menu=more_menu.addMenu('Local model performance')
+        performance_menu.addAction('Tune local model',lambda:self.start_local_tuning(preserve_draft=True))
+        performance_menu.addAction('Undo last tuning change',self.undo_local_tuning)
         self.model_activity_action=more_menu.addAction('Show model activity')
         self.model_activity_action.setCheckable(True)
         self.model_activity_action.setChecked(bool(self.config.get('show_model_activity',False)))
@@ -963,11 +979,13 @@ class Studio(QMainWindow):
                 fmt.setTopMargin(6 if block==document.begin() else 22)
                 fmt.setBottomMargin(5)
                 fmt.setAlignment(Qt.AlignRight if speaker=='You' else Qt.AlignLeft)
+                if speaker=='You':fmt.setRightMargin(10)
                 cursor.setBlockFormat(fmt)
             elif speaker=='You' and not block.textList() and fmt.headingLevel()==0 and not fmt.nonBreakableLines():
                 cursor.setPosition(block.position())
                 fmt.setAlignment(Qt.AlignRight)
-                fmt.setLeftMargin(40)
+                fmt.setLeftMargin(56)
+                fmt.setRightMargin(10)
                 cursor.setBlockFormat(fmt)
             block=block.next()
         cursor.endEditBlock()
@@ -986,6 +1004,9 @@ class Studio(QMainWindow):
                         text+='   The first reply can take longer while Ollama loads a model. To try a smaller one, choose Stop, then Models.'
                     self.status.setText(text)
                 elif self.run_phase=='Model responding':self.status.setText('Writing a reply…')
+                return
+            if self.execution_kind=='tuning':
+                self.performance_label.setText(f'Local model tuning · {int(now-self.started_at)}s elapsed')
                 return
             if self.execution_kind=='local':
                 self.performance_label.setText(f'Local program · {int(now-self.started_at)}s elapsed · no model request')
@@ -1110,11 +1131,14 @@ class Studio(QMainWindow):
             if draft:self.prompt.setPlainText(draft)
         elif dialog.selected_template:self.create_local_project(*dialog.selected_template)
 
-    def begin_local_run(self,text):
-        self.execution_kind='local';self.cancel=threading.Event()
+    def begin_local_run(self,text,*,kind='local',preserve_draft=False):
+        self.execution_kind=kind;self.cancel=threading.Event()
         self.started_at=time.monotonic();self.route_description='Local program · no model request'
-        self.prompt.clear();self.task['draft']='';self.partial=''
-        self.task['messages'].append({'role':'user','content':text})
+        if not preserve_draft:self.prompt.clear();self.task['draft']=''
+        self.partial=''
+        message={'role':'user','content':text}
+        if kind=='tuning':message['source']='app'
+        self.task['messages'].append(message)
         if self.task['title'] in ('New chat','New task'):
             self.task['title']=text.splitlines()[0][:45];self.title.setText(self.task['title']);self.refresh_tasks()
         self.set_busy(True);self.render();self.persist()
@@ -1158,6 +1182,14 @@ class Studio(QMainWindow):
 
     def natural_control(self,text):
         normalized=text.strip().lower().rstrip('.!')
+        if normalized in ('/tune','tune my local model','tune my model','optimize my local model',
+                          'optimise my local model','optimize your local settings','optimise your local settings'):
+            self.start_local_tuning(text)
+            return True
+        if normalized in ('/tune undo','undo local model tuning','undo my last tuning change'):
+            self.prompt.clear()
+            self.undo_local_tuning()
+            return True
         if (normalized in ('open starter','play starter','launch game','run game')
                 and self.task.get('starter_entrypoint')=='index.html'):
             root=Path(self.task['project']).resolve();entry=root/'index.html'
@@ -1310,7 +1342,7 @@ class Studio(QMainWindow):
         return None
 
     def send(self,checked=False,*,retry=False):
-        if self.busy and self.execution_kind=='conversation':
+        if self.busy and self.execution_kind in ('conversation','tuning'):
             return  # A second Enter during a reply leaves the next draft in place.
         index=self.retry_index() if not self.busy else None
         messages=self.task['messages']
@@ -1371,7 +1403,7 @@ class Studio(QMainWindow):
         performance=self.model_performance()
         keep_going=bool(self.keep_going.isChecked()) and task_kind=='code'
         task_goal=None if conversation else copy.deepcopy(self.current_task_goal())
-        auto_openzero=bool(self.config.get('auto_install_openzero',True))
+        auto_openzero=self._auto_install_openzero()
         if not conversation:
             active_remote=self.active_remote()
             requested_ssh=act and (requests_remote_work(text) or (
@@ -1431,7 +1463,8 @@ class Studio(QMainWindow):
                 if conversation:
                     from agent_core import OllamaCapacityError
                     try:
-                        run_conversation(selected['url'],selected['model'],history,self.cancel,self.bus.event.emit,performance=performance)
+                        run_conversation(selected['url'],selected['model'],history,self.cancel,self.bus.event.emit,
+                                         performance=self._local_chat_performance(selected,performance))
                     except OllamaCapacityError as exc:
                         small=self.config.get('local_model','')
                         if (self.cancel.is_set() or preference!='auto' or selected['route'] not in ('local','local_large')
@@ -1447,7 +1480,8 @@ class Studio(QMainWindow):
                             raise RuntimeError(f'{exc} {local_model_name(small)} could not start. {setup_error}') from setup_error
                         if self.cancel.is_set():return
                         self.bus.event.emit('route',fallback)
-                        run_conversation(fallback['url'],fallback['model'],history,self.cancel,self.bus.event.emit,performance=performance)
+                        run_conversation(fallback['url'],fallback['model'],history,self.cancel,self.bus.event.emit,
+                                         performance=self._local_chat_performance(fallback,performance))
                     return
                 def job_event(kind,data):self.bus.event.emit(kind,dict(data,task_id=task_id))
                 self.job_manager=ProcessJobs(project,self.cancel,job_event)
@@ -1628,7 +1662,7 @@ class Studio(QMainWindow):
             self.output.clear();self.status.setText('Starting new run…')
             self.reasoning_excerpt='';self.model_activity.clear();self.run_card_title.setText('Request received')
             self.run_card_detail.setText('App status · checking the selected runtime. The model has not replied yet.')
-            self.run_card.setVisible(self.execution_kind!='conversation')
+            self.run_card.setVisible(self.execution_kind not in ('conversation','tuning'))
             self.task['activity_run_start']=len(self.task.get('activity',[]))
             self.task.pop('last_metrics',None)
             self.performance_label.setToolTip('')
@@ -1654,6 +1688,7 @@ class Studio(QMainWindow):
             self.end_control_session()
             self.run_card.hide()
         self.busy=busy
+        if not busy:self.refresh_route_labels()
         self.refresh_model_setup()
         self.escape_shortcut.setEnabled(busy and not self.global_escape)
         for w in (self.new_button,self.project_button,self.task_list,self.task_view,self.route,self.mode,self.step_budget,self.keep_going,self.work_duration,self.goal_button,self.chat_space,self.code_space,self.skynet_button,self.local_tools_button,self.chat_models,self.chat_tools):w.setEnabled(not busy)
@@ -1694,6 +1729,10 @@ class Studio(QMainWindow):
             self.control_overlay.show_stopping();self.control_banner.setText('TalkToAi is stopping…\nWaiting for the current action to finish safely.')
 
     def handle_event(self,kind,data):
+        if kind=='local_tuning':
+            self.task['messages'].append({'role':'assistant','source':'app','content':data})
+            self.persist();self.render()
+            return
         if kind=='app_preferences_changed':
             duration=self.work_duration.findData(self.config.get('work_session_minutes',120))
             if duration>=0:
@@ -1903,8 +1942,7 @@ class Studio(QMainWindow):
             self.task.setdefault('api_routes',[]).append({'provider':data['label'],'model':data['model'],'fallback':data['fallback']})
         elif kind=='health':self.health_label.setText(data)
         elif kind=='local_model_state':
-            self.local_model_state=data
-            self.refresh_model_setup()
+            self._accept_local_inventory(data)
         elif kind=='runtime_diagnostics':
             self.output.setPlainText(data);self.right.setCurrentIndex(2);self.status.setText('Model diagnostics complete; see Tools for recovery steps')
         elif kind=='mail_status':self.mail_status_label.setText(data)
@@ -1937,6 +1975,13 @@ class Studio(QMainWindow):
             self.task.setdefault('activity',[]).append('Task error: '+str(data))
             self.task['messages'].append({'role':'assistant','source':'app','content':'Task error: '+str(data)});self.persist();self.render()
         elif kind=='finished':
+            if self.execution_kind=='tuning':
+                self.set_busy(False)
+                self.status.setText('Local model tuning stopped.' if self.cancel.is_set() else '')
+                self.performance_label.setText('')
+                self.task['draft']=self.prompt.toPlainText()
+                self.persist();self.render()
+                return
             if self.execution_kind=='conversation':
                 if self.partial:
                     self.task['messages'].append({'role':'assistant','source':'chat_partial','content':self.partial})
@@ -1992,16 +2037,57 @@ class Studio(QMainWindow):
         except Exception as exc:self.error(exc)
 
     def health(self):
+        self._poll_local_models(include_server=True)
+
+    def _poll_local_models(self, *, include_server=False):
+        self.local_inventory_revision+=1
+        revision=self.local_inventory_revision
+
         def check():
             from runtime_diagnostics import probe
             local=probe(11434)
-            self.bus.event.emit('local_model_state',local)
-            server=probe(11435)
-            labels=[]
-            for name,state in [('Local',local), (self.server_name(),server)]:
-                labels.append(name+' '+{'reachable':'online','invalid':'check connection'}.get(state['state'],'offline'))
-            self.bus.event.emit('health',' · '.join(labels))
+            self.bus.event.emit('local_model_state',dict(local,revision=revision))
+            if include_server:
+                server=probe(11435)
+                labels=[]
+                for name,state in [('Local',local), (self.server_name(),server)]:
+                    labels.append(name+' '+{'reachable':'online','invalid':'check connection'}.get(state['state'],'offline'))
+                self.bus.event.emit('health',' · '.join(labels))
         threading.Thread(target=check,daemon=True).start()
+
+    def _accept_local_inventory(self, state):
+        if state.get('revision',self.local_inventory_revision)!=self.local_inventory_revision:
+            return
+        self.local_model_state=state
+        if state.get('state')=='reachable':
+            self.local_inventory_names=tuple(state.get('models',[]))
+            self.local_recent_model=None
+            self.local_removed_models.clear()
+            self._record_openzero_seen(self.local_inventory_names)
+        if not self.busy:
+            self.refresh_route_labels()
+        self.refresh_model_setup()
+
+    def _model_dialog_inventory(self, names):
+        self.local_inventory_revision+=1
+        self._accept_local_inventory({'state':'reachable','models':list(names)})
+
+    def _auto_install_openzero(self):
+        return bool(self.config.get('auto_install_openzero',True) and not self.config.get('openzero_installed_once'))
+
+    def _record_openzero_seen(self, names):
+        if matching_model(names,DEFAULT_LOCAL_MODEL) and not self.config.get('openzero_installed_once'):
+            with self.config_write_lock:
+                self.config['openzero_installed_once']=True
+                try:self.write_config()
+                except OSError:pass  # Still avoid a repeat download for this session.
+
+    def _local_chat_performance(self, selected, performance):
+        from runtime_diagnostics import resident_model, running_probe
+
+        port=local_port(selected['url']) if selected['route'] in ('local','local_large') else None
+        resident=resident_model(running_probe(port),selected['model']) if port is not None else None
+        return dict(performance,resident_context=resident['context_length']) if resident else performance
 
     def refresh_model_setup(self):
         state=self.local_model_state
@@ -2010,14 +2096,16 @@ class Studio(QMainWindow):
             self.model_setup.hide()
             return
         model=self.config['local_large_model' if index==3 else 'local_model']
-        names=state.get('models',[]) if state['state']=='reachable' else []
+        names=list(state.get('models',[])) if state['state']=='reachable' else []
+        if self.local_recent_model:
+            names.append(self.local_recent_model)
         if (matching_model(names,model) or (index==0 and (
                 matching_model(names,self.config['local_large_model']) or self.config.get('active_ssh_alias')))):
             self.model_setup.hide()
             return
-        if index==0 and model==DEFAULT_LOCAL_MODEL and self.config.get('auto_install_openzero'):
+        if index in (0,1) and model==DEFAULT_LOCAL_MODEL and self._auto_install_openzero():
             message=('Send a message to set up OpenZero 1.7B on this PC (about 1.1 GB), or choose a model.'
-                     if state['state']=='reachable' else 'Send a message to start local AI. TalkToAi checks for installed models first. OpenZero is about 1.1 GB if needed.')
+                     if state['state']=='reachable' else 'Connect Ollama or send a message to start local AI. OpenZero is about 1.1 GB if needed.')
         elif state['state']!='reachable':
             message='Connect Ollama to run models on this computer.'
         elif model==DEFAULT_LOCAL_MODEL:
@@ -2030,9 +2118,12 @@ class Studio(QMainWindow):
         self.model_setup.show()
 
     def _record_local_model(self, model):
-        names = set((self.local_model_state or {}).get('models', []))
-        names.add(model)
-        self.local_model_state={'state':'reachable','models':sorted(names)}
+        self.local_inventory_revision+=1
+        self.local_recent_model=model
+        self.local_removed_models={name for name in self.local_removed_models if not matching_model([name],model)}
+        self._record_openzero_seen([model])
+        if not self.busy:
+            self.refresh_route_labels()
         self.refresh_model_setup()
 
     def reconnect_amd(self):
@@ -2288,7 +2379,7 @@ This is an original open-source-based integration, not Codex's proprietary skill
 
 ## Subagents for coding and games
 
-Ask: `Use a reviewer to inspect the combat code and a test planner to identify missing tests, then fix the confirmed issues.` The main agent can delegate focused local-project questions to reviewer, investigator or test_planner workers. Each gets a separate conversation context and can inspect project files. Findings return to the main conversation's tool activity; the main agent handles changes and tests. Workers run sequentially on the selected model, with at most two workers per turn and five model steps each. Stop cancels the active worker too. Workers cannot edit, run commands, operate the desktop, access SSH, or create more workers. They use additional model inference; Local/Server uses your own runtime, while an optional API route follows that provider's pricing.
+Ask `Use 3 agents to review this project's implementation, tests and documentation.` Agent Zero can also divide a compound project review automatically. Each worker uses the same installed Ollama model, gets a separate conversation, and inspects project files. Workers run one at a time and report their observations in tool activity. The main agent handles edits and test execution. The turn shares one limit of up to three workers, with five model steps per worker. Stop cancels the active review. Workers run on Local and Local large routes.
 
 ## Long commands and useful outputs
 
@@ -2331,16 +2422,23 @@ Use an available local or server model, stop a task, or steer it into a smaller 
 
     def refresh_route_labels(self):
         name=self.server_name()
-        labels=['Auto · available models',
-                'Local · '+local_model_name(str(self.config.get('local_model','configured model'))),
-                name+' · '+str(self.config.get('server_model','configured model')),
-                'Local large · '+local_model_name(str(self.config.get('local_large_model','configured model')))]
+        def local_route(title,key):
+            model=str(self.config.get(key) or '')
+            missing=(self.local_inventory_names is not None and not matching_model(self.local_inventory_names,model)
+                     or matching_model(self.local_removed_models,model))
+            if not model or (missing and not matching_model([self.local_recent_model] if self.local_recent_model else [],model)):
+                return title+' · choose a model', 'Choose an installed Ollama model in Models and setup.'
+            return title+' · '+local_model_name(model), model
+
+        local,local_tip=local_route('Local','local_model')
+        large,large_tip=local_route('Local large','local_large_model')
+        labels=['Auto · available models',local,name+' · '+str(self.config.get('server_model','configured model')),large]
         profile=self.active_provider()
         labels.append('API · '+(profile.label+' / '+profile.model if profile else 'Set up a provider…'))
         for index,label in enumerate(labels):
             self.route.setItemText(index,label[:72]);self.route.setItemData(index,label,Qt.ToolTipRole)
-        self.route.setItemData(1,self.config.get('local_model'),Qt.ToolTipRole)
-        self.route.setItemData(3,self.config.get('local_large_model'),Qt.ToolTipRole)
+        self.route.setItemData(1,local_tip,Qt.ToolTipRole)
+        self.route.setItemData(3,large_tip,Qt.ToolTipRole)
         self.reconnect_button.setText('Reconnect '+name+' model')
 
     def remember_route(self,index):
@@ -2348,13 +2446,17 @@ Use an available local or server model, stop a task, or steer it into a smaller 
         self.write_config()
 
     def model_performance(self):
+        from project_workers import worker_limit
         selected=self.config.get('num_ctx',8192)
         return {'num_ctx':selected if selected in (8192,16384,32768) else 8192,
+                'ollama_keep_alive':normalize_keep_alive(self.config.get('ollama_keep_alive')),
+                'local_worker_limit':worker_limit(self.config.get('local_worker_limit')),
                 'show_thinking':bool(self.config.get('show_model_activity',False)),
                 'work_session_minutes':self.work_duration.currentData() or 120}
 
     def settings(self):
         if self.busy:return
+        from project_workers import worker_limit
         dialog=QDialog(self);dialog.setWindowTitle('TalkToAi Code settings');dialog.resize(620,580)
         layout=QVBoxLayout(dialog)
         intro=QLabel('Control the defaults that make the agent feel automatic while keeping remote access explicit.')
@@ -2377,6 +2479,19 @@ Use an available local or server model, stop a task, or steer it into a smaller 
         context_choice.setCurrentIndex(context_choice.findData(self.model_performance()['num_ctx']))
         form.addWidget(QLabel('Model context window'));form.addWidget(context_choice)
         context_hint=QLabel('Larger context uses more RAM/VRAM and can slow local models. The model and API provider may impose a smaller limit. Applies to new requests, including Skynet Mode.');context_hint.setWordWrap(True);form.addWidget(context_hint)
+        worker_choice=QComboBox();worker_choice.setObjectName('local_worker_limit')
+        for title,limit in [('Off',0),('Up to 1 reviewer',1),('Up to 2 reviewers',2),('Up to 3 reviewers',3)]:
+            worker_choice.addItem(title,limit)
+        worker_choice.setCurrentIndex(worker_choice.findData(worker_limit(self.config.get('local_worker_limit'))))
+        worker_choice.setToolTip('Code can ask local reviewers to investigate separate parts of a project. They share the selected local model.')
+        form.addWidget(QLabel('Automatic project reviewers'));form.addWidget(worker_choice)
+        keep_alive=QComboBox();keep_alive.setObjectName('ollama_keep_alive')
+        for label,value in zip(('5 minutes','15 minutes','60 minutes · default','4 hours','24 hours','Until released'),KEEP_ALIVE_CHOICES):
+            keep_alive.addItem(label,value)
+        keep_alive.setCurrentIndex(keep_alive.findData(normalize_keep_alive(self.config.get('ollama_keep_alive'))))
+        form.addWidget(QLabel('Keep local Ollama models in memory'));form.addWidget(keep_alive)
+        retention_hint=QLabel('Starts after a reply. Ollama can free memory sooner if another model needs it.')
+        retention_hint.setWordWrap(True);form.addWidget(retention_hint)
         godot_path=QLineEdit(str(self.config.get('godot_executable','')));godot_path.setObjectName('godot_executable')
         godot_path.setPlaceholderText('Optional full path to Godot; leave blank for automatic discovery')
         form.addWidget(QLabel('Godot executable'));form.addWidget(godot_path)
@@ -2496,6 +2611,8 @@ Use an available local or server model, stop a task, or steer it into a smaller 
             self.config['web_browser']=browser_choice.currentData();self.config['web_search']=search_choice.currentData()
             self.config['web_browser_mode']=browser_mode.currentData();self.config['web_browser_cdp_port']=port.value()
             self.config['num_ctx']=context_choice.currentData()
+            self.config['local_worker_limit']=worker_choice.currentData()
+            self.config['ollama_keep_alive']=keep_alive.currentData()
             self.config['auto_install_openzero']=auto_model.isChecked()
             self.config['godot_executable']=godot_value
             self.config['unity_executable']=unity_value
@@ -2532,7 +2649,9 @@ Use an available local or server model, stop a task, or steer it into a smaller 
 
         dialog=ModelLibraryDialog(self,STATE/'models',self._select_downloaded_model,self._on_local_model_removed,
                                   self.diagnose_models,self.compare_installed_models,self.providers_dialog,
-                                  configured_models={'Local':self.config.get('local_model',''),'Local large':self.config.get('local_large_model','')})
+                                  configured_models={'Local':self.config.get('local_model',''),'Local large':self.config.get('local_large_model','')},
+                                  keep_alive=self.config.get('ollama_keep_alive'),inventory_changed=self._model_dialog_inventory,
+                                  tune=lambda:self.start_local_tuning(preserve_draft=True))
         try:
             dialog.exec()
         finally:
@@ -2557,9 +2676,17 @@ Use an available local or server model, stop a task, or steer it into a smaller 
 
     def _on_local_model_removed(self, model):
         # The default can otherwise reinstall itself on the next Send.
+        self.local_inventory_revision+=1
+        self.local_removed_models.add(model)
+        if self.local_recent_model and matching_model([self.local_recent_model],model):
+            self.local_recent_model=None
         retained=[name for name in (self.local_model_state or {}).get('models',[])
                   if not (matching_model([name],model) or matching_model([model],name))]
-        self.local_model_state={'state':'reachable','models':retained}
+        if self.local_model_state and self.local_model_state.get('state')=='reachable':
+            self.local_model_state={'state':'reachable','models':retained}
+        if self.local_inventory_names is not None:
+            self.local_inventory_names=tuple(name for name in self.local_inventory_names if not matching_model([name],model))
+        self.refresh_route_labels()
         self.refresh_model_setup()
         if matching_model([model],DEFAULT_LOCAL_MODEL) and self.config.get('auto_install_openzero',True):
             with self.config_write_lock:
@@ -2579,6 +2706,44 @@ Use an available local or server model, stop a task, or steer it into a smaller 
                 self.bus.event.emit('runtime_diagnostics','Model diagnostics could not finish. Check Ollama and your server connection, then retry.')
             finally:self.diagnostics_running=False
         threading.Thread(target=work,daemon=True).start()
+
+    def start_local_tuning(self,text='Tune my local model',*,preserve_draft=False):
+        if self.busy:return
+        from local_tuning import apply_retention, measure_retention
+        route=('auto','local','server','local_large','provider')[self.route.currentIndex()]
+        config=dict(self.config)
+        config['num_ctx']=self.model_performance()['num_ctx']
+        self.begin_local_run(text,kind='tuning',preserve_draft=preserve_draft)
+        self.status.setText('Checking the local model before timing two replies…')
+        cancel=self.cancel
+
+        def work():
+            try:
+                trial=measure_retention(config,route,cancel,
+                                        lambda _,text:self.bus.event.emit('status',text))
+                trial,result=apply_retention(trial,self.preferences_manager,cancel)
+                if result:
+                    self.bus.event.emit('app_preferences_changed',result)
+                detail=trial.detail.replace(trial.model,local_model_name(trial.model)) if trial.model else trial.detail
+                self.bus.event.emit('local_tuning',detail)
+            except (DownloadCancelled,InterruptedError):
+                self.bus.event.emit('local_tuning','Local model tuning was stopped.')
+            except (OSError,ValueError,RuntimeError) as exc:
+                self.bus.event.emit('local_tuning','Local tuning could not finish. '+str(exc))
+            finally:
+                self.bus.event.emit('finished',None)
+        threading.Thread(target=work,daemon=True).start()
+
+    def undo_local_tuning(self):
+        if self.busy:return
+        from local_tuning import undo_retention
+        try:
+            result=undo_retention(self.preferences_manager)
+        except (OSError,ValueError) as exc:
+            self.status.setText(str(exc))
+            return
+        self.handle_event('app_preferences_changed',result)
+        self.handle_event('local_tuning','Restored the local model retention setting from before the last tune.')
 
     def compare_installed_models(self):
         if self.busy:return
