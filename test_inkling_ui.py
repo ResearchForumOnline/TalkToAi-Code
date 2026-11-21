@@ -10,7 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QComboBox, QDialog
 
 import agent_core
 import model_library_dialog as model_ui
@@ -30,6 +30,7 @@ class InklingUITests(unittest.TestCase):
             compatible = root / 'Mainline_Support' / legacy.name
             runner, selected = Mock(), Mock()
             runner.status.return_value = None
+            runner.diagnostic.return_value = None
             dialog = model_ui.ModelLibraryDialog(None, root, selected, Mock(), Mock(), Mock(), Mock(), inkling=runner)
             try:
                 with patch.object(model_ui, 'prepare_inkling', return_value=compatible) as prepare, \
@@ -41,6 +42,7 @@ class InklingUITests(unittest.TestCase):
                 self.assertEqual(prepare.call_args.args[1], 'q8')
                 self.assertEqual(prepare.call_args.kwargs['source'], legacy)
                 runner.start.assert_called_once()
+                self.assertEqual(runner.start.call_args.kwargs, {'acceleration': 'auto'})
                 selected.assert_called_once_with('q8', 'inkling')
                 ollama.assert_not_called()
                 self.assertIn('CPU. No compatible Vulkan device found.', dialog.inkling_status.text())
@@ -55,6 +57,7 @@ class InklingUITests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             runner = Mock()
             runner.status.return_value = None
+            runner.diagnostic.return_value = None
             dialog = model_ui.ModelLibraryDialog(None, Path(folder), Mock(), Mock(), Mock(), Mock(), Mock(), inkling=runner)
             try:
                 file = INKLING_PRESETS['q8'].legacy
@@ -117,6 +120,7 @@ class InklingUITests(unittest.TestCase):
         (case.root / 'evidence.txt').write_text('Inkling fixture evidence', encoding='utf-8')
         case.enterContext(patch.object(studio, 'prepared_path', return_value=weights))
         window = case.w
+        window.config['inkling_acceleration'] = 'gpu'
         window._select_downloaded_model('q8', 'inkling')
         case.submit('What is 2 + 3?')
         case.wait_for(lambda: not window.busy, timeout=12)
@@ -134,12 +138,43 @@ class InklingUITests(unittest.TestCase):
         self.assertTrue(all(path == '/v1/chat/completions' and auth == 'Bearer inkling-fixture-key'
                             and body['model'] == 'inkling-2-mini' for path, auth, body in requests))
         self.assertTrue(any(any(message['role'] == 'tool' for message in body['messages']) for _, _, body in requests))
+        self.assertEqual([call.kwargs for call in runner.start.call_args_list],
+                         [{'acceleration': 'gpu'}, {'acceleration': 'gpu'}])
         self.assertEqual(window.config['local_model'], DEFAULT_LOCAL_MODEL)
         self.assertEqual(window.config['local_large_model'], QWEN_LOCAL_MODEL)
         self.assertIsNone(agent_core.ACTIVE_PROVIDER)
         case.local.assert_not_called()
         window.route.setCurrentIndex(studio.MODEL_ROUTES.index('local_large'))
         runner.stop.assert_called()
+
+    def test_acceleration_setting_saves_and_restarts_managed_runner(self):
+        runner = Mock()
+        runner.status.return_value = None
+        runner.diagnostic.return_value = None
+        case = test_chat_ui.ChatUITests('test_native_enter_click_stream_and_follow_up')
+        case.setUpClass()
+        self.addCleanup(case.doCleanups)
+        case.enterContext(patch.object(studio, 'inkling_supported', return_value=True))
+        case.enterContext(patch.object(studio, 'InklingRuntime', return_value=runner))
+        case.setUp()
+        window = case.w
+        runner.stop.reset_mock()
+
+        def choose_gpu(dialog):
+            choice = dialog.findChild(QComboBox, 'inkling_acceleration')
+            self.assertEqual(choice.currentData(), 'auto')
+            choice.setCurrentIndex(choice.findData('gpu'))
+            return QDialog.Accepted
+
+        with patch.object(studio.QDialog, 'exec', choose_gpu), \
+                patch('search_provider.configured', return_value=False), \
+                patch.object(window, 'set_start_with_windows'):
+            window.settings()
+        self.assertEqual(window.inkling_acceleration(), 'gpu')
+        stored = json.loads((case.root / 'config.json').read_text(encoding='utf-8'))
+        self.assertEqual(stored['inkling_acceleration'], 'gpu')
+        runner.stop.assert_called_once()
+        runner.start.assert_not_called()
 
     def test_unknown_architecture_error_identifies_inkling_and_hides_ordinary_runner_detail(self):
         err = agent_core._ollama_error(500, "llama-server process has terminated: unknown model architecture: 'inkling2' /private/key")

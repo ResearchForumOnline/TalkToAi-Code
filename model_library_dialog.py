@@ -37,7 +37,7 @@ class _DownloadSignals(QObject):
 class ModelLibraryDialog(QDialog):
     def __init__(self, parent, root, select_model, model_removed, diagnose, compare, use_api, *,
                  configured_models=None, keep_alive=None, inventory_changed=None, tune=None,
-                 inkling=None, inkling_removed=None):
+                 inkling=None, inkling_removed=None, inkling_acceleration='auto'):
         super().__init__(parent)
         self.root = Path(root)
         self.reply_history_dir = self.root / '.reply-checks-v1'
@@ -47,6 +47,7 @@ class ModelLibraryDialog(QDialog):
         self.inventory_changed = inventory_changed
         self.inkling = inkling
         self.inkling_removed = inkling_removed
+        self.inkling_acceleration = inkling_acceleration
         self.configured_models = dict(configured_models or {})
         self.model_records = {}
         self.partials = []
@@ -343,8 +344,16 @@ class ModelLibraryDialog(QDialog):
         if self.inkling_status is None:
             return
         hardware = self.inkling.status()
-        self.inkling_status.setText(f'Inkling · {hardware.label}. {hardware.reason}' if hardware else
-                                    'Inkling automatically checks for GPU acceleration when it starts.')
+        if hardware:
+            message = f'Inkling · {hardware.label}. {hardware.reason}'
+        else:
+            idle = {
+                'cpu': 'Inkling is set to CPU only.',
+                'gpu': 'Inkling is set to Require GPU. Detailed results appear after it starts.',
+            }
+            message = self.inkling.diagnostic() or idle.get(
+                self.inkling_acceleration, 'Inkling checks for GPU acceleration when it starts.')
+        self.inkling_status.setText(message)
 
     def _start(self, starting, work, *, stoppable=True):
         if self.cancel is not None:
@@ -519,7 +528,7 @@ class ModelLibraryDialog(QDialog):
         def work(cancel, notify):
             path = prepare_inkling(self.root, key, cancel, notify, source=source() if source else None)
             try:
-                self.inkling.start(path, cancel, notify)
+                self.inkling.start(path, cancel, notify, acceleration=self.inkling_acceleration)
             except (DownloadCancelled, InterruptedError):
                 return 'saved', path.parent, 'Inkling weights are saved. Select the same preset to start it again.'
             except (OSError, RuntimeError, ValueError) as exc:

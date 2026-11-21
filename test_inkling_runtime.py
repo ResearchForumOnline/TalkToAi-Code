@@ -34,6 +34,7 @@ class InklingRuntimeTests(unittest.TestCase):
         self.cancel = threading.Event()
         self.notify = Mock()
         self.loader = self.enterContext(patch.object(runtime, '_vulkan_loader_available', return_value=False))
+        self.cuda = self.enterContext(patch.object(self.manager, '_available_cuda', return_value=None))
 
     def _gpu_fixture(self):
         self.loader.return_value = True
@@ -41,7 +42,8 @@ class InklingRuntimeTests(unittest.TestCase):
         gpu = self.root / 'engine-vulkan' / runtime._SERVER
         ensured = self.enterContext(patch.object(self.manager, 'ensure_engine',
             side_effect=lambda *_, vulkan=False: gpu if vulkan else cpu))
-        probe = self.enterContext(patch.object(runtime, '_probe_vulkan', return_value=('Vulkan1', 'Fixture GPU')))
+        device = runtime._GpuDevice('Vulkan1', 'Fixture GPU', 6800, 8192)
+        probe = self.enterContext(patch.object(runtime, '_probe_gpu', return_value=device))
         self.enterContext(patch.object(runtime, '_ready', return_value=True))
         weights = self.root / 'inkling.gguf'
         weights.write_bytes(b'GGUF')
@@ -149,23 +151,25 @@ class InklingRuntimeTests(unittest.TestCase):
         first.write_bytes(b'GGUF')
         second.write_bytes(b'GGUF')
         with (patch.object(self.manager, 'ensure_engine', return_value=self.root / runtime._SERVER) as ensured,
-              patch.object(runtime, '_probe_vulkan') as probe,
+              patch.object(runtime, '_probe_gpu') as probe,
               patch.object(runtime, '_ready', return_value=True),
               patch.object(runtime.subprocess, 'Popen', side_effect=lambda *a, **kw: self._process(kw['stdout']))):
             self.manager.start(first, self.cancel, self.notify)
             self.manager.start(second, self.cancel, self.notify)
         self.loader.assert_called_once()
+        self.cuda.assert_called_once()
         probe.assert_not_called()
         self.assertEqual([call.kwargs for call in ensured.call_args_list], [{}, {}])
 
     def test_lists_only_real_vulkan_devices_and_prefers_available_memory(self):
         output = b'Available devices:\r\n  (none)\r\n'
-        self.assertIsNone(runtime._select_vulkan_device(output))
+        self.assertIsNone(runtime._select_gpu_device(output, 'Vulkan'))
         output = (b'Available devices:\r\n  Vulkan0: llvmpipe (LLVM 20) (65536 MiB, 65000 MiB free)\r\n'
                   b'  CUDA0: CUDA (48000 MiB, 40000 MiB free)\r\n'
                   b'  Vulkan1: Intel(R) Graphics (5000 MiB, 4000 MiB free)\r\n'
                   b'  Vulkan3: Fixture GPU (10000 MiB, 8000 MiB free)\r\n')
-        self.assertEqual(runtime._select_vulkan_device(output), ('Vulkan3', 'Fixture GPU'))
+        self.assertEqual(runtime._select_gpu_device(output, 'Vulkan'), runtime._GpuDevice('Vulkan3', 'Fixture GPU', 8000, 10000))
+        self.assertEqual(runtime._select_gpu_device(output, 'CUDA'), runtime._GpuDevice('CUDA0', 'CUDA', 40000, 48000))
 
     def test_verified_offload_and_authenticated_generation_select_gpu(self):
         weights, ensured, probe = self._gpu_fixture()
@@ -174,13 +178,19 @@ class InklingRuntimeTests(unittest.TestCase):
               patch.object(runtime.subprocess, 'Popen', side_effect=lambda *a, **kw: self._process(kw['stdout'], output)) as spawn):
             endpoint = self.manager.start(weights, self.cancel, self.notify)
             self.assertEqual(endpoint, self.manager.start(weights, self.cancel, self.notify))
-        self.assertEqual(self.manager.status(), runtime.InklingStatus('vulkan', 'Fixture GPU passed the Vulkan generation check.', 23, 41))
-        self.assertEqual(self.manager.status().label, 'GPU · 23/41 layers')
+            self.assertEqual(endpoint, self.manager.start(weights, self.cancel, self.notify, acceleration='gpu'))
+        status = self.manager.status()
+        self.assertEqual(status.label, 'GPU · 23/41 layers')
+        self.assertEqual(status.backend, 'vulkan')
+        self.assertEqual((status.device_name, status.vram_free_mib, status.vram_total_mib), ('Fixture GPU', 6800, 8192))
+        self.assertIn('6,800 MiB free of 8,192 MiB', self.manager.diagnostic())
         self.assertEqual(inference.call_args.args[:2], (int(endpoint[0].split(':')[-1].split('/')[0]), endpoint[1]))
         args = spawn.call_args.args[0]
         self.assertEqual(args[args.index('--device') + 1], 'Vulkan1')
         self.assertEqual(args[args.index('--fit') + 1], 'on')
         self.assertEqual(args[args.index('--fit-target') + 1], '1024')
+        self.assertEqual(args[args.index('--batch-size') + 1], '256')
+        self.assertEqual(args[args.index('--ubatch-size') + 1], '64')
         self.assertNotIn('--n-gpu-layers', args)
         probe.assert_called_once()
         ensured.assert_called_once_with(self.cancel, self.notify, vulkan=True)
@@ -199,12 +209,12 @@ class InklingRuntimeTests(unittest.TestCase):
               patch.object(runtime.subprocess, 'Popen', side_effect=spawn_attempt) as spawn):
             self.manager.start(weights, self.cancel, self.notify)
             self.assertEqual(self.manager.status().label, 'CPU')
-            self.assertIn('could not hold any Inkling model layers', self.manager.status().reason)
+            self.assertIn('did not offload any verified Inkling model layers', self.manager.status().reason)
             self.manager.stop()
             self.manager.start(weights, self.cancel, self.notify)
         probe.assert_called_once()
         inference.assert_not_called()
-        self.assertEqual(spawn.call_count, 3)
+        self.assertEqual(spawn.call_count, 4)
         self.assertEqual([call.kwargs for call in ensure.call_args_list], [{'vulkan': True}, {}, {}])
 
     def test_vulkan_allocation_or_generation_failure_returns_fresh_cpu_session(self):
@@ -218,21 +228,136 @@ class InklingRuntimeTests(unittest.TestCase):
                 return self._process(kwargs['stdout'], b'vk::OutOfDeviceMemoryError\n', 1)
             return self._process(kwargs['stdout'], b'offloaded 3/41 layers to GPU\nVulkan1 model buffer size = 4000.00 MiB\n')
 
-        for failure, reason in (('allocation', 'could not load'), ('generation', 'generation check')):
+        for failure, reason in (('allocation', 'ran out of available memory'), ('generation', 'generation check')):
             with self.subTest(failure=failure):
                 weights.write_bytes(b'GGUF' + failure.encode())
                 with (patch.object(runtime, '_probe_inference', return_value=False),
-                      patch.object(runtime, '_choose_port', side_effect=[40600, 40601]),
+                      patch.object(runtime, '_choose_port', side_effect=[40600, 40601, 40602]),
                       patch.object(runtime.subprocess, 'Popen', side_effect=spawn_attempt) as spawn):
                     url, key = self.manager.start(weights, self.cancel, self.notify)
-                self.assertEqual(url, 'http://127.0.0.1:40601/v1')
+                self.assertEqual(url, 'http://127.0.0.1:40602/v1')
                 self.assertEqual(self.manager.status().backend, 'cpu')
                 self.assertIn(reason, self.manager.status().reason)
                 self.assertNotEqual(key, spawn.call_args_list[0].kwargs['env']['LLAMA_API_KEY'])
-                self.assertEqual(spawn.call_count, 2)
+                self.assertEqual(spawn.call_count, 3)
                 self.manager.stop()
         self.assertEqual(probe.call_count, 2)
         self.assertEqual(ensure.call_count, 4)
+
+    def test_8_gb_gpu_retries_with_bounded_partial_offload_and_keeps_context(self):
+        weights, ensure, _ = self._gpu_fixture()
+
+        def spawn_attempt(command, **kwargs):
+            if '--cpu-moe' not in command:
+                return self._process(kwargs['stdout'], b'vk::OutOfDeviceMemoryError\n', 1)
+            return self._process(kwargs['stdout'], b'offloaded 8/25 layers to GPU\nVulkan1 model buffer size = 1230.00 MiB\n')
+
+        with (patch.object(runtime, '_probe_inference', return_value=True) as inference,
+              patch.object(runtime.subprocess, 'Popen', side_effect=spawn_attempt) as spawn):
+            self.manager.start(weights, self.cancel, self.notify, acceleration='gpu')
+        fit, partial = [call.args[0] for call in spawn.call_args_list]
+        self.assertEqual(fit[fit.index('--fit') + 1], 'on')
+        self.assertEqual(partial[partial.index('--fit') + 1], 'off')
+        self.assertEqual(partial[partial.index('--n-gpu-layers') + 1], '8')
+        self.assertEqual(partial[partial.index('--ctx-size') + 1], '8192')
+        self.assertEqual(partial[partial.index('--batch-size') + 1], '128')
+        self.assertEqual(partial[partial.index('--ubatch-size') + 1], '32')
+        self.assertIn('--cpu-moe', partial)
+        self.assertIn('--no-kv-offload', partial)
+        self.assertIn('system RAM', self.manager.diagnostic())
+        self.assertEqual(self.manager.status().label, 'GPU · 8/25 layers')
+        inference.assert_called_once()
+        ensure.assert_called_once_with(self.cancel, self.notify, vulkan=True)
+        self.cuda.assert_not_called()
+
+    def test_nvidia_cuda_rescues_failed_vulkan_without_pure_cpu(self):
+        weights, ensure, _ = self._gpu_fixture()
+        self.cuda.return_value = self.root / 'engine-cuda' / runtime._SERVER, runtime._GpuDevice('CUDA0', 'Fixture RTX', 6200, 8192)
+
+        def spawn_attempt(command, **kwargs):
+            if 'CUDA0' in command:
+                return self._process(kwargs['stdout'], b'offloaded 8/25 layers to GPU\nCUDA0 model buffer size = 1200.00 MiB\n')
+            return self._process(kwargs['stdout'], b'VK_ERROR_DEVICE_LOST\n', 1)
+
+        with (patch.object(runtime, '_probe_inference', return_value=True) as inference,
+              patch.object(runtime.subprocess, 'Popen', side_effect=spawn_attempt) as spawn):
+            self.manager.start(weights, self.cancel, self.notify, acceleration='gpu')
+        self.assertEqual(spawn.call_count, 3)
+        self.assertEqual(self.manager.status().backend, 'cuda')
+        self.assertEqual(self.manager.status().label, 'GPU · 8/25 layers')
+        self.assertIn('Fixture RTX via CUDA', self.manager.diagnostic())
+        inference.assert_called_once()
+        ensure.assert_called_once_with(self.cancel, self.notify, vulkan=True)
+        self.cuda.assert_called_once()
+
+    def test_require_gpu_preserves_hardware_failure_and_does_not_launch_cpu(self):
+        weights, ensure, _ = self._gpu_fixture()
+        output = b'private-model.gguf: vk::OutOfDeviceMemoryError\n'
+        with patch.object(runtime.subprocess, 'Popen', side_effect=lambda *a, **kw: self._process(kw['stdout'], output, 1)) as spawn:
+            with self.assertRaisesRegex(runtime.InklingAccelerationError, 'available memory') as failure:
+                self.manager.start(weights, self.cancel, self.notify, acceleration='gpu')
+        self.assertEqual(spawn.call_count, 2)
+        ensure.assert_called_once_with(self.cancel, self.notify, vulkan=True)
+        self.assertEqual(self.manager.diagnostic(), str(failure.exception))
+        self.assertIn('6,800 MiB free of 8,192 MiB', self.manager.diagnostic())
+        self.assertNotIn('private-model.gguf', self.manager.diagnostic())
+        self.assertIsNone(self.manager.status())
+
+    def test_explicit_mode_retries_stale_auto_and_does_not_reuse_incompatible_workers(self):
+        weights, _, device_probe = self._gpu_fixture()
+        self.loader.return_value = False
+
+        def spawn_attempt(command, **kwargs):
+            if 'Vulkan1' in command:
+                return self._process(kwargs['stdout'], b'offloaded 8/25 layers to GPU\nVulkan1 model buffer size = 1230.00 MiB\n')
+            return self._process(kwargs['stdout'])
+
+        with (patch.object(runtime, '_probe_inference', return_value=True),
+              patch.object(runtime.subprocess, 'Popen', side_effect=spawn_attempt) as spawn):
+            auto = self.manager.start(weights, self.cancel, self.notify)
+            self.assertEqual(self.manager.status().backend, 'cpu')
+            self.loader.return_value = True
+            gpu = self.manager.start(weights, self.cancel, self.notify, acceleration='gpu')
+            self.assertEqual(self.manager.status().backend, 'vulkan')
+            self.assertNotEqual(auto, gpu)
+            self.loader.reset_mock()
+            self.cuda.reset_mock()
+            cpu = self.manager.start(weights, self.cancel, self.notify, acceleration='cpu')
+            self.assertNotEqual(cpu, gpu)
+            self.assertEqual(self.manager.status().backend, 'cpu')
+            self.assertEqual(self.manager.diagnostic(), 'CPU only is selected.')
+            self.loader.assert_not_called()
+            self.cuda.assert_not_called()
+            self.assertEqual(cpu, self.manager.start(weights, self.cancel, self.notify, acceleration='cpu'))
+            self.assertEqual(spawn.call_count, 3)
+        device_probe.assert_called_once()
+        with self.assertRaisesRegex(ValueError, 'Require GPU'):
+            self.manager.start(weights, self.cancel, self.notify, acceleration='invalid')
+
+    def test_auto_rechecks_available_gpu_after_cached_memory_pressure_expires(self):
+        weights, _, device_probe = self._gpu_fixture()
+        clock = Mock(return_value=90)
+        graphics_memory_available = False
+
+        def spawn_attempt(command, **kwargs):
+            if 'Vulkan1' not in command:
+                return self._process(kwargs['stdout'])
+            if not graphics_memory_available:
+                return self._process(kwargs['stdout'], b'vk::OutOfDeviceMemoryError\n', 1)
+            return self._process(kwargs['stdout'], b'offloaded 8/25 layers to GPU\nVulkan1 model buffer size = 1230.00 MiB\n')
+
+        with (patch.object(runtime, '_probe_inference', return_value=True),
+              patch.object(runtime.time, 'monotonic', clock),
+              patch.object(runtime.subprocess, 'Popen', side_effect=spawn_attempt) as spawn):
+            cpu = self.manager.start(weights, self.cancel, self.notify)
+            self.assertEqual(self.manager.status().backend, 'cpu')
+            self.assertEqual(self.manager.start(weights, self.cancel, self.notify), cpu)
+            graphics_memory_available = True
+            clock.return_value += runtime._GPU_RETRY_COOLDOWN + 1
+            self.assertNotEqual(self.manager.start(weights, self.cancel, self.notify), cpu)
+            self.assertEqual(self.manager.status().backend, 'vulkan')
+        self.assertEqual(spawn.call_count, 4)
+        self.assertEqual(device_probe.call_count, 2)
 
     def test_vulkan_crash_after_ready_prefers_cpu_for_the_next_request(self):
         weights, _, probe = self._gpu_fixture()
@@ -256,7 +381,7 @@ class InklingRuntimeTests(unittest.TestCase):
     def test_user_stop_during_vulkan_probe_does_not_retry_on_cpu(self):
         weights, ensure, probe = self._gpu_fixture()
 
-        def stop_worker(executable, check_cancel):
+        def stop_worker(executable, api, check_cancel):
             self.manager.stop()
             check_cancel()
 
@@ -268,15 +393,18 @@ class InklingRuntimeTests(unittest.TestCase):
         spawn.assert_not_called()
 
     def test_gpu_generation_check_requires_positive_bounded_tokens_without_errors(self):
-        for reply, expected in (({'usage': {'completion_tokens': 4}}, True),
-                                ({'usage': {'completion_tokens': 0}}, False),
-                                ({'usage': {'completion_tokens': 5}}, False),
-                                ({'usage': {'completion_tokens': 2}, 'error': 'out of memory'}, False)):
+        for reply, expected in (({'tokens_predicted': 2}, True),
+                                ({'tokens_predicted': 5}, True),
+                                ({'tokens_predicted': 1}, False),
+                                ({'tokens_predicted': 6}, False),
+                                ({'tokens_predicted': 2, 'error': 'out of memory'}, False)):
             with self.subTest(reply=reply), patch.object(runtime, '_request_local_json', return_value=reply) as request:
                 self.assertEqual(runtime._probe_inference(40000, 'private-local-key', lambda: None), expected)
-                self.assertEqual(request.call_args.args, (40000, '/v1/chat/completions', 'private-local-key'))
+                self.assertEqual(request.call_args.args, (40000, '/completion', 'private-local-key'))
                 payload = request.call_args.kwargs['payload']
-                self.assertEqual(payload['max_tokens'], 4)
+                self.assertEqual(payload['n_predict'], 2)
+                self.assertTrue(payload['ignore_eos'])
+                self.assertEqual(request.call_args.kwargs['timeout'], 120)
                 self.assertNotIn('tools', payload)
                 self.assertFalse(payload['cache_prompt'])
 
@@ -287,7 +415,7 @@ class InklingRuntimeTests(unittest.TestCase):
         def request(*args, **kwargs):
             request_started.set()
             release_request.wait(3)
-            return {'usage': {'completion_tokens': 4}}
+            return {'tokens_predicted': 2}
 
         def check_cancel():
             if request_started.is_set():
@@ -301,6 +429,11 @@ class InklingRuntimeTests(unittest.TestCase):
                 self.assertFalse(release_request.is_set())
         finally:
             release_request.set()
+
+    def test_gpu_generation_timeout_describes_which_check_failed(self):
+        with patch.object(runtime, '_request_local_json', side_effect=TimeoutError):
+            with self.assertRaisesRegex(runtime._GpuFallback, 'generation check exceeded 120 seconds'):
+                runtime._probe_inference(40000, 'private-local-key', lambda: None)
 
     def test_stop_while_load_is_pending_terminates_only_owned_process(self):
         weights = self.root / 'inkling.gguf'

@@ -19,6 +19,8 @@ class RuntimeDiagnosticsTests(unittest.TestCase):
             self.assertIn('GPU · 24/42 layers', report({'preferred_route': 'inkling'}, inkling_status=hardware))
             self.assertIn('Vulkan model check passed.', report({'preferred_route': 'inkling'}, inkling_status=hardware))
             self.assertIn('Inkling is stopped.', report({'preferred_route': 'inkling'}))
+            self.assertIn('GPU check did not pass.',
+                          report({'preferred_route': 'inkling'}, inkling_detail='GPU check did not pass.'))
             ollama.assert_not_called()
 
     def test_real_loopback_chat_probe_and_saved_result(self):

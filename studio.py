@@ -79,6 +79,11 @@ SESSION = STATE / 'studio.json'
 CONNECTIONS = STATE / 'connections.json'
 PROVIDERS = STATE / 'providers.json'
 MODEL_ROUTES = ('auto', 'local', 'server', 'local_large', 'provider', 'inkling')
+INKLING_ACCELERATION_CHOICES = {
+    'auto': 'Automatic',
+    'gpu': 'Require GPU',
+    'cpu': 'CPU only',
+}
 
 STYLE = '''
 QWidget { background:#111923; color:#e8edf3; font-family:'Segoe UI'; font-size:13px; }
@@ -213,6 +218,7 @@ class Studio(QMainWindow):
             'local_model': DEFAULT_LOCAL_MODEL,
             'local_large_model': QWEN_LOCAL_MODEL,
             'inkling_model': '',
+            'inkling_acceleration': 'auto',
             'server_model': 'qwen3-coder:30b',
             'server_label': 'Server',
             'approval_policy': 'ask_remote',
@@ -1645,7 +1651,8 @@ class Studio(QMainWindow):
                     if weights is None:
                         raise ValueError('Inkling weights could not be found. Open Models and setup and choose Inkling again.')
                     url, key = self.inkling_runtime.start(weights, self.cancel,
-                        lambda message, *_: self.bus.event.emit('status', message))
+                        lambda message, *_: self.bus.event.emit('status', message),
+                        acceleration=self.inkling_acceleration())
                     hardware = self.inkling_runtime.status()
                     inkling_profile = ProviderProfile('Inkling 2 Mini', url, INKLING_MODEL, engine='llama.cpp',
                         api_mode='chat_completions', cost_tier='self_hosted', max_output_tokens=1024)
@@ -2692,7 +2699,7 @@ Use an available local or server model, stop a task, or steer it into a smaller 
             if preset and self._inkling_weights():
                 hardware = self.inkling_runtime.status()
                 label = f'{preset.label} · {hardware.label}' if hardware else preset.label
-                inkling_tip = hardware.reason if hardware else 'Inkling checks for a compatible GPU when it starts.'
+                inkling_tip = hardware.reason if hardware else self.inkling_runtime.diagnostic()
             labels.append(label)
         for index,label in enumerate(labels):
             self.route.setItemText(index,label[:72]);self.route.setItemData(index,label,Qt.ToolTipRole)
@@ -2722,6 +2729,10 @@ Use an available local or server model, stop a task, or steer it into a smaller 
                 'show_thinking':bool(self.config.get('show_model_activity',False)),
                 'work_session_minutes':self.work_duration.currentData() or 120}
 
+    def inkling_acceleration(self):
+        mode = self.config.get('inkling_acceleration')
+        return mode if isinstance(mode, str) and mode in INKLING_ACCELERATION_CHOICES else 'auto'
+
     def settings(self):
         if self.busy:return
         from project_workers import worker_limit
@@ -2747,6 +2758,20 @@ Use an available local or server model, stop a task, or steer it into a smaller 
         context_choice.setCurrentIndex(context_choice.findData(self.model_performance()['num_ctx']))
         form.addWidget(QLabel('Model context window'));form.addWidget(context_choice)
         context_hint=QLabel('Larger context uses more RAM/VRAM and can slow local models. The model and API provider may impose a smaller limit. Applies to new requests, including Skynet Mode.');context_hint.setWordWrap(True);form.addWidget(context_hint)
+        inkling_mode = None
+        previous_inkling_mode = self.inkling_acceleration()
+        if self.inkling_runtime is not None:
+            inkling_mode = QComboBox()
+            inkling_mode.setObjectName('inkling_acceleration')
+            inkling_mode.setAccessibleName('Inkling acceleration')
+            for mode, label in INKLING_ACCELERATION_CHOICES.items():
+                inkling_mode.addItem(label, mode)
+            inkling_mode.setCurrentIndex(inkling_mode.findData(previous_inkling_mode))
+            form.addWidget(QLabel('Inkling acceleration'))
+            form.addWidget(inkling_mode)
+            inkling_hint = QLabel('Require GPU stops with a reason if Inkling cannot use the GPU. Some model weights may still use system RAM.')
+            inkling_hint.setWordWrap(True)
+            form.addWidget(inkling_hint)
         worker_choice=QComboBox();worker_choice.setObjectName('local_worker_limit')
         for title,limit in [('Off',0),('Up to 1 reviewer',1),('Up to 2 reviewers',2),('Up to 3 reviewers',3)]:
             worker_choice.addItem(title,limit)
@@ -2892,7 +2917,13 @@ Use an available local or server model, stop a task, or steer it into a smaller 
             except Exception as exc:self.error('Could not update Windows startup: '+str(exc))
             if remote_pilot.isChecked() and policy.currentData()!='plan':self.config['approval_policy']='auto_remote'
             if self.config['approval_policy']=='plan':self.mode.setCurrentText('Plan')
-            self.write_config();self.refresh_route_labels();self.refresh_connection_label();self.refresh_access_label();self.status.setText('Settings saved')
+            mode_changed = inkling_mode is not None and inkling_mode.currentData() != previous_inkling_mode
+            if mode_changed:
+                self.config['inkling_acceleration'] = inkling_mode.currentData()
+            self.write_config()
+            if mode_changed:
+                self.inkling_runtime.stop()
+            self.refresh_route_labels();self.refresh_connection_label();self.refresh_access_label();self.status.setText('Settings saved')
 
     def integrations_dialog(self):
         from integration_dialog import integration_dialog
@@ -2920,7 +2951,8 @@ Use an available local or server model, stop a task, or steer it into a smaller 
                                   configured_models={'Local':self.config.get('local_model',''),'Local large':self.config.get('local_large_model','')},
                                   keep_alive=self.config.get('ollama_keep_alive'),inventory_changed=self._model_dialog_inventory,
                                   tune=lambda:self.start_local_tuning(preserve_draft=True),
-                                  inkling=self.inkling_runtime, inkling_removed=self._on_inkling_download_removed)
+                                  inkling=self.inkling_runtime, inkling_removed=self._on_inkling_download_removed,
+                                  inkling_acceleration=self.inkling_acceleration())
         try:
             dialog.exec()
         finally:
@@ -2988,8 +3020,10 @@ Use an available local or server model, stop a task, or steer it into a smaller 
         def work():
             try:
                 from runtime_diagnostics import report
-                hardware = self.inkling_runtime.status() if config['preferred_route'] == 'inkling' else None
-                self.bus.event.emit('runtime_diagnostics',report(config, inkling_status=hardware))
+                runtime = self.inkling_runtime if config['preferred_route'] == 'inkling' else None
+                hardware = runtime.status() if runtime is not None else None
+                detail = runtime.diagnostic() if runtime is not None and hardware is None else None
+                self.bus.event.emit('runtime_diagnostics', report(config, inkling_status=hardware, inkling_detail=detail))
             except Exception:
                 self.bus.event.emit('runtime_diagnostics','Model diagnostics could not finish. Check Ollama and your server connection, then retry.')
             finally:self.diagnostics_running=False

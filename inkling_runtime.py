@@ -51,13 +51,15 @@ _START_TIMEOUT = 420
 _DOWNLOAD_TIMEOUT = 300
 _VULKAN_START_TIMEOUT = 240
 _DEVICE_TIMEOUT = 12
-_SMOKE_TIMEOUT = 35
-_SMOKE_TOKENS = 4
+_SMOKE_TIMEOUT = 120
+_SMOKE_TOKENS = 2
+_PARTIAL_GPU_LAYERS = 8
+_GPU_RETRY_COOLDOWN = 240
 
-_VULKAN_DEVICE = re.compile(r'^\s+(Vulkan[0-9]{1,2}): ([^\r\n]{1,256}) \(([0-9]+) MiB, ([0-9]+) MiB free\)\s*$')
+_GPU_DEVICE = re.compile(r'^\s+((?:Vulkan|CUDA)[0-9]{1,2}): ([^\r\n]{1,256}) \(([0-9]+) MiB, ([0-9]+) MiB free\)\s*$')
 _SOFTWARE_DEVICES = ('llvmpipe', 'lavapipe', 'swiftshader', 'software', 'warp')
 _OFFLOAD = re.compile(rb'\boffloaded ([0-9]{1,4})/([0-9]{1,4}) layers to GPU\b')
-_DEVICE_BUFFER = re.compile(rb'\bVulkan[0-9]{1,2}\s+model buffer size =\s+([0-9]+(?:\.[0-9]+)?) MiB\b')
+_DEVICE_BUFFER = re.compile(rb'\b((?:Vulkan|CUDA)[0-9]{1,2})\s+model buffer size =\s+([0-9]+(?:\.[0-9]+)?) MiB\b')
 
 
 def supported():
@@ -92,14 +94,19 @@ def _archive_pin(vulkan):
 
 def _download_engine(target, cancel, notify, vulkan=False):
     name, size, sha256 = _archive_pin(vulkan)
+    message = 'Downloading the verified Inkling GPU runner' if vulkan else 'Downloading the verified Inkling CPU runner'
+    _download_pinned_archive(target, name, size, sha256, cancel, notify, message)
+
+
+def _download_pinned_archive(target, name, size, sha256, cancel, notify, message, *, timeout=_DOWNLOAD_TIMEOUT):
     digest = hashlib.sha256()
     total = 0
-    deadline = time.monotonic() + _DOWNLOAD_TIMEOUT
-    message = 'Downloading the verified Inkling GPU runner' if vulkan else 'Downloading the verified Inkling CPU runner'
+    deadline = time.monotonic() + timeout
     notify(message, 0, size)
     request = Request(f'{_ENGINE_RELEASE_DOWNLOAD}/{name}', headers={'User-Agent': 'TalkToAi-Code', 'Accept': 'application/octet-stream'})
     try:
         with build_opener(_ReleaseRedirect()).open(request, timeout=15) as response, target.open('xb') as out:
+            last_update = 0.0
             while chunk := response.read(_CHUNK):
                 _cancelled(cancel)
                 if time.monotonic() > deadline:
@@ -109,7 +116,10 @@ def _download_engine(target, cancel, notify, vulkan=False):
                     raise ValueError('The Inkling runner download exceeded its pinned size.')
                 digest.update(chunk)
                 out.write(chunk)
-                notify(message, total, size)
+                now = time.monotonic()
+                if total == size or now - last_update >= .25:
+                    notify(message, total, size)
+                    last_update = now
             _cancelled(cancel)
     except URLError as exc:
         raise ConnectionError('Could not download the Inkling runner from GitHub. Check the connection and retry.') from exc
@@ -169,23 +179,42 @@ def _vulkan_loader_available():
     return supported() and (Path(os.environ.get('SYSTEMROOT', r'C:\Windows')) / 'System32' / 'vulkan-1.dll').is_file()
 
 
-def _select_vulkan_device(output):
+@dataclass(frozen=True)
+class _GpuDevice:
+    identifier: str
+    name: str
+    free_mib: int
+    total_mib: int
+
+    @property
+    def backend(self):
+        return 'cuda' if self.identifier.startswith('CUDA') else 'vulkan'
+
+    @property
+    def api(self):
+        return 'CUDA' if self.backend == 'cuda' else 'Vulkan'
+
+    def describe(self):
+        return f'{self.name} via {self.api} reported {self.free_mib:,} MiB free of {self.total_mib:,} MiB.'
+
+
+def _select_gpu_device(output, api):
     devices = []
     for line in output.decode('utf-8', errors='replace').splitlines():
-        row = _VULKAN_DEVICE.fullmatch(line)
+        row = _GPU_DEVICE.fullmatch(line)
         if not row:
             continue
         identifier, name, total, free = row.groups()
-        if int(free) > 0 and not any(software in name.casefold() for software in _SOFTWARE_DEVICES):
+        if identifier.startswith(api) and int(total) > 0 and not any(software in name.casefold() for software in _SOFTWARE_DEVICES):
             devices.append((int(free), int(total), identifier, name))
     if not devices:
         return None
-    _, _, identifier, name = max(devices)
+    free, total, identifier, name = max(devices)
     display_name = re.sub(r'[^\w .()+-]', '', name).strip()[:96]
-    return identifier, display_name or identifier
+    return _GpuDevice(identifier, display_name or identifier, free, total)
 
 
-def _probe_vulkan(executable, check_cancel):
+def _probe_gpu(executable, api, check_cancel):
     with tempfile.TemporaryFile(mode='w+b') as log:
         process = subprocess.Popen([str(executable), '--list-devices'], cwd=executable.parent,
                                    env=_engine_environment(), stdin=subprocess.DEVNULL,
@@ -196,13 +225,13 @@ def _probe_vulkan(executable, check_cancel):
             while process.poll() is None:
                 check_cancel()
                 if time.monotonic() >= deadline:
-                    raise TimeoutError('The Vulkan device check timed out.')
+                    raise TimeoutError(f'The {api} device check timed out.')
                 time.sleep(0.15)
             check_cancel()
             if process.returncode != 0:
-                raise RuntimeError('The Vulkan device check failed.')
+                raise RuntimeError(f'The {api} device check failed.')
             log.seek(0)
-            return _select_vulkan_device(log.read(65_536))
+            return _select_gpu_device(log.read(65_536), api)
         finally:
             if process.poll() is None:
                 process.kill()
@@ -243,15 +272,19 @@ def _probe_inference(port, key, check_cancel):
     """Check generation without sending any user content or tools to the worker."""
     finished = threading.Event()
     passed = False
+    timed_out = False
 
     def run_request():
-        nonlocal passed
+        nonlocal passed, timed_out
         try:
-            payload = {'model': INKLING_MODEL, 'messages': [{'role': 'user', 'content': 'Say hello.'}],
-                       'max_tokens': _SMOKE_TOKENS, 'temperature': 0, 'stream': False, 'cache_prompt': False}
-            result = _request_local_json(port, '/v1/chat/completions', key, payload=payload, timeout=_SMOKE_TIMEOUT)
-            count = result.get('usage', {}).get('completion_tokens')
-            passed = 'error' not in result and type(count) is int and 0 < count <= _SMOKE_TOKENS
+            payload = {'prompt': 'Hi', 'n_predict': _SMOKE_TOKENS, 'temperature': 0, 'ignore_eos': True,
+                       'stream': False, 'cache_prompt': False}
+            result = _request_local_json(port, '/completion', key, payload=payload, timeout=_SMOKE_TIMEOUT)
+            count = result.get('tokens_predicted')
+            # A second token exercises decode. llama.cpp can finish a partial UTF-8 codepoint.
+            passed = 'error' not in result and type(count) is int and _SMOKE_TOKENS <= count <= _SMOKE_TOKENS + 3
+        except TimeoutError:
+            timed_out = True
         except (OSError, ValueError, http.client.HTTPException, AttributeError, TypeError):
             pass
         finally:
@@ -263,8 +296,11 @@ def _probe_inference(port, key, check_cancel):
     while not finished.wait(0.2):
         check_cancel()
         if time.monotonic() >= deadline:
-            return False
+            timed_out = True
+            break
     check_cancel()
+    if timed_out:
+        raise _GpuFallback(f'The GPU generation check exceeded {_SMOKE_TIMEOUT} seconds.')
     return passed
 
 
@@ -279,10 +315,11 @@ def _log_tail(log, limit):
         return reader.read(limit)
 
 
-def _offloaded_layers(log):
+def _offloaded_layers(log, device):
     detail = _log_tail(log, _CHUNK)
     rows = _OFFLOAD.findall(detail)
-    if not rows or not any(float(size) > 0 for size in _DEVICE_BUFFER.findall(detail)):
+    identifier = device.identifier.encode('ascii')
+    if not rows or not any(name == identifier and float(size) > 0 for name, size in _DEVICE_BUFFER.findall(detail)):
         return 0, None
     count, total = map(int, rows[-1])
     return (count, total) if 0 < count <= total else (0, None)
@@ -302,6 +339,9 @@ class InklingStatus:
     reason: str
     gpu_layers: int = 0
     total_layers: int | None = None
+    device_name: str | None = None
+    vram_free_mib: int | None = None
+    vram_total_mib: int | None = None
 
     @property
     def label(self):
@@ -318,23 +358,44 @@ class _Session:
     port: int
     key: str
     weights: tuple
+    acceleration: str
     status: InklingStatus | None = None
 
     def endpoint(self):
         return f'http://127.0.0.1:{self.port}/v1', self.key
 
 
-def _startup_error(session):
+def _startup_error(session, device=None):
     detail = _log_tail(session.log, 16_384).lower()
     if b'unknown model architecture' in detail or b'unknown model type' in detail:
         return 'This GGUF variant requires a different Inkling runner. Use a verified Mainline Support download from Models and setup.'
+    if device:
+        if any(message in detail for message in (b'out of memory', b'failed to allocate', b'outofdevicememory',
+                                                 b'outofhostmemory', b'out_of_device_memory', b'out_of_host_memory')):
+            return f'The {device.api} runner ran out of available memory while loading Inkling.'
+        if any(message in detail for message in (b'error_device_lost', b'errordevicelost', b'device lost')):
+            return f'The {device.api} device stopped responding while loading Inkling.'
+        return f'The {device.api} runner could not load this model.'
     if any(message in detail for message in (b'out of memory', b'failed to allocate', b'bad allocation', b'bad_alloc')):
         return 'Inkling ran out of memory. Release other loaded models or try the smaller Inkling preset.'
     return 'The Inkling runner could not load this GGUF. Verify the download and try the smaller preset if available memory is limited.'
 
 
-class _VulkanFallback(RuntimeError):
-    pass
+class InklingAccelerationError(RuntimeError):
+    """The requested GPU mode could not start a verified accelerated session."""
+
+
+class _GpuFallback(RuntimeError):
+    def __init__(self, reason, device=None):
+        super().__init__(reason)
+        self.device = device
+
+
+def _hardware_status(backend, reason, device=None, layers=0, total=None):
+    if not device:
+        return InklingStatus(backend, reason)
+    return InklingStatus(backend, f'{device.describe()} {reason}', layers, total,
+                         device.name, device.free_mib, device.total_mib)
 
 
 class InklingRuntime:
@@ -344,8 +405,9 @@ class InklingRuntime:
         self._launch = threading.Lock()
         self._generation = 0
         self._session = None
-        self._vulkan_unavailable = None
+        self._gpu_unavailable = None
         self._model_cpu_reasons = {}
+        self._last_diagnostic = None
         atexit.register(self.stop)
 
     def ensure_engine(self, cancel, notify, *, vulkan=False):
@@ -400,7 +462,14 @@ class InklingRuntime:
             current = self._live_session_locked()
             return current.status if current else None
 
-    def start(self, weights, cancel, notify):
+    def diagnostic(self) -> str | None:
+        with self._guard:
+            self._live_session_locked()
+            return self._last_diagnostic
+
+    def start(self, weights, cancel, notify, *, acceleration='auto'):
+        if acceleration not in ('auto', 'gpu', 'cpu'):
+            raise ValueError('Choose Auto, Require GPU, or CPU only for Inkling.')
         while not self._launch.acquire(timeout=0.25):
             _cancelled(cancel)
         try:
@@ -409,8 +478,17 @@ class InklingRuntime:
             with self._guard:
                 generation = self._generation
                 current = self._live_session_locked()
+                gpu_failure = self._model_cpu_reasons.get(stamp)
+                if gpu_failure and time.monotonic() >= gpu_failure[1]:
+                    self._model_cpu_reasons.pop(stamp)
+                    gpu_failure = None
+                cpu_status = self._gpu_unavailable or (gpu_failure[0] if gpu_failure else None)
                 if current and current.status and current.weights == stamp:
-                    return current.endpoint()
+                    if current.status.backend != 'cpu' and acceleration != 'cpu':
+                        return current.endpoint()
+                    if current.status.backend == 'cpu' and current.acceleration == acceleration:
+                        if acceleration == 'cpu' or cpu_status:
+                            return current.endpoint()
 
             def check_cancel():
                 _cancelled(cancel)
@@ -421,57 +499,113 @@ class InklingRuntime:
             with stamp[0].open('rb') as file:
                 if file.read(4) != b'GGUF':
                     raise ValueError('The selected Inkling download is not a GGUF file.')
-            reason = self._vulkan_unavailable or self._model_cpu_reasons.get(stamp)
-            if not reason:
-                runner = self._available_vulkan(cancel, notify, check_cancel)
-                if runner:
-                    executable, device = runner
-                    try:
-                        return self._launch_runner(executable, stamp, cancel, notify, check_cancel, device=device)
-                    except DownloadCancelled:
-                        raise
-                    except _VulkanFallback as exc:
-                        reason = str(exc)
-                    except (OSError, RuntimeError):
-                        reason = 'The Vulkan runner could not load this model.'
+            with self._guard:
+                check_cancel()
+                self._stop_locked()
+            if acceleration == 'cpu':
+                cpu_status = InklingStatus('cpu', 'CPU only is selected.')
+            elif acceleration == 'gpu' or not cpu_status:
+                try:
+                    endpoint = self._start_gpu(stamp, cancel, notify, check_cancel, acceleration)
+                except _GpuFallback as exc:
                     check_cancel()
-                    self._model_cpu_reasons[stamp] = reason
-                    notify(f'{reason} Trying the CPU runner.', 0, 0)
+                    cpu_status = _hardware_status('cpu', str(exc), exc.device)
+                    with self._guard:
+                        self._last_diagnostic = cpu_status.reason
+                        if exc.device:
+                            self._model_cpu_reasons[stamp] = cpu_status, time.monotonic() + _GPU_RETRY_COOLDOWN
+                        else:
+                            self._gpu_unavailable = cpu_status
+                    if acceleration == 'gpu':
+                        raise InklingAccelerationError(cpu_status.reason) from None
+                    notify(f'{cpu_status.reason} Trying the CPU runner.', 0, 0)
                 else:
-                    reason = self._vulkan_unavailable
+                    with self._guard:
+                        self._gpu_unavailable = None
+                        self._model_cpu_reasons.pop(stamp, None)
+                    return endpoint
             check_cancel()
             executable = self.ensure_engine(cancel, notify)
-            return self._launch_runner(executable, stamp, cancel, notify, check_cancel, cpu_reason=reason)
+            return self._launch_runner(executable, stamp, cancel, notify, check_cancel, acceleration, cpu_status=cpu_status)
         finally:
             self._launch.release()
 
-    def _available_vulkan(self, cancel, notify, check_cancel):
-        reason = 'Windows has no Vulkan loader.'
-        if _vulkan_loader_available():
-            reason = 'No compatible Vulkan GPU was detected.'
+    def _start_gpu(self, stamp, cancel, notify, check_cancel, acceleration):
+        reasons = []
+        device = None
+        candidates = ((self._available_vulkan, (False, True)), (self._available_cuda, (True,)))
+        for available, profiles in candidates:
+            check_cancel()
             try:
-                executable = self.ensure_engine(cancel, notify, vulkan=True)
+                runner = available(cancel, notify, check_cancel)
+            except _GpuFallback as exc:
+                reasons.append(str(exc))
+                continue
+            if not runner:
+                continue
+            executable, device = runner
+            for partial in profiles:
                 check_cancel()
-                device = _probe_vulkan(executable, check_cancel)
-                if device:
-                    return executable, device
-            except DownloadCancelled:
-                raise
-            except (OSError, ValueError, RuntimeError, zipfile.BadZipFile):
-                reason = 'The Vulkan runner could not verify a compatible GPU.'
-        check_cancel()
-        self._vulkan_unavailable = reason
-        return None
+                if partial:
+                    notify(f'Trying a lower-memory {device.api} GPU setup for Inkling.', 0, 0)
+                try:
+                    return self._launch_runner(executable, stamp, cancel, notify, check_cancel, acceleration,
+                                               device=device, partial=partial)
+                except DownloadCancelled:
+                    raise
+                except _GpuFallback as exc:
+                    reasons.append(str(exc))
+                except (RuntimeError, OSError):
+                    reasons.append(f'Windows could not start the verified {device.api} runner.')
+        raise _GpuFallback(' '.join(dict.fromkeys(reasons)), device)
 
-    def _launch_runner(self, executable, stamp, cancel, notify, check_cancel, *, device=None, cpu_reason=None):
+    def _available_vulkan(self, cancel, notify, check_cancel):
+        if not _vulkan_loader_available():
+            raise _GpuFallback('Windows has no Vulkan loader.')
+        try:
+            executable = self.ensure_engine(cancel, notify, vulkan=True)
+            check_cancel()
+            device = _probe_gpu(executable, 'Vulkan', check_cancel)
+        except DownloadCancelled:
+            raise
+        except (OSError, ValueError, RuntimeError, zipfile.BadZipFile):
+            raise _GpuFallback('The Vulkan runner could not verify a compatible GPU.') from None
+        if not device:
+            raise _GpuFallback('No compatible Vulkan GPU was detected.')
+        return executable, device
+
+    def _available_cuda(self, cancel, notify, check_cancel):
+        from inkling_cuda import cuda_runner
+
+        try:
+            executable = cuda_runner(self.state_folder, cancel, notify)
+            check_cancel()
+            if not executable:
+                return None
+            device = _probe_gpu(executable, 'CUDA', check_cancel)
+        except DownloadCancelled:
+            raise
+        except (OSError, ValueError, RuntimeError, zipfile.BadZipFile):
+            raise _GpuFallback('The NVIDIA CUDA runner could not verify a compatible GPU.') from None
+        if not device:
+            raise _GpuFallback('No compatible NVIDIA CUDA GPU was detected.')
+        return executable, device
+
+    def _launch_runner(self, executable, stamp, cancel, notify, check_cancel, acceleration, *,
+                       device=None, partial=False, cpu_status=None):
         port = _choose_port()
         key = secrets.token_urlsafe(24)
         command = [str(executable), '--model', str(stamp[0]), '--host', '127.0.0.1', '--port', str(port),
                    '--alias', INKLING_MODEL, '--jinja', '--no-webui', '--no-agent', '--no-slots',
                    '--ctx-size', str(INKLING_CONTEXT), '--parallel', '1', '--reasoning-effort', 'none',
                    '--sleep-idle-seconds', '3600']
-        if device:
-            command += ['--device', device[0], '--fit', 'on', '--fit-target', '1024', '--log-verbosity', '3']
+        if partial:
+            command += ['--device', device.identifier, '--log-verbosity', '3', '--fit', 'off',
+                        '--batch-size', '128', '--ubatch-size', '32', '--n-gpu-layers', str(_PARTIAL_GPU_LAYERS),
+                        '--cpu-moe', '--no-kv-offload']
+        elif device:
+            command += ['--device', device.identifier, '--log-verbosity', '3', '--fit', 'on', '--fit-target', '1024',
+                        '--batch-size', '256', '--ubatch-size', '64']
         else:
             command += ['--device', 'none', '--fit', 'off', '--n-gpu-layers', '0', '--log-verbosity', '2']
         session = None
@@ -487,8 +621,8 @@ class InklingRuntime:
                 except OSError as exc:
                     log.close()
                     raise RuntimeError('Windows could not start the verified Inkling runner. Check Windows app permissions and retry.') from exc
-                session = self._session = _Session(process, log, port, key, stamp)
-            compute = 'GPU' if device else 'CPU'
+                session = self._session = _Session(process, log, port, key, stamp, acceleration)
+            compute = f'{device.api} GPU' if device else 'CPU'
             notify(f'Loading Inkling on the {compute}. The first load can take several minutes.', 0, 0)
             deadline = time.monotonic() + (_VULKAN_START_TIMEOUT if device else _START_TIMEOUT)
             while time.monotonic() < deadline:
@@ -497,15 +631,20 @@ class InklingRuntime:
                     if self._session is not session:
                         raise DownloadCancelled('Inkling setup stopped.')
                     if process.poll() is not None:
+                        if device:
+                            raise _GpuFallback(_startup_error(session, device))
                         raise RuntimeError(_startup_error(session))
                 if _ready(port, key):
-                    status = InklingStatus('cpu', cpu_reason) if not device else self._verify_vulkan(session, device, notify, check_cancel)
+                    status = cpu_status if not device else self._verify_gpu(session, device, partial, notify, check_cancel)
                     with self._guard:
                         check_cancel()
                         if self._session is session and process.poll() is None:
                             session.status = status
+                            self._last_diagnostic = status.reason
                             return session.endpoint()
                 cancel.wait(0.3)
+            if device:
+                raise _GpuFallback(f'The {device.api} GPU took too long to load Inkling.')
             raise TimeoutError('Inkling took too long to load. Release other loaded models or try the smaller preset.')
         finally:
             if session and not session.status:
@@ -513,16 +652,18 @@ class InklingRuntime:
                     if self._session is session:
                         self._stop_locked()
 
-    def _verify_vulkan(self, session, device, notify, check_cancel):
+    def _verify_gpu(self, session, device, partial, notify, check_cancel):
         with self._guard:
             check_cancel()
-            count, total = _offloaded_layers(session.log)
+            count, total = _offloaded_layers(session.log, device)
         if not count:
-            raise _VulkanFallback('The GPU could not hold any Inkling model layers.')
+            raise _GpuFallback(f'The {device.api} GPU did not offload any verified Inkling model layers.')
         notify('Checking Inkling generation on the GPU.', 0, 0)
         if not _probe_inference(session.port, session.key, check_cancel):
-            raise _VulkanFallback('The Vulkan runner did not pass its generation check.')
-        return InklingStatus('vulkan', f'{device[1]} passed the Vulkan generation check.', count, total)
+            raise _GpuFallback(f'The {device.api} runner did not pass its generation check.')
+        reason = ('The lower-memory GPU check passed with expert weights and the context cache in system RAM.'
+                  if partial else 'The GPU generation check passed.')
+        return _hardware_status(device.backend, reason, device, count, total)
 
     def _live_session_locked(self):
         if self._session and self._session.status and self._session.process.poll() is not None:
@@ -542,8 +683,11 @@ class InklingRuntime:
                 except subprocess.TimeoutExpired:
                     session.process.kill()
                     session.process.wait(timeout=3)
-            elif session.status and session.status.backend == 'vulkan':
-                self._vulkan_unavailable = 'The Vulkan runner stopped during use. The CPU runner was selected for this app session.'
+            elif session.status and session.status.backend != 'cpu':
+                gpu = session.status
+                self._last_diagnostic = f'{gpu.backend.upper()} stopped during use. Auto will use CPU for this app session.'
+                self._gpu_unavailable = InklingStatus('cpu', self._last_diagnostic, device_name=gpu.device_name,
+                                                       vram_free_mib=gpu.vram_free_mib, vram_total_mib=gpu.vram_total_mib)
         finally:
             session.log.close()
 

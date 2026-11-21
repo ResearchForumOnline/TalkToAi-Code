@@ -129,7 +129,7 @@ def diagnose(config, include_server=True):
     return results
 
 
-def report(config, *, inkling_status=None):
+def report(config, *, inkling_status=None, inkling_detail=None):
     route = config.get('preferred_route', 'local')
     server = route == 'server' or bool(config.get('active_ssh_alias'))
     ports = (11434, 11435) if server else (11434,)
@@ -138,7 +138,7 @@ def report(config, *, inkling_status=None):
              'This check does not load or download a model.']
     if route == 'inkling':
         if inkling_status is None:
-            lines.append('Inkling is stopped. Send a message with Inkling selected to check GPU acceleration.')
+            lines.append(inkling_detail or 'Inkling is stopped. Send a message with Inkling selected to check GPU acceleration.')
         else:
             lines.extend(['Inkling · ' + inkling_status.label, inkling_status.reason])
         return '\n'.join(lines)

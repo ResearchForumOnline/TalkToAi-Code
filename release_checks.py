@@ -159,6 +159,8 @@ def smoke(destination):
             and [item.role for item in plan_reviews(games_request, focus=game_focus)] ==
                 ['gameplay_reviewer','playtest_reviewer','asset_reviewer'])
         from inkling_models import INKLING_PRESETS, INKLING_REPO, preset_for_hub
+        from inspect import signature
+        from inkling_cuda import CUDA_ARCHIVES
         from inkling_runtime import InklingRuntime, InklingStatus
         from model_library import QWEN_LOCAL_MODEL
         q8 = INKLING_PRESETS['q8']
@@ -173,6 +175,13 @@ def smoke(destination):
             callable(InklingRuntime.status)
             and InklingStatus(backend='vulkan', reason='Fixture', gpu_layers=8, total_layers=42).label == 'GPU · 8/42 layers'
             and InklingStatus(backend='cpu', reason='Fixture', gpu_layers=0, total_layers=None).label == 'CPU'
+        )
+        result['inkling_acceleration_settings'] = (
+            signature(InklingRuntime.start).parameters['acceleration'].default == 'auto'
+            and callable(InklingRuntime.diagnostic)
+            and set(CUDA_ARCHIVES) == {'12.4', '13.5'}
+            and all(len(archives) == 2 and all(len(digest) == 64 for _, _, digest in archives)
+                    for archives in CUDA_ARCHIVES.values())
         )
         from voice_dialog import VoiceController
         from voice_transcription import transcribe_audio
@@ -340,7 +349,8 @@ def smoke(destination):
         result['passed'] = result['passed'] and all(result[key] for key in
             ('conversation_round_trip', 'installed_model_reply_check', 'openzero_template_prefix_clean',
              'local_model_retention','reversible_local_tuning','local_project_reviewers','browser_live_reference',
-             'automatic_chat_tools','local_media_entrypoints','local_voice_entrypoints','agent_specialties','inkling_support','inkling_gpu_status'))
+             'automatic_chat_tools','local_media_entrypoints','local_voice_entrypoints','agent_specialties','inkling_support',
+             'inkling_gpu_status','inkling_acceleration_settings'))
         if os.name == 'nt':
             result['passed'] = result['passed'] and result['windows_voice_plugins']
         if desktop_worker_check:result['passed']=result['passed'] and result.get('desktop_worker',False)
