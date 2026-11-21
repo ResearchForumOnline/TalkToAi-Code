@@ -5,7 +5,7 @@
   },
   {
     "path": ".github/workflows/portable-desktop-smoke.yml",
-    "sha256": "33f7adb48b1132960a9bdab071bf03cfc58a5e872625528da7c19ccc51403c2e"
+    "sha256": "26eecfe035288883a63d9854008c31c44a5086a9dc98a3a9cfb69daf1b4cae1b"
   },
   {
     "path": ".gitignore",
@@ -33,7 +33,7 @@
   },
   {
     "path": "README.md",
-    "sha256": "cc2b8cd02f5e96f84a4a3cfd4cc78faf1ef5a179040173701cc0c65586445a81"
+    "sha256": "ce0c64f2d974a12e306122b6bdb8c48bc8997b6796cf9821620b2be8629fe89d"
   },
   {
     "path": "RELEASE-NOTES.md",
@@ -49,11 +49,11 @@
   },
   {
     "path": "TalkToAi-Code.iss",
-    "sha256": "ecd944f6038a72806f5a90591591bbe519f0566be11c69ab6a2c39918d60ff9f"
+    "sha256": "bbe575631a096c4c2e1a7a3ec2364b0eaac9b133c19621336b488b648334cc48"
   },
   {
     "path": "agent_core.py",
-    "sha256": "10cdfca1dede3f2c9ee25d2ed7706b8940bb65d36a0c6350c53834e11c866e23"
+    "sha256": "2b9d6b3ea530e7712a3bee2beab9b2cf78f7a00b2956a95e3f1ab40fd6c04b24"
   },
   {
     "path": "agent_workflow.py",
@@ -126,6 +126,10 @@
   {
     "path": "assets/screens/studio-chat-900.png",
     "sha256": "d53d1e75a33b8147ee2dfb687fc8554a0e51e715d54508c251b88de852d3ae4e"
+  },
+  {
+    "path": "assets/screens/studio-chat-901.png",
+    "sha256": "5837874245438eb2b722d8096b0b18c8839673756525e270b6769c8a0313cdc5"
   },
   {
     "path": "assets/screens/studio-chat-code-040.png",
@@ -216,6 +220,10 @@
     "sha256": "7797455ac01473ed09a86280e6271b8d90eb5ae410434305dae2c1c6c084d5bf"
   },
   {
+    "path": "chat_intent.py",
+    "sha256": "47533908d94f5c1569fce8b2aa948a14420a19455c9cd9bac7a08eab626173df"
+  },
+  {
     "path": "computer_tools.py",
     "sha256": "43afd38852fa16423531e76d3c0a14aef769b72ed26044491b7d82df72f9e532"
   },
@@ -270,6 +278,10 @@
   {
     "path": "docs/DESKTOP-9.0.0.md",
     "sha256": "9e945355e730f5da19ac7f60b2a633cfcdd619c6a3fa14021cfb19dfe2fc5bba"
+  },
+  {
+    "path": "docs/DESKTOP-9.0.1.md",
+    "sha256": "a7cd1ef71beb22ebd58b64dd8963b5129280a99fec1169a8ce5a24ee4f03f5f5"
   },
   {
     "path": "docs/DEVSPACE-IDEAS-REVIEW.md",
@@ -556,6 +568,10 @@
     "sha256": "2de51fc7524c8764f569474e7b5e4642e3c04c07a4ec504e29b16b3b1fd6a2e7"
   },
   {
+    "path": "media_generation.py",
+    "sha256": "b934228436efd1ab3ec38893fa736af3590a1c5cfcf3b6f169239cd3fe09b481"
+  },
+  {
     "path": "model_library.py",
     "sha256": "4ffb2d0a6d55b26aba2295e4fcef47000142d8de389cf87c9ffd1b46c48b269d"
   },
@@ -621,7 +637,7 @@
   },
   {
     "path": "project_workers.py",
-    "sha256": "bd8d0949635ee4185f162c1a969e0deaf3e215def2f404c367468e9db91df929"
+    "sha256": "0cfce9e84686823737c778f2c6ca8cdc97e2340f3eb72c18bad8802bf3a8a81c"
   },
   {
     "path": "provider_dialog.py",
@@ -641,7 +657,7 @@
   },
   {
     "path": "release_checks.py",
-    "sha256": "7797297a325eaa9c45ee41a79e5eda2c00429b91ce651270ab0a2db58fe40f43"
+    "sha256": "b9ba35ccf98dd31f0fada653136cc0e5fd88c93426a2ab03e21584c7c61b77a2"
   },
   {
     "path": "remote_intent.py",
@@ -737,15 +753,15 @@
   },
   {
     "path": "store/build-msix.ps1",
-    "sha256": "307de005107d32c78595036854e9c8ff0e2305028c81392b1ffce897e5cfd1cc"
+    "sha256": "d719d5ec35e99c13ca97d0b1f21b43d42d204a9ec80255c3e3ca1e5f11d44284"
   },
   {
     "path": "store/build-payload.ps1",
-    "sha256": "d5d3b0849fadd28a58ae12ee4bef8e09d2c030b50fc254c398f59f8e936dfa5f"
+    "sha256": "ea2a60f88c9f632427f4b44bf9a0530f3ad234b9aa2c7e0308ee467ec17e024c"
   },
   {
     "path": "studio.py",
-    "sha256": "63e87039c6ebb622549d43a95dc103047e03903db7d1ff0c0521e4915482362f"
+    "sha256": "eaa6bab617a6e0a36a88a6e018983cd7f0bae63afe92dcd49caaad00a6b5b671"
   },
   {
     "path": "task_goals.py",
@@ -808,8 +824,12 @@
     "sha256": "874a21d6757549a1f3e131c6d0f92ad22060edfa458ccb55fe937de2096092fa"
   },
   {
+    "path": "test_chat_intent.py",
+    "sha256": "8fa9963bd00a08712e487bb4628e812c2a8a2b1e16a58d0e7c02d5ecc0443424"
+  },
+  {
     "path": "test_chat_ui.py",
-    "sha256": "d937b0d1f5a0a1fdc0b4b79b2bc722ab4121c23fb6e4f9d43d97024fc2070665"
+    "sha256": "583eb971ac94e4988b9f207ec5ca4ba224b1aa3df17efeaf5da216a1d9e5bfcc"
   },
   {
     "path": "test_computer.py",
@@ -880,6 +900,10 @@
     "sha256": "e08273d9ffc239e3c63fabffbdd1bd4ea1ebe4d05a54fef7a8fffaaad97605ee"
   },
   {
+    "path": "test_media_generation.py",
+    "sha256": "a9c6124cc64238e023e3dc62af9cad90b46569430613afc9ac78ed7fcb45fdc2"
+  },
+  {
     "path": "test_model_library.py",
     "sha256": "f269bf906ead99ed1afa9a3dc212ee0820454a10957ad060c27ee933276e394e"
   },
@@ -941,7 +965,7 @@
   },
   {
     "path": "test_project_workers.py",
-    "sha256": "0e21e7b6d67dbef624069148ff953d91d0d6c5420ced6fec94f6aafefafbebd0"
+    "sha256": "bf636f9d0ad39b4a081bdc51f67298069eeb69212adaa2219df20207435c9667"
   },
   {
     "path": "test_reasoning_stream.py",
@@ -1065,7 +1089,7 @@
   },
   {
     "path": "updates.py",
-    "sha256": "c598232d35378ec654cb2851b449917b87eb7735f73d7670aa0cef92d215adc1"
+    "sha256": "d018c5e01d06ad036e1dd0a1d7cf56d391eefe149bc8b56c4dfc1f38c3905902"
   },
   {
     "path": "website/index.html",

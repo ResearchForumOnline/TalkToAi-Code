@@ -34,6 +34,7 @@ from ethics_policy import verify_release_policy, policy_prompt, assert_mutable_p
 from task_navigation import research_query, canonical_source, desktop_projects, public_current_query, public_freshness_request
 from work_packet import build_work_packet, complete_direct_read_request
 import project_workers
+from chat_intent import wants_browser_lookup, wants_screen_action
 
 AGENT_NAME = 'Agent Zero'
 OLLAMA_REQUEST_SECONDS = 600
@@ -1294,7 +1295,7 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
                     emit('result','Primary documentation could not be opened: '+str(exc)[:240])
     named_browser=_BROWSER_APP.search(latest)
     requested_browser=named_browser.group(1).split()[-1] if named_browser else ('edge' if _EDGE_TASK.search(latest) else '')
-    explicit_browser=bool(requested_browser or _BROWSER_TASK.search(latest))
+    explicit_browser=bool(requested_browser or _BROWSER_TASK.search(latest) or wants_browser_lookup(request_text))
     native_browser_requested=False
     if act and not worker_mode and not improvement_mode and (explicit_browser or WEB_BROWSER_MODE=='visible'):
         browser_name=requested_browser or WEB_BROWSER
@@ -1402,7 +1403,8 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
         # Desktop/SSH schemas otherwise consume most of an 8K local context even
         # for a plain project edit. They remain available through enable_tools.
         eager_names=set()
-        if act and (native_browser_requested or _NATIVE_BROWSER_TASK.search(latest) or re.search(
+        if act and (native_browser_requested or (not explicit_browser and wants_screen_action(request_text))
+                    or _NATIVE_BROWSER_TASK.search(latest) or re.search(
                 r'\b(?:computer use|pc pilot|desktop app|(?:inspect|list|activate) (?:the |a |open )?windows?|'
                 r'(?:control|use) (?:my |the )?(?:computer|desktop|windows)|notepad|file explorer)\b',latest)):
             eager_names.add('computer')

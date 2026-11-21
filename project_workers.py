@@ -29,7 +29,6 @@ _OPT_OUT = re.compile(r"\b(?:without|no|avoid|skip|(?:do not|don.t|never)\s+(?:u
                       + _WORKER + r"|\b(?:work|do (?:this|it)) (?:alone|solo|yourself)\b", re.I)
 _QUESTION = re.compile(r'^(?:(?:please\s+)?(?:explain|describe|teach|tell me|show me)\s+(?:how|what|why)\b|'
                        r'(?:what|why|when|how|which)\b|(?:can|could|should|do)\s+(?:i|we|agents?|subagents?)\b)', re.I)
-_REVIEW = re.compile(r'\b(?:review|inspect|audit|investigate|assess|compare|triage|evaluate|trace|diagnose|check)\b', re.I)
 _PROJECT = re.compile(r'\b(?:project|repo(?:sitory)?|code(?:base)?|implementation|source|modules?|functions?|'
                       r'patch|changes?|tests?|documentation|readme|docs|files?|bugs?|app|software|game)\b|'
                       r'\b[\w/-]+\.(?:py|js|tsx?|go|rs|cs|md)\b', re.I)
@@ -39,6 +38,28 @@ _FOCUSES = (
     ('documenter', re.compile(r'\b(?:documentation|examples|readme|docs)\b', re.I)),
     ('reviewer', re.compile(r'\b(?:correctness|risks?|regressions?|contracts?|edge cases?)\b', re.I)),
 )
+_CHANGE_VERBS = r'build|implement|fix|repair|refactor|extend|update|upgrade|add|create|patch|optimi[sz]e'
+_REVIEW_VERBS = (r'review|inspect|audit|investigate|assess|compare|triage|evaluate|trace|diagnose|check|examine|'
+                 r'analy[sz]e|look through|perform (?:a|an) (?:project |code )?(?:review|audit)')
+_POLITE = r'(?:(?:please|(?:can|could|would|will) you|I (?:want|need) you to|I.d like you to)\s+)*'
+_TASK_START = re.compile(r'^\s*' + _POLITE + r'(' + _CHANGE_VERBS + '|' + _REVIEW_VERBS + r')\b', re.I)
+_CHANGE_START = re.compile(r'^\s*' + _POLITE + r'(?:' + _CHANGE_VERBS + r')\b', re.I)
+_SECONDARY_REVIEW = re.compile(r'^(?:(?:then|also|separately|please)\s+)*(?:' + _REVIEW_VERBS +
+                               r'|identify|find|determine|look for|look into)\b', re.I)
+_CLAUSES = re.compile(r'(?<=[.!?])\s+|[,;\n]+|\s+(?:and(?:\s+then)?|then|also|plus|separately|as well as)\s+', re.I)
+_SOFTWARE = re.compile(r'\b(?:repo(?:sitory)?|(?:this|my|our|the|software|game) project|project files?|code(?:base)?|source|modules?|functions?|program|application|app|game|'
+                       r'feature|bugs?|crash(?:es)?|parser|renderer|plugin|handler|endpoint|backend|frontend|component|'
+                       r'dialog|autosave|workflow|loader|build system|regression)\b|'
+                       r'[\w/-]+\.(?:py|jsx?|tsx?|cs|cpp|go|rs|gd|java|kt|swift|rb|vue|c|h)\b', re.I)
+_TEST_MATERIAL = re.compile(r'\b(?:tests?|coverage|test suite|test cases?)\b|\btest_[\w.-]+\.\w+|[\w.-]+[._-](?:test|spec)s?\.\w+', re.I)
+_DOC_MATERIAL = re.compile(r'\b(?:docs|documentation|readme|examples|(?:setup|installation|developer|migration|user|usage) guides?)\b', re.I)
+_NEGATED = re.compile(r"^(?:do not|don.t|never|avoid|skip|without|no need to|do not need to)\b", re.I)
+_TEST_EXECUTION = re.compile(r'\b(?:tests?|suite)\s+(?:(?:all|still|already|currently|now|will|can|successfully)\s+)*'
+                             r'(?:run|pass(?:es|ed|ing)?|succeed(?:ed|s)?)\b|\b(?:is|are|went)\s+(?:still\s+)?(?:green|passing)\b', re.I)
+_NONREVIEW_CLAUSE = re.compile(r'^(?:also\s+)?(?:' + _CHANGE_VERBS + r'|run|execute|write|edit|delete|remove|send)\b', re.I)
+_NONLOCAL = re.compile(r'https?://|\b(?:ssh|inbox|mailbox|send an? email|publish|deploy|search the web|'
+                       r'(?:on|from) (?:the )?(?:web|internet|github)|online documentation|remote server|'
+                       r'pasted (?:below|here)|in this (?:message|snippet)|following (?:passage|excerpt|snippet))\b', re.I)
 
 
 def worker_limit(value):
@@ -66,7 +87,11 @@ def requested_count(text):
 
 
 def requests_project_workers(text):
-    return bool(requested_count(text) and _PROJECT.search(text))
+    """Whether Chat has a request for project work that can use local reviewers."""
+    count = requested_count(text)
+    if count is not None:
+        return bool(count and _PROJECT.search(text))
+    return bool(_implicit_roles(text))
 
 
 def review_question(text):
@@ -79,22 +104,50 @@ class Assignment:
     task: str
 
 
+def _implicit_roles(text):
+    if not _TASK_START.match(text) or _NONLOCAL.search(text):
+        return []
+    clauses = [part.strip() for part in _CLAUSES.split(text) if part.strip()]
+    if len(clauses) < 2:
+        return []
+    if not _CHANGE_START.match(clauses[0]):
+        positive = ' '.join(part for part in clauses if not (_NEGATED.match(part) or _NONREVIEW_CLAUSE.match(part)))
+        roles = [role for role, pattern in _FOCUSES if pattern.search(positive)]
+        return roles if _PROJECT.search(positive) and len(roles) >= 2 else []
+    if not _SOFTWARE.search(clauses[0]):
+        return []
+    # Editing the implementation is the parent's job. Workers can independently
+    # inspect its current behavior and a specifically requested second body of
+    # evidence. A routine "run tests" or "update the docs" adds no review.
+    roles = ['investigator']
+    reading = False
+    for clause in clauses[1:]:
+        if _NEGATED.match(clause):
+            reading = False
+            continue
+        noun = re.sub(r'^(?:(?:the|its|our|existing|current|unit|integration|regression|project)\s+)+', '', clause, flags=re.I)
+        reading = bool(_SECONDARY_REVIEW.match(clause) or
+                       (reading and (_TEST_MATERIAL.match(noun) or _DOC_MATERIAL.match(noun))))
+        if not reading:
+            continue
+        if _TEST_MATERIAL.search(clause) and not _TEST_EXECUTION.search(clause) and 'test_planner' not in roles:
+            roles.append('test_planner')
+        if _DOC_MATERIAL.search(clause) and 'documenter' not in roles:
+            roles.append('documenter')
+    return roles if len(roles) > 1 else []
+
+
 def plan_reviews(text, limit=MAX_WORKERS):
     """Preselect independent project questions. Simple turns stay on the parent."""
     limit = worker_limit(limit)
     count = requested_count(text)
     if not limit or count == 0 or _QUESTION.search(text.strip()):
         return []
-    roles = [role for role, pattern in _FOCUSES if pattern.search(text)]
     if count is None:
-        if not _REVIEW.search(text) or not _PROJECT.search(text) or len(roles) < 2:
-            return []
-        # Mentioning a tested implementation in a single question is not a request
-        # for two investigations. Look for an actual conjunction or enumerated list.
-        if not re.search(r'\b(?:and|plus|also|separately|both)\b|[,;\n]', text, re.I):
-            return []
+        roles = _implicit_roles(text)
         count = len(roles)
     else:
+        roles = [role for role, pattern in _FOCUSES if pattern.search(text)]
         roles.extend(role for role in ('reviewer', 'investigator', 'test_planner') if role not in roles)
     scope = review_question(text)
     return [Assignment(role, ROLE_FOCUS[role] + '\nProject request:\n' + scope[:3500])

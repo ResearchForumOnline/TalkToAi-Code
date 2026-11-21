@@ -121,6 +121,60 @@ class ProjectWorkerTests(unittest.TestCase):
         self.assertEqual(sum(kind=='tool' and item.get('name')=='delegate_review' for kind,item in report_events), 3)
         self.assertEqual(sum(path=='/api/chat' for path,_ in payloads), 7)
 
+    def test_compound_builds_select_only_explicitly_requested_independent_investigations(self):
+        cases = [
+            ('Fix the crash in src/load.py and investigate gaps in its regression tests.',
+             ['investigator','test_planner']),
+            ('Could you implement autosave for my app, then examine the setup guide for outdated instructions?',
+             ['investigator','documenter']),
+            ('Build a settings dialog for the app; audit the existing unit tests and README examples.',
+             ['investigator','test_planner','documenter']),
+            ('Fix the parser. Also investigate which tests failed on the last run.',
+             ['investigator','test_planner']),
+            ('Review the implementation, tests and docs.', ['investigator','test_planner','documenter']),
+        ]
+        for text, expected in cases:
+            with self.subTest(text=text):
+                self.assertTrue(workers.requests_project_workers(text))
+                self.assertEqual([a.role for a in workers.plan_reviews(text)], expected)
+                self.assertEqual([a.role for a in workers.plan_reviews(text,1)], expected[:1])
+                self.assertEqual(workers.plan_reviews(text,0), [])
+
+    def test_chat_worker_predicate_leaves_ordinary_single_and_external_tasks_to_the_normal_router(self):
+        for text in (
+            'Fix the loader in src/load.py.', 'Fix the implementation and run the tests.',
+            'Build an app, add tests and update the README.', 'Fix the parser then check whether the tests pass.',
+            'Fix this app, but do not review its test coverage.', 'Review the source and then run the tests.',
+            'Update my résumé and check the examples.', 'Build a birdhouse and review the setup guide.',
+            'Explain how to fix the module and investigate its tests.', 'Can you teach me how to review source and tests?',
+            'What are the differences between source and tests?', 'We often review the code and tests together.',
+            'Review the source and tests pasted below.', 'Compare the source and tests on GitHub.',
+            'Fix the app and inspect the online documentation.', 'Fix the module and investigate its tests without workers.',
+        ):
+            with self.subTest(text=text):
+                self.assertFalse(workers.requests_project_workers(text))
+                self.assertEqual(workers.plan_reviews(text),[])
+
+    def test_chat_originated_fix_with_test_investigation_returns_both_reports_to_parent(self):
+        events=[]
+        def respond(payload):
+            messages=payload['messages']
+            if messages[0]['content'].startswith('You are a read-only project reviewer'):
+                self.assertLessEqual({t['function']['name'] for t in payload.get('tools',[])},workers.READ_TOOLS)
+                return {'content':'I reviewed the project excerpt.'}
+            self.assertTrue({'investigator','test_planner'} <= {
+                json.loads(message['content'])['role'] for message in messages if message.get('tool_name')=='delegate_review'})
+            return {'content':'The two independent local reviews are available.'}
+        with tempfile.TemporaryDirectory() as folder, fixture(respond) as (url, requests):
+            Path(folder,'loader.py').write_text('def load(): return 1')
+            Path(folder,'test_loader.py').write_text('def test_load(): assert True')
+            prompt='Fix the loader in this project and investigate the missing unit test coverage.'
+            self.assertTrue(workers.requests_project_workers(prompt))
+            core.run_agent_zero(url,'fixture',[{'role':'user','content':prompt}],folder,False,threading.Event(),
+                                lambda kind,value:events.append((kind,value)),task_kind='chat')
+        self.assertEqual(sum(kind=='tool' and v.get('automatic') and v['name']=='delegate_review' for kind,v in events),2)
+        self.assertEqual(sum(path=='/api/chat' for path,_ in requests),3)
+
     def test_automatic_compound_review_shares_one_budget_with_model_requested_worker(self):
         parent_count = 0
         def respond(payload):

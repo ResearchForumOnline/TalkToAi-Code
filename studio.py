@@ -11,8 +11,8 @@ import copy
 import subprocess
 import hashlib
 from shiboken6 import isValid
-from PySide6.QtCore import Qt, Signal, QObject, QTimer, QEvent
-from PySide6.QtGui import QFont, QTextCharFormat, QTextCursor, QKeySequence, QShortcut, QDesktopServices, QIcon, QPixmap, QPainter, QColor
+from PySide6.QtCore import Qt, Signal, QObject, QTimer, QEvent, QSize
+from PySide6.QtGui import QFont, QTextCharFormat, QTextCursor, QKeySequence, QShortcut, QDesktopServices, QIcon, QPixmap, QPainter, QColor, QImageReader
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtCore import QUrl
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
@@ -48,28 +48,7 @@ from conversation_export import format_conversation, save_conversation
 from project_templates import create_project_template
 from model_storage import clean_stale_partials
 
-
-_TOOL_REQUEST = re.compile(
-    r'^(?:(?:please|first|then|now)\s+|(?:can|could|would|will) you\s+|I (?:want|need) you to\s+)*'
-    r'(?:open|launch|control|take over|click|scroll|type|save|run|read|inspect|search|look up|'
-    r'browse|find|check|use|edit|update|fix|install|download|list|show|summari[sz]e)\b', re.I)
-_TOOL_TARGET = re.compile(
-    r'\b(?:my (?:computer|screen|email|mail|files)|window|desktop|browser|Chrome|Brave|Edge|Firefox|'
-    r'Notepad|Excel|folder|project|repository|directory|inbox|Gmail|Blender|Godot|Unity|terminal|'
-    r'PC Pilot|MCP|plugins?|online|the (?:web|internet)|web for|file (?:named|called)|'
-    r'(?:my|this|the) (?:local )?files?|unit tests?|test suite)\b|https?://|[A-Za-z]:[\\/]', re.I)
-
-
-def chat_requests_tools(text):
-    """Use tools on an explicit operational request. Chat also offers a manual override."""
-    from project_workers import requests_project_workers
-    if requests_project_workers(text):
-        return True
-    if requests_remote_work(text):
-        return True
-    if re.match(r'^(?:(?:please|can you|could you|would you)\s+)*(?:show|give|find|tell|teach)\s+(?:me\s+)?(?:how\b|(?:some\s+)?(?:ideas|examples|tips|advice)\b)',text,re.I):
-        return False
-    return bool(_TOOL_REQUEST.match(text) and _TOOL_TARGET.search(text))
+from chat_intent import chat_requests_tools, media_request
 
 
 def local_model_name(model):
@@ -438,13 +417,21 @@ class Studio(QMainWindow):
         self.run_card.hide();chat.addWidget(self.run_card)
         self.transcript = QTextBrowser(); self.transcript.setOpenExternalLinks(False); self.transcript.document().setDefaultStyleSheet('p {line-height:1.6;} pre {background:#242424; padding:12px;} code {font-family:Consolas;} h2 {font-size:17px;}')
         chat.addWidget(self.transcript,1)
+        self.media_card=QFrame()
+        self.media_card.setObjectName('mediaCard')
+        self.media_card.setStyleSheet('QFrame#mediaCard {background:#172b35;border:1px solid #3d6971;border-radius:10px;}')
+        media_row=QHBoxLayout(self.media_card);media_row.setContentsMargins(10,8,10,8)
+        self.media_preview=QLabel();self.media_preview.setAccessibleName('Generated image preview');media_row.addWidget(self.media_preview)
+        self.media_title=QLabel();self.media_title.setTextFormat(Qt.PlainText);media_row.addWidget(self.media_title,1)
+        self.media_open=self.button('Open media',self.open_generated_media,media_row)
+        self.media_card.hide();chat.addWidget(self.media_card)
         self.chat_welcome=QWidget();welcome=QVBoxLayout(self.chat_welcome)
         welcome.setContentsMargins(18,12,18,12);welcome.setSpacing(16);welcome.addStretch()
         greeting=QLabel('What’s on your mind?');greeting.setAlignment(Qt.AlignCenter)
         greeting.setStyleSheet('font-size:32px; font-weight:600; color:#e8f5f1;')
         welcome.addWidget(greeting)
         ideas=QHBoxLayout();ideas.addStretch()
-        for label,draft in [('Explain something','Explain how '),('Help me write','Help me write '),('Plan my day','Help me plan my day. ')]:
+        for label,draft in [('Explain something','Explain how '),('Help me write','Help me write '),('Create an image','Create an image of ')]:
             self.button(label,lambda checked=False,text=draft:self.fill_chat_draft(text),ideas)
         ideas.addStretch();welcome.addLayout(ideas);welcome.addStretch()
         self.chat_welcome.hide();chat.addWidget(self.chat_welcome,1)
@@ -469,9 +456,6 @@ class Studio(QMainWindow):
         self.route.currentIndexChanged.connect(self.refresh_model_setup)
         self.route.activated.connect(self.remember_route)
         self.mode = QComboBox(); self.mode.addItems(['Act', 'Plan']); self.mode.setToolTip('Act permits file edits and host commands. Plan only reads project files. Commands are not OS-sandboxed.'); options.addWidget(self.mode)
-        self.chat_tools=QCheckBox('Use tools');self.chat_tools.setToolTip('Ask Agent Zero to use tools for the next message. Choose Plan for read-only work or Act for actions.')
-        self.chat_tools.toggled.connect(lambda checked:self.mode.setVisible(self.workspace=='code' or checked))
-        options.addWidget(self.chat_tools)
         self.step_budget=QComboBox()
         for steps in (16,32,64):self.step_budget.addItem(f'{steps} steps',steps)
         self.step_budget.setCurrentIndex(1);self.step_budget.setToolTip('Maximum model/tool cycles per code request. Stop or steer at any time. Larger budgets can use more time and provider tokens.');options.addWidget(self.step_budget)
@@ -900,13 +884,12 @@ class Studio(QMainWindow):
         self.new_button.setText('+  New chat' if is_chat else '+  New code task')
         self.space_label.setText('CHATS' if is_chat else 'CODE CONVERSATIONS')
         self.task_search.setPlaceholderText('Search chats…' if is_chat else 'Search chats & projects…')
-        self.chat_tools.setChecked(False)
         for widget in (self.project_button,self.project_label,self.access_label,self.connections_button,
                        self.gmail_button,self.mail_status_label,self.connection_label,self.health_label,self.reconnect_button,
                        self.workbench_button,self.local_tools_button,self.workspace_button,self.mode,self.step_budget,
                        self.mode_hint,self.performance_label,self.stop):
             widget.setVisible(not is_chat)
-        self.chat_tools.setVisible(is_chat);self.chat_models.setVisible(is_chat)
+        self.chat_models.setVisible(is_chat)
         self.retry_button.setVisible(is_chat and self.retry_index() is not None)
         self.status.setText('' if is_chat else 'Ready')
         self.refresh_attachments()
@@ -920,6 +903,7 @@ class Studio(QMainWindow):
         self.partial=''; self.current_file=None; self.editor.clear(); self.output.clear()
         self.prompt.setPlainText(self.task.get('draft',''))
         self.task.setdefault('artifacts',[]);self.task.setdefault('activity',[]);self.refresh_artifacts()
+        self.refresh_media_card()
         start=self.task.get('activity_run_start',0)
         if not isinstance(start,int) or not 0<=start<=len(self.task['activity']):start=0
         for line in self.task['activity'][start:][-60:]:self.output.appendPlainText(line)
@@ -1017,6 +1001,9 @@ class Studio(QMainWindow):
                 return
             if self.execution_kind=='tuning':
                 self.performance_label.setText(f'Local model tuning · {int(now-self.started_at)}s elapsed')
+                return
+            if self.execution_kind=='media':
+                self.performance_label.setText(f'Local media · {int(now-self.started_at)}s elapsed')
                 return
             if self.execution_kind=='local':
                 self.performance_label.setText(f'Local program · {int(now-self.started_at)}s elapsed · no model request')
@@ -1129,6 +1116,42 @@ class Studio(QMainWindow):
         path=Path(item.data(Qt.UserRole))
         if path.is_file():QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
 
+    def generated_media_path(self):
+        root=STATE.resolve()/'media'/'generated'
+        for record in reversed(self.task.get('artifacts',[])):
+            if (not isinstance(record,dict) or record.get('media_job') is not True
+                    or record.get('type') not in ('image','video')):continue
+            try:
+                path=Path(record['artifact']).resolve(strict=True)
+            except (KeyError,TypeError,OSError,RuntimeError):
+                continue
+            if path.is_file() and path.is_relative_to(root) and path.suffix.lower() in {
+                    '.png','.jpg','.jpeg','.webp','.gif','.mp4','.webm','.mov','.mkv'}:
+                return path,record['type']
+        return None
+
+    def refresh_media_card(self):
+        self.media_preview.clear();self.media_preview.hide()
+        output=self.generated_media_path()
+        self.media_card.setVisible(output is not None)
+        if output is None:return
+        path,kind=output
+        self.media_title.setText(path.name)
+        self.media_open.setText('Open video' if kind=='video' else 'Open image')
+        if kind=='image':
+            reader=QImageReader(str(path))
+            size=reader.size()
+            if size.isValid() and 0<size.width()*size.height()<=40_000_000:
+                reader.setScaledSize(size.scaled(QSize(124,88),Qt.KeepAspectRatio))
+                preview=QPixmap.fromImage(reader.read())
+                if not preview.isNull():
+                    self.media_preview.setPixmap(preview);self.media_preview.show()
+
+    def open_generated_media(self):
+        output=self.generated_media_path()
+        if output:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(output[0])))
+
     def local_tools(self):
         if self.busy:
             self.status.setText('Stop the current task before opening Local tools.');return
@@ -1147,11 +1170,36 @@ class Studio(QMainWindow):
         if not preserve_draft:self.prompt.clear();self.task['draft']=''
         self.partial=''
         message={'role':'user','content':text}
-        if kind=='tuning':message['source']='app'
+        if kind in ('tuning','media'):message['source']='app'
         self.task['messages'].append(message)
         if self.task['title'] in ('New chat','New task'):
             self.task['title']=text.splitlines()[0][:45];self.title.setText(self.task['title']);self.refresh_tasks()
         self.set_busy(True);self.render();self.persist()
+
+    def start_media_request(self,text,request):
+        from media_generation import generate_media
+        kind,prompt=request
+        if self.attachments:
+            self.status.setText('Local media uses a text description. Remove the attachments to generate from your message.')
+            return
+        self.begin_local_run(text,kind='media')
+        self.route_description='Local media'
+        self.status.setText('Finding the local media generator…')
+        cancel=self.cancel
+        bus=self.bus
+        def work():
+            try:
+                result=generate_media(kind,prompt,STATE,cancel,bus.publish)
+                if not cancel.is_set():
+                    bus.publish('artifact',dict(result,media_job=True))
+                    bus.publish('app_reply',f'Your {kind} is ready.')
+            except InterruptedError:
+                pass
+            except (OSError,ValueError,RuntimeError) as exc:
+                if not cancel.is_set():bus.publish('app_reply',str(exc))
+            finally:
+                bus.publish('finished',None)
+        threading.Thread(target=work,daemon=True).start()
 
     def start_local_request(self,text,request):
         if self.busy:return
@@ -1341,7 +1389,10 @@ class Studio(QMainWindow):
         if index is None:
             # Recover a pending conversational turn after an app exit or an 8.8 error.
             index=next((i for i in reversed(range(len(messages))) if messages[i].get('role')=='user'),None)
-            if index is None or chat_requests_tools(messages[index].get('typed_content') or messages[index].get('content') or ''):
+            if index is None:return None
+            item=messages[index]
+            if (item.get('source')=='app' or item.get('chat_mode')=='tools'
+                    or ('chat_mode' not in item and chat_requests_tools(item.get('typed_content') or item.get('content') or ''))):
                 return None
         if (type(index) is int and 0<=index<len(messages) and messages[index].get('role')=='user'
                 and all(m.get('role')=='assistant' and (m.get('source') in ('chat_error','chat_partial')
@@ -1352,11 +1403,11 @@ class Studio(QMainWindow):
         return None
 
     def send(self,checked=False,*,retry=False):
-        if self.busy and self.execution_kind in ('conversation','tuning'):
+        if self.busy and self.execution_kind in ('conversation','tuning','media'):
             return  # A second Enter during a reply leaves the next draft in place.
         index=self.retry_index() if not self.busy else None
         messages=self.task['messages']
-        resubmitted=(not retry and index is not None and not self.attachments and not self.chat_tools.isChecked()
+        resubmitted=(not retry and index is not None and not self.attachments
                      and self.prompt.toPlainText().strip()==messages[index].get('content'))
         if resubmitted:retry=True
         if retry and index is None:return
@@ -1373,9 +1424,13 @@ class Studio(QMainWindow):
         if not retry and not self.attachments:
             if self.natural_control(text):return
             text=self.prompt.toPlainText().strip()
+        if not retry and (generation:=media_request(text)):
+            self.start_media_request(text,generation)
+            return
         is_chat=self.task.get('kind','code')=='chat'
-        conversation=is_chat and (retry or (not self.chat_tools.isChecked() and
-            (not chat_requests_tools(text) or (self.attachments and re.match(r'^(?:summari[sz]e|read|explain|analy[sz]e)\b',text,re.I)))))
+        previous=next((item for item in reversed(messages) if item.get('role')=='user' and item.get('source')!='app'),{})
+        followup=previous.get('chat_mode')=='tools'
+        conversation=is_chat and (retry or not chat_requests_tools(text,attached=bool(self.attachments),followup=followup))
         if self.route.currentIndex()==4 and not self.active_provider():
             self.status.setText('Add an API key and choose a model in your private vault to begin. Your draft is kept.')
             self.providers_dialog()
@@ -1392,6 +1447,7 @@ class Studio(QMainWindow):
             if resubmitted:self.prompt.clear()
         else:
             user_message={'role':'user','content':text}
+            if is_chat:user_message['chat_mode']='conversation' if conversation else 'tools'
             if self.attachments:
                 context,summaries=attachment_context(self.attachments)
                 user_message['content']=text+context
@@ -1402,7 +1458,6 @@ class Studio(QMainWindow):
         self.task.pop('chat_retry_index',None)
         if self.task['title'] in ('New task','New chat'):self.task['title']=text.splitlines()[0][:45];self.title.setText(self.task['title']);self.refresh_tasks()
         self.execution_kind='conversation' if conversation else 'model'
-        self.chat_tools.setChecked(False)
         self.chat_response_received=False
         self.chat_recovery=''
         self.partial=''; self.render(); self.persist(); self.cancel=threading.Event(); self.set_busy(True)
@@ -1459,7 +1514,7 @@ class Studio(QMainWindow):
                         ensure_local_runtime(cancel=self.cancel)
                         if self.cancel.is_set():return
                     try:
-                        if conversation and preference=='auto':
+                        if preference=='auto':
                             selected=choose_route(self.config,preference,benchmarks,include_server=ready)
                         else:
                             selected=choose_route(self.config,preference,benchmarks)
@@ -1554,7 +1609,9 @@ class Studio(QMainWindow):
             self.route.setCurrentIndex(2)
             if re.search(r'\balways\b',text,re.I):
                 self.config['preferred_route']='server';self.write_config()
-        if self.task.get('kind','code')!='code':return True
+        if (self.task.get('kind','code')!='code' and not explicit_project_directory(text)
+                and not re.search(r'\b(?:game|project|app)\s*:',text,re.I)):
+            return True
         target=(natural_desktop_target(text) if self.config.get('access_mode','full_user')=='full_user' and not explicit_project_directory(text) else None)
         if target is None:target=resolve_project_target(self.task['project'],text)
         if target.get('error'):
@@ -1672,7 +1729,7 @@ class Studio(QMainWindow):
             self.output.clear();self.status.setText('Starting new run…')
             self.reasoning_excerpt='';self.model_activity.clear();self.run_card_title.setText('Request received')
             self.run_card_detail.setText('App status · checking the selected runtime. The model has not replied yet.')
-            self.run_card.setVisible(self.execution_kind not in ('conversation','tuning'))
+            self.run_card.setVisible(self.execution_kind not in ('conversation','tuning','media'))
             self.task['activity_run_start']=len(self.task.get('activity',[]))
             self.task.pop('last_metrics',None)
             self.performance_label.setToolTip('')
@@ -1701,7 +1758,7 @@ class Studio(QMainWindow):
         if not busy:self.refresh_route_labels()
         self.refresh_model_setup()
         self.escape_shortcut.setEnabled(busy and not self.global_escape)
-        for w in (self.new_button,self.project_button,self.task_list,self.task_view,self.route,self.mode,self.step_budget,self.keep_going,self.work_duration,self.goal_button,self.chat_space,self.code_space,self.skynet_button,self.local_tools_button,self.chat_models,self.chat_tools):w.setEnabled(not busy)
+        for w in (self.new_button,self.project_button,self.task_list,self.task_view,self.route,self.mode,self.step_budget,self.keep_going,self.work_duration,self.goal_button,self.chat_space,self.code_space,self.skynet_button,self.local_tools_button,self.chat_models):w.setEnabled(not busy)
         steer=busy and self.execution_kind!='conversation'
         self.prompt.setEnabled(True);self.send_button.setEnabled(not busy or steer);self.send_button.setText('✦  Steer' if steer else '↑  Send')
         self.stop.setVisible(busy or self.workspace=='code')
@@ -1733,13 +1790,14 @@ class Studio(QMainWindow):
             self.prompt.setPlainText(queued+('\n\n'+draft if draft and draft!=queued else ''))
         self.cancel.set()
         self.status.setText('Stopping reply…' if self.execution_kind=='conversation' else
+                            'Stopping media generation…' if self.execution_kind=='media' else
                             'Stopping local program…' if self.execution_kind=='local' else 'Stopping · waiting for model or running command to yield')
         self.observe_progress('Stopping')
         if self.control_active:
             self.control_overlay.show_stopping();self.control_banner.setText('TalkToAi is stopping…\nWaiting for the current action to finish safely.')
 
     def handle_event(self,kind,data):
-        if kind=='local_tuning':
+        if kind=='app_reply':
             self.task['messages'].append({'role':'assistant','source':'app','content':data})
             self.persist();self.render()
             return
@@ -1862,7 +1920,7 @@ class Studio(QMainWindow):
                 existing=next((a for a in artifacts if a['artifact']==data['artifact']),None)
                 if existing is not None:existing.update(data)
                 else:artifacts.append(data)
-                self.refresh_artifacts();self.persist()
+                self.refresh_artifacts();self.refresh_media_card();self.persist()
         elif kind=='skynet_report':
             self.task['skynet_report_path']=data['report_path']
             try:
@@ -1985,9 +2043,10 @@ class Studio(QMainWindow):
             self.task.setdefault('activity',[]).append('Task error: '+str(data))
             self.task['messages'].append({'role':'assistant','source':'app','content':'Task error: '+str(data)});self.persist();self.render()
         elif kind=='finished':
-            if self.execution_kind=='tuning':
+            if self.execution_kind in ('tuning','media'):
                 self.set_busy(False)
-                self.status.setText('Local model tuning stopped.' if self.cancel.is_set() else '')
+                noun='Local model tuning' if self.execution_kind=='tuning' else 'Media generation'
+                self.status.setText(noun+' stopped.' if self.cancel.is_set() else '')
                 self.performance_label.setText('')
                 self.task['draft']=self.prompt.toPlainText()
                 self.persist();self.render()
@@ -2736,11 +2795,11 @@ Use an available local or server model, stop a task, or steer it into a smaller 
                 if result:
                     self.bus.event.emit('app_preferences_changed',result)
                 detail=trial.detail.replace(trial.model,local_model_name(trial.model)) if trial.model else trial.detail
-                self.bus.event.emit('local_tuning',detail)
+                self.bus.event.emit('app_reply',detail)
             except (DownloadCancelled,InterruptedError):
-                self.bus.event.emit('local_tuning','Local model tuning was stopped.')
+                self.bus.event.emit('app_reply','Local model tuning was stopped.')
             except (OSError,ValueError,RuntimeError) as exc:
-                self.bus.event.emit('local_tuning','Local tuning could not finish. '+str(exc))
+                self.bus.event.emit('app_reply','Local tuning could not finish. '+str(exc))
             finally:
                 self.bus.event.emit('finished',None)
         threading.Thread(target=work,daemon=True).start()
@@ -2754,7 +2813,7 @@ Use an available local or server model, stop a task, or steer it into a smaller 
             self.status.setText(str(exc))
             return
         self.handle_event('app_preferences_changed',result)
-        self.handle_event('local_tuning','Restored the local model retention setting from before the last tune.')
+        self.handle_event('app_reply','Restored the local model retention setting from before the last tune.')
 
     def compare_installed_models(self):
         if self.busy:return

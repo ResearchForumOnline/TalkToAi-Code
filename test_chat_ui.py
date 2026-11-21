@@ -124,7 +124,7 @@ class ChatUITests(unittest.TestCase):
         self.assertTrue(w.chat_space.isChecked())
         self.assertTrue(w.chat_welcome.isVisible())
         self.assertTrue(w.chat_models.isVisible())
-        self.assertTrue(w.chat_tools.isVisible())
+        self.assertFalse(hasattr(w,'chat_tools'))
         for widget in (w.right, w.reconnect_button, w.mode, w.step_budget, w.performance_label, w.stop):
             self.assertFalse(widget.isVisible())
         self.assertEqual(w.route.currentIndex(), 0)
@@ -275,25 +275,43 @@ class ChatUITests(unittest.TestCase):
         self.assertEqual(w.prompt.toPlainText(), '')
         self.tunnel.assert_not_called()
 
-    def test_operational_requests_and_manual_tools_keep_agent_zero(self):
+    def test_operational_requests_use_agent_zero_without_a_switch(self):
         w = self.w
         self.server()
         w.task['project'] = str(self.root)
         for text in ('How do I open Blender?', 'Show me how to use a browser', 'Find ideas for my next project'):
             self.assertFalse(studio.chat_requests_tools(text))
-        self.submit('Please open Brave on my computer')
+        self.submit('Hi, could you open Brave on my computer?')
         self.wait_for(lambda: not w.busy)
         self.assertEqual(self.agent.call_count, 1)
         self.assertEqual(self.agent.call_args.kwargs['task_kind'], 'chat')
         self.assertTrue(self.agent.call_args.args[4])
-        QTest.mouseClick(w.chat_tools, Qt.LeftButton)
-        self.assertTrue(w.mode.isVisible())
-        w.mode.setCurrentText('Plan')
-        self.submit('Take a closer look.')
+        self.assertFalse(w.mode.isVisible())
+        self.submit('Now open the next one')
         self.wait_for(lambda: not w.busy)
         self.assertEqual(self.agent.call_count, 2)
+        w.mode.setCurrentText('Plan')
+        self.submit('Review the code implementation, tests and README in this project.')
+        self.wait_for(lambda: not w.busy)
+        self.assertEqual(self.agent.call_count, 3)
         self.assertFalse(self.agent.call_args.args[4])
-        self.assertFalse(w.chat_tools.isChecked())
+
+    def test_media_uses_its_own_route_and_shows_an_image(self):
+        from PIL import Image
+        output=self.root/'media'/'generated'/'example.png'
+        output.parent.mkdir(parents=True)
+        Image.new('RGB',(64,48),'teal').save(output)
+        self.w.route.setCurrentIndex(4)
+        result={'artifact':str(output),'type':'image','title':'Generated image'}
+        with patch('media_generation.generate_media',return_value=result) as generate:
+            self.submit('Please create an image of a teal square.')
+            self.wait_for(lambda: not self.w.busy)
+        self.assertEqual(generate.call_args.args[0],'image')
+        self.agent.assert_not_called()
+        self.assertTrue(self.w.media_card.isVisible())
+        self.assertTrue(self.w.media_preview.isVisible())
+        self.assertIn('Your image is ready',self.w.transcript.toPlainText())
+        self.assertIsNone(self.w.retry_index())
 
     def test_tune_runs_from_chat_and_undo_restores_retention(self):
         from local_tuning import Phase, RetentionTrial
