@@ -5,7 +5,7 @@
   },
   {
     "path": ".github/workflows/portable-desktop-smoke.yml",
-    "sha256": "264752253fb512ff26e7fdbb83682a4b65144318983164e9a297ebc345b5db4e"
+    "sha256": "c3830f41e3650bc24991431fa7e52534abc357c5eb9358c4e29f7a42de604d3d"
   },
   {
     "path": ".gitignore",
@@ -289,7 +289,7 @@
   },
   {
     "path": "docs/DESKTOP-9.0.2.md",
-    "sha256": "c2e84f14983740898a9a76189deae67351a5572c9f071195bf81ddc013d77772"
+    "sha256": "fd80300ac3c1de54278064f19b56b61fc2dd1ef16914ecd36be3dfa73720bd63"
   },
   {
     "path": "docs/DEVSPACE-IDEAS-REVIEW.md",
@@ -541,7 +541,7 @@
   },
   {
     "path": "install-linux.sh",
-    "sha256": "2db1b1a02e41f15ce9509c51d3b61794df9e80adaad2d311b98c44d40dfd4929"
+    "sha256": "0e7895d2ab506a9ddac1c6604d10990b209b948e335e9b48f7c72ed3b03b3c2a"
   },
   {
     "path": "install-macos.sh",

@@ -20,6 +20,9 @@ if command -v ldconfig >/dev/null 2>&1 && ! ldconfig -p 2>/dev/null | grep 'libE
     echo 'Install your distribution packages for libEGL, OpenGL, XCB cursor, XKB common and Xinerama, then launch again.' >&2
   fi
 fi
+if command -v ldconfig >/dev/null 2>&1 && ! ldconfig -p 2>/dev/null | grep -F 'libpulse.so.0' >/dev/null; then
+  echo 'For microphone recording, install your distribution’s PulseAudio client library (libpulse0 on Ubuntu/Debian).' >&2
+fi
 mkdir -p "${XDG_DATA_HOME:-$HOME/.local/share}/applications" "$HOME/.local/bin"
 cat > "$HOME/.local/bin/talktoai-code" <<EOF
 #!/usr/bin/env bash

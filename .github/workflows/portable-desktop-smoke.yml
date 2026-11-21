@@ -94,7 +94,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends libegl1 libgl1 libxcb-cursor0 libxkbcommon-x11-0 libxcb-xinerama0
+          sudo apt-get install -y --no-install-recommends libegl1 libgl1 libxcb-cursor0 libxkbcommon-x11-0 libxcb-xinerama0 libpulse0
       - name: Install the platform release kit
         env:
           TALKTOAI_SKIP_BROWSER_DOWNLOAD: '1'
