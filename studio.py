@@ -1129,7 +1129,7 @@ class Studio(QMainWindow):
                     seconds=int(now-self.started_at)
                     text=(self.chat_recovery+'  ' if self.chat_recovery else '')+f'Waiting for {self.chat_model} · {seconds}s'
                     if seconds>=15 and self.chat_local:
-                        text+='   The first reply can take longer while Ollama loads a model. To try a smaller one, choose Stop, then Models.'
+                        text+='   The first reply can take longer while the local model loads. To try a smaller one, choose Stop, then Models.'
                     self.status.setText(text)
                 elif self.run_phase=='Model responding':self.status.setText('Writing a reply…')
                 return
@@ -1646,13 +1646,14 @@ class Studio(QMainWindow):
                         raise ValueError('Inkling weights could not be found. Open Models and setup and choose Inkling again.')
                     url, key = self.inkling_runtime.start(weights, self.cancel,
                         lambda message, *_: self.bus.event.emit('status', message))
+                    hardware = self.inkling_runtime.status()
                     inkling_profile = ProviderProfile('Inkling 2 Mini', url, INKLING_MODEL, engine='llama.cpp',
                         api_mode='chat_completions', cost_tier='self_hosted', max_output_tokens=1024)
                     store_api_key(inkling_profile, key)
                     set_active_provider(inkling_profile)
                     selected = {'route':'inkling', 'url':url, 'model':INKLING_MODEL,
                                 'display_model':INKLING_PRESETS[self.config['inkling_model']].label,
-                                'reason':'local llama.cpp runner on this PC'}
+                                'reason':hardware.label if hardware else 'local llama.cpp runner'}
                     model_performance = dict(performance, num_ctx=INKLING_CONTEXT)
                 elif preference=='provider':
                     profile=self.active_provider()
@@ -2143,6 +2144,8 @@ class Studio(QMainWindow):
             self.route_description=label+' · '+display_model;self.status.setText(self.route_description+' · '+data['reason'])
             if data['route'] in ('local','local_large'):
                 self._record_local_model(data['model'])
+            elif data['route'] == 'inkling':
+                self.refresh_route_labels()
             if self.execution_kind=='conversation':
                 self.chat_model=local_model_name(display_model)
                 self.chat_local=data['route'] in ('local','local_large','inkling')
@@ -2172,6 +2175,10 @@ class Studio(QMainWindow):
             if step:self.observe_progress('Waiting for model',int(step.group(1)))
             elif str(data).lower().startswith(('retrying','repairing')):self.observe_progress('Retrying model response')
         elif kind=='api_route':
+            if self.route.currentIndex() == MODEL_ROUTES.index('inkling'):
+                self.status.setText(self.route.currentText())
+                self.observe_progress('Using Inkling 2 Mini')
+                return
             self.route_description='API · '+data['label']+' · '+data['model']
             if self.execution_kind=='conversation':
                 self.chat_model=data['model']
@@ -2213,6 +2220,8 @@ class Studio(QMainWindow):
             self.task.setdefault('activity',[]).append('Task error: '+str(data))
             self.task['messages'].append({'role':'assistant','source':'app','content':'Task error: '+str(data)});self.persist();self.render()
         elif kind=='finished':
+            if self.route.currentIndex() == MODEL_ROUTES.index('inkling'):
+                self.refresh_route_labels()
             if self.execution_kind in ('tuning','media'):
                 self.set_busy(False)
                 noun='Local model tuning' if self.execution_kind=='tuning' else 'Media generation'
@@ -2675,19 +2684,28 @@ Use an available local or server model, stop a task, or steer it into a smaller 
         labels=['Auto · available models',local,name+' · '+str(self.config.get('server_model','configured model')),large]
         profile=self.active_provider()
         labels.append('API · '+(profile.label+' / '+profile.model if profile else 'Set up a provider…'))
+        inkling_tip = None
         if self.inkling_runtime is not None:
             key = self.config.get('inkling_model')
             preset = INKLING_PRESETS.get(key) if isinstance(key, str) else None
-            labels.append(preset.label if preset and self._inkling_weights() else 'Inkling 2 Mini · set up in Models')
+            label = 'Inkling 2 Mini · set up in Models'
+            if preset and self._inkling_weights():
+                hardware = self.inkling_runtime.status()
+                label = f'{preset.label} · {hardware.label}' if hardware else preset.label
+                inkling_tip = hardware.reason if hardware else 'Inkling checks for a compatible GPU when it starts.'
+            labels.append(label)
         for index,label in enumerate(labels):
             self.route.setItemText(index,label[:72]);self.route.setItemData(index,label,Qt.ToolTipRole)
         self.route.setItemData(1,local_tip,Qt.ToolTipRole)
         self.route.setItemData(3,large_tip,Qt.ToolTipRole)
+        if inkling_tip is not None:
+            self.route.setItemData(MODEL_ROUTES.index('inkling'), inkling_tip, Qt.ToolTipRole)
         self.reconnect_button.setText('Reconnect '+name+' model')
 
     def model_route_changed(self,index):
         if index >= 0 and MODEL_ROUTES[index] != 'inkling' and self.inkling_runtime is not None:
             self.inkling_runtime.stop()
+            self.refresh_route_labels()
         self.refresh_model_setup()
 
     def remember_route(self,index):
@@ -2965,11 +2983,13 @@ Use an available local or server model, stop a task, or steer it into a smaller 
     def diagnose_models(self):
         if getattr(self,'diagnostics_running',False):return
         self.diagnostics_running=True;config=dict(self.config)
-        self.status.setText('Checking local and server inventories…')
+        config['preferred_route'] = MODEL_ROUTES[self.route.currentIndex()]
+        self.status.setText('Checking the selected model…')
         def work():
             try:
                 from runtime_diagnostics import report
-                self.bus.event.emit('runtime_diagnostics',report(config))
+                hardware = self.inkling_runtime.status() if config['preferred_route'] == 'inkling' else None
+                self.bus.event.emit('runtime_diagnostics',report(config, inkling_status=hardware))
             except Exception:
                 self.bus.event.emit('runtime_diagnostics','Model diagnostics could not finish. Check Ollama and your server connection, then retry.')
             finally:self.diagnostics_running=False

@@ -129,7 +129,7 @@ def diagnose(config, include_server=True):
     return results
 
 
-def report(config):
+def report(config, *, inkling_status=None):
     route = config.get('preferred_route', 'local')
     server = route == 'server' or bool(config.get('active_ssh_alias'))
     ports = (11434, 11435) if server else (11434,)
@@ -137,7 +137,11 @@ def report(config):
              'Selected route: ' + str(route).replace('_', ' ').title(),
              'This check does not load or download a model.']
     if route == 'inkling':
-        lines.append('Inkling uses a separate local llama.cpp runner. Open Models and setup to choose its Q4 or Q8 weights.')
+        if inkling_status is None:
+            lines.append('Inkling is stopped. Send a message with Inkling selected to check GPU acceleration.')
+        else:
+            lines.extend(['Inkling · ' + inkling_status.label, inkling_status.reason])
+        return '\n'.join(lines)
     elif not server:
         lines.append('Local downloads and local chat use Ollama on this PC. SSH is optional.')
     try:

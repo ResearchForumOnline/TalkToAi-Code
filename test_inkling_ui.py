@@ -6,8 +6,10 @@ import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 
 import agent_core
@@ -27,18 +29,21 @@ class InklingUITests(unittest.TestCase):
             legacy.write_bytes(b'legacy fixture')
             compatible = root / 'Mainline_Support' / legacy.name
             runner, selected = Mock(), Mock()
+            runner.status.return_value = None
             dialog = model_ui.ModelLibraryDialog(None, root, selected, Mock(), Mock(), Mock(), Mock(), inkling=runner)
             try:
                 with patch.object(model_ui, 'prepare_inkling', return_value=compatible) as prepare, \
                         patch.object(model_ui, 'require_model_runtime') as ollama, \
                         patch('model_library_dialog.threading.Thread') as worker:
                     dialog._import_existing([str(legacy)])
+                    runner.status.return_value = SimpleNamespace(label='CPU', reason='No compatible Vulkan device found.')
                     worker.call_args.kwargs['target']()
                 self.assertEqual(prepare.call_args.args[1], 'q8')
                 self.assertEqual(prepare.call_args.kwargs['source'], legacy)
                 runner.start.assert_called_once()
                 selected.assert_called_once_with('q8', 'inkling')
                 ollama.assert_not_called()
+                self.assertIn('CPU. No compatible Vulkan device found.', dialog.inkling_status.text())
                 self.assertEqual(legacy.read_bytes(), b'legacy fixture')
             finally:
                 dialog.close()
@@ -48,7 +53,9 @@ class InklingUITests(unittest.TestCase):
     def test_hugging_face_inkling_import_uses_compatible_preset(self):
         app = QApplication.instance() or QApplication([])
         with tempfile.TemporaryDirectory() as folder:
-            dialog = model_ui.ModelLibraryDialog(None, Path(folder), Mock(), Mock(), Mock(), Mock(), Mock(), inkling=Mock())
+            runner = Mock()
+            runner.status.return_value = None
+            dialog = model_ui.ModelLibraryDialog(None, Path(folder), Mock(), Mock(), Mock(), Mock(), Mock(), inkling=runner)
             try:
                 file = INKLING_PRESETS['q8'].legacy
                 dialog._finished(('files', INKLING_REPO, INKLING_REVISION, [file], file.name))
@@ -98,6 +105,7 @@ class InklingUITests(unittest.TestCase):
         provider_url = f'http://127.0.0.1:{server.server_port}/v1'
         runner = Mock()
         runner.start.return_value = (provider_url, 'inkling-fixture-key')
+        runner.status.return_value = SimpleNamespace(label='GPU · 24/42 layers', reason='Vulkan model check passed.')
         case = test_chat_ui.ChatUITests('test_native_enter_click_stream_and_follow_up')
         case.setUpClass()
         self.addCleanup(case.doCleanups)
@@ -113,6 +121,9 @@ class InklingUITests(unittest.TestCase):
         case.submit('What is 2 + 3?')
         case.wait_for(lambda: not window.busy, timeout=12)
         self.assertEqual(window.task['messages'][-1]['content'], '5')
+        index = studio.MODEL_ROUTES.index('inkling')
+        self.assertIn('GPU · 24/42 layers', window.route.currentText())
+        self.assertEqual(window.route.itemData(index, Qt.ToolTipRole), 'Vulkan model check passed.')
         window.switch_workspace('code')
         window.task['project'] = str(case.root)
         case.enterContext(patch.object(window, 'prepare_task_target', return_value=True))

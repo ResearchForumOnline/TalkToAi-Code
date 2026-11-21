@@ -33,7 +33,7 @@
   },
   {
     "path": "README.md",
-    "sha256": "88b1eea43f9171014e573e4173599e8faf18d00481eb18e1c3cd97f6315dbd45"
+    "sha256": "c046de5b1ec77921ba0933abeb028938370173a20dfb091bebaaad6b1f0227bd"
   },
   {
     "path": "RELEASE-NOTES.md",
@@ -49,7 +49,7 @@
   },
   {
     "path": "TalkToAi-Code.iss",
-    "sha256": "ba4d8b25512c89ab7cafb797396acaa6ac09d538ff0af6d75baebfd3e93de807"
+    "sha256": "a129765df90252e41031f4da3a56fab6b9117ec45ffc0f4261e1f42539a1bfa5"
   },
   {
     "path": "agent_core.py",
@@ -308,6 +308,10 @@
     "sha256": "5e96e0d46e5a4c1ca60513580e819d0125410835b96790ccd79a32b09b55d0ae"
   },
   {
+    "path": "docs/DESKTOP-9.0.5.md",
+    "sha256": "851d2d9cfc56f87e629dcc56078f0bccd47ef287830dbf260137f5892b76a590"
+  },
+  {
     "path": "docs/DEVSPACE-IDEAS-REVIEW.md",
     "sha256": "39815a502204db63900345e451ec9414f8d6c0ab259d463eed94c7de81c3965e"
   },
@@ -561,7 +565,7 @@
   },
   {
     "path": "inkling_runtime.py",
-    "sha256": "f51b8eceff33874d32e8deee7ba3aeea02fc029e277a2ae36bb94beba426fded"
+    "sha256": "4abe171e99a0b8363a00489a421cb1641afbe85f4d688e7304b4c76e5cbc37d4"
   },
   {
     "path": "install-linux.sh",
@@ -609,7 +613,7 @@
   },
   {
     "path": "model_library_dialog.py",
-    "sha256": "3a68642588f52f98e8055d325087c4dd86a8b60b95dd42713c3bf6f8338dae0c"
+    "sha256": "fbf30e5985c8eeffaf8fa056b0ee18da6370ecb225ae23645946cbdaf4587d5c"
   },
   {
     "path": "model_storage.py",
@@ -689,7 +693,7 @@
   },
   {
     "path": "release_checks.py",
-    "sha256": "c4b67e5c3604862920ad55a20d42773f5546517055cec9086a47e7d254654d78"
+    "sha256": "731c5e35511fabe54d152797a33636d4fa4b272d645db916f0bf58c1f3bba0d9"
   },
   {
     "path": "remote_intent.py",
@@ -721,7 +725,7 @@
   },
   {
     "path": "runtime_diagnostics.py",
-    "sha256": "a39eb2d2e973e39397282634d270121fc1f01faeb58457340ac7554b7b6c1835"
+    "sha256": "9ab2eae2a33ce44211df9631011bc50640fc2d4f485068cc24a2c917d7bca7fe"
   },
   {
     "path": "runtime_setup.py",
@@ -785,15 +789,15 @@
   },
   {
     "path": "store/build-msix.ps1",
-    "sha256": "29609052e5da59435b3061e41e3042418ea83e54ab2bf57c22115401e84aacc0"
+    "sha256": "ecde24a8a5d5da8c9a699045d8590aef09722565c8cbe873f505e8ac2c1f254a"
   },
   {
     "path": "store/build-payload.ps1",
-    "sha256": "a4b12bc5623cb4d0c602b793825f20edb7671673f942b56c9d7b93109cdf270c"
+    "sha256": "d755d354c811e0eefb6f4e2791eeca9a0be00f6168c888727ce6a7d0201a780b"
   },
   {
     "path": "studio.py",
-    "sha256": "966b4f0d4634f37f8a16c4b7444977e5f8befae81024bd4b9d757fb13f332862"
+    "sha256": "552ad2b324eb6fc3fa3ab10600ab25906c715f1657f9ecfc883d0fed9b3b8c67"
   },
   {
     "path": "task_goals.py",
@@ -921,11 +925,11 @@
   },
   {
     "path": "test_inkling_runtime.py",
-    "sha256": "d3831a86449a5ddfeae7de828984ecb279e779892a21f370bd0ab08b03e96483"
+    "sha256": "722fd25f13bbf83101896c86e2ad72fb9718e7b4a1bc1fb18a280180efa4d937"
   },
   {
     "path": "test_inkling_ui.py",
-    "sha256": "7c1283ee988393874bceadd74b27a25d6f7feb7e5efbdbb9658b4098e21252e0"
+    "sha256": "8c6c4087b2b02c7c113e42a085496812588d5fc1a663e482feec4b08788e0869"
   },
   {
     "path": "test_inventory_providers.py",
@@ -1041,7 +1045,7 @@
   },
   {
     "path": "test_runtime_diagnostics.py",
-    "sha256": "ce84679b3f04860fa18e90db977348f7d1c1c05c10749b0015bcfa16f3e318da"
+    "sha256": "b2d482fe67003c7503e89cc5c5dc2e252215353a55a77e90efe53865735db354"
   },
   {
     "path": "test_runtime_setup.py",
@@ -1149,7 +1153,7 @@
   },
   {
     "path": "updates.py",
-    "sha256": "716096967a0a9009757f65caf79de1b22ab1b616da5d18c306d56161b9e6f471"
+    "sha256": "31fec8bf6a7fa0c7c08b534a2bf052ca65a0d23d87d492c521ad586379654bce"
   },
   {
     "path": "voice_dialog.py",

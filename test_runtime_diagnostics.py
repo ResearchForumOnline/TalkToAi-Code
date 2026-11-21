@@ -13,6 +13,14 @@ from runtime_diagnostics import check_local_reply, measure_local_reply, last_rep
 EMPTY_RUNNING = {'state':'reachable','models':[]}
 
 class RuntimeDiagnosticsTests(unittest.TestCase):
+    def test_inkling_reports_active_hardware_without_probing_ollama(self):
+        with patch('runtime_diagnostics.probe') as ollama:
+            hardware = Mock(label='GPU · 24/42 layers', reason='Vulkan model check passed.')
+            self.assertIn('GPU · 24/42 layers', report({'preferred_route': 'inkling'}, inkling_status=hardware))
+            self.assertIn('Vulkan model check passed.', report({'preferred_route': 'inkling'}, inkling_status=hardware))
+            self.assertIn('Inkling is stopped.', report({'preferred_route': 'inkling'}))
+            ollama.assert_not_called()
+
     def test_real_loopback_chat_probe_and_saved_result(self):
         digest='b'*64
         events=[]

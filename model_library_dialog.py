@@ -84,6 +84,7 @@ class ModelLibraryDialog(QDialog):
         self._preset(recommended, 'Install Qwen3.6 35B A3B', 'About 23 GB Q4 for Local large. 3B active per token.',
                      QWEN_LOCAL_MODEL, 'local_large')
         self.inkling_buttons = []
+        self.inkling_status = None
         if self.inkling is not None:
             row = QHBoxLayout()
             for key, title in (('q4', 'Inkling 2 Mini Q4 · 16.6 GB'), ('q8', 'Inkling 2 Mini Q8 · 22.9 GB')):
@@ -94,7 +95,11 @@ class ModelLibraryDialog(QDialog):
                 row.addWidget(button)
             row.addStretch(1)
             recommended.addLayout(row)
-            recommended.addWidget(self._text('Inkling uses its own llama.cpp runner. Saved downloads can reuse an existing Q4 or Q8 GGUF.'))
+            self.inkling_status = self._text('')
+            self.inkling_status.setAccessibleName('Inkling hardware status')
+            self._refresh_inkling_status()
+            recommended.addWidget(self.inkling_status)
+            recommended.addWidget(self._text('Saved downloads can reuse an existing Inkling Q4 or Q8 GGUF.'))
         recommended.addWidget(self._text('OpenZero and Qwen use Ollama. Delete registrations under Installed Ollama and separate files under Saved downloads.'))
         if os.name == 'nt':
             recommended.addWidget(self._text('Installing a model can set up missing Ollama through WinGet. Use Get Ollama if WinGet is unavailable.'))
@@ -334,6 +339,13 @@ class ModelLibraryDialog(QDialog):
         self.status.setText(('Error · ' if error else '') + message)
         self.status.setStyleSheet('font-weight: 600')
 
+    def _refresh_inkling_status(self):
+        if self.inkling_status is None:
+            return
+        hardware = self.inkling.status()
+        self.inkling_status.setText(f'Inkling · {hardware.label}. {hardware.reason}' if hardware else
+                                    'Inkling automatically checks for GPU acceleration when it starts.')
+
     def _start(self, starting, work, *, stoppable=True):
         if self.cancel is not None:
             return
@@ -484,6 +496,7 @@ class ModelLibraryDialog(QDialog):
         if not self.progress.value():
             self.progress.hide()
         self._set_running(False)
+        self._refresh_inkling_status()
         if action in ('installed', 'removed', 'released', 'reply_check'):
             QTimer.singleShot(0, self._poll_installed)
 

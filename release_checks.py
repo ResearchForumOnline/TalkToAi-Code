@@ -159,7 +159,7 @@ def smoke(destination):
             and [item.role for item in plan_reviews(games_request, focus=game_focus)] ==
                 ['gameplay_reviewer','playtest_reviewer','asset_reviewer'])
         from inkling_models import INKLING_PRESETS, INKLING_REPO, preset_for_hub
-        from inkling_runtime import InklingRuntime
+        from inkling_runtime import InklingRuntime, InklingStatus
         from model_library import QWEN_LOCAL_MODEL
         q8 = INKLING_PRESETS['q8']
         result['inkling_support'] = (
@@ -168,6 +168,11 @@ def smoke(destination):
             and q8.mainline.name.startswith('Mainline_Support/')
             and q8.mainline.sha256 != q8.legacy.sha256
             and 'Inkling 2 Mini' in str(agent_core._ollama_error(500, "unknown model architecture: 'inkling2'"))
+        )
+        result['inkling_gpu_status'] = (
+            callable(InklingRuntime.status)
+            and InklingStatus(backend='vulkan', reason='Fixture', gpu_layers=8, total_layers=42).label == 'GPU · 8/42 layers'
+            and InklingStatus(backend='cpu', reason='Fixture', gpu_layers=0, total_layers=None).label == 'CPU'
         )
         from voice_dialog import VoiceController
         from voice_transcription import transcribe_audio
@@ -335,7 +340,7 @@ def smoke(destination):
         result['passed'] = result['passed'] and all(result[key] for key in
             ('conversation_round_trip', 'installed_model_reply_check', 'openzero_template_prefix_clean',
              'local_model_retention','reversible_local_tuning','local_project_reviewers','browser_live_reference',
-             'automatic_chat_tools','local_media_entrypoints','local_voice_entrypoints','agent_specialties','inkling_support'))
+             'automatic_chat_tools','local_media_entrypoints','local_voice_entrypoints','agent_specialties','inkling_support','inkling_gpu_status'))
         if os.name == 'nt':
             result['passed'] = result['passed'] and result['windows_voice_plugins']
         if desktop_worker_check:result['passed']=result['passed'] and result.get('desktop_worker',False)
