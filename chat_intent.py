@@ -2,6 +2,7 @@
 
 import re
 
+from agent_focus import shopping_lookup_request
 from project_workers import requests_project_workers
 from remote_intent import requests_remote_work
 
@@ -74,7 +75,12 @@ def request_body(text):
 
 def wants_browser_lookup(text):
     body = request_body(text)
-    return bool(not _ADVICE.match(body) and _WEB_LOOKUP.match(body))
+    return bool(not _ADVICE.match(body) and (_WEB_LOOKUP.match(body) or shopping_lookup_request(body)))
+
+
+def wants_shopping_lookup(text):
+    body = request_body(text)
+    return not _ADVICE.match(body) and shopping_lookup_request(body)
 
 
 def wants_screen_action(text):
@@ -101,15 +107,15 @@ def media_request(text):
     return None
 
 
-def chat_requests_tools(text, *, attached=False, followup=False):
+def chat_requests_tools(text, *, attached=False, followup=False, focus=None):
     """Choose tools for clear actions while preserving advice and attachment chat."""
     body = request_body(text)
     if _ADVICE.match(body):
         return False
-    if requests_remote_work(body) or requests_project_workers(body):
+    if requests_remote_work(body) or requests_project_workers(body, focus=focus):
         return True
     if attached and _ATTACHED_QUESTION.match(body) and not _ATTACHED_ACTION.search(body):
         return False
-    return bool(_WEB_LOOKUP.match(body) or _SCREEN_ACTION.match(body)
+    return bool(wants_browser_lookup(body) or _SCREEN_ACTION.match(body)
                 or (_ACTION.match(body) and _TARGET.search(body))
                 or (followup and _FOLLOWUP.match(body)))

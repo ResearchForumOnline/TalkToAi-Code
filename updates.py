@@ -7,7 +7,7 @@ import ctypes
 import sys
 from pathlib import Path
 
-VERSION = '9.0.2'
+VERSION = '9.0.3'
 REPO = 'https://github.com/ResearchForumOnline/TalkToAi-Code'
 API = 'https://api.github.com/repos/ResearchForumOnline/TalkToAi-Code/releases?per_page=100'
 

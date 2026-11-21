@@ -147,6 +147,17 @@ def smoke(destination):
         result['local_media_entrypoints'] = (callable(generate_media)
                                              and media_request('Create an image of a pine tree.')[0] == 'image'
                                              and media_request('Make a short video of rainfall.')[0] == 'video')
+        from agent_focus import resolve_focus
+        from project_workers import plan_reviews
+        games_request = 'Review gameplay, tests and asset licenses in this Godot project.'
+        game_focus = resolve_focus('auto', games_request)
+        shopping_request = 'Find a 2 TB SSD under £100.'
+        result['agent_specialties'] = (agent_core.AGENT_NAME == 'Agent Zero' and game_focus == 'game'
+            and resolve_focus('auto', 'Review sources, methods and claims in my research project.') == 'research'
+            and resolve_focus('writing', games_request) == 'writing'
+            and resolve_focus('auto', shopping_request) == 'shopping' and chat_requests_tools(shopping_request)
+            and [item.role for item in plan_reviews(games_request, focus=game_focus)] ==
+                ['gameplay_reviewer','playtest_reviewer','asset_reviewer'])
         from voice_dialog import VoiceController
         from voice_transcription import transcribe_audio
         result['local_voice_entrypoints'] = callable(VoiceController) and callable(transcribe_audio)
@@ -313,7 +324,7 @@ def smoke(destination):
         result['passed'] = result['passed'] and all(result[key] for key in
             ('conversation_round_trip', 'installed_model_reply_check', 'openzero_template_prefix_clean',
              'local_model_retention','reversible_local_tuning','local_project_reviewers','browser_live_reference',
-             'automatic_chat_tools','local_media_entrypoints','local_voice_entrypoints'))
+             'automatic_chat_tools','local_media_entrypoints','local_voice_entrypoints','agent_specialties'))
         if os.name == 'nt':
             result['passed'] = result['passed'] and result['windows_voice_plugins']
         if desktop_worker_check:result['passed']=result['passed'] and result.get('desktop_worker',False)

@@ -140,6 +140,60 @@ class ProjectWorkerTests(unittest.TestCase):
                 self.assertEqual([a.role for a in workers.plan_reviews(text,1)], expected[:1])
                 self.assertEqual(workers.plan_reviews(text,0), [])
 
+    def test_specialist_team_respects_scope_budget_and_independent_work(self):
+        cases = [
+            ('game', 'Review gameplay, tests and asset licenses in this Godot project.',
+             ['gameplay_reviewer', 'playtest_reviewer', 'asset_reviewer']),
+            ('research', 'Review sources, methods and claims in my research project.',
+             ['evidence_reviewer', 'methods_reviewer', 'fact_checker']),
+            ('writing', 'Revise the project draft and check its facts and terminology.',
+             ['draft_reviewer', 'fact_checker', 'consistency_reviewer']),
+        ]
+        from chat_intent import chat_requests_tools
+        for focus, task, roles in cases:
+            with self.subTest(focus=focus):
+                self.assertTrue(chat_requests_tools(task, focus=focus))
+                self.assertEqual([item.role for item in workers.plan_reviews(task, focus=focus)], roles)
+                self.assertEqual([item.role for item in workers.plan_reviews(task, 2, focus=focus)], roles[:2])
+        for task in ('Tell me about gameplay and sprites.',
+                     'Fix movement in this Godot project and run tests.',
+                     'Review gameplay and tests in this project without agents.',
+                     'Compare gameplay and tests from the internet.',
+                     'Review gameplay and skip asset licenses in this project.'):
+            with self.subTest(task=task):
+                self.assertEqual(workers.plan_reviews(task, focus='game'), [])
+
+    def test_games_specialists_read_local_evidence_and_agent_zero_synthesizes(self):
+        names = {'gameplay_reviewer':'player.gd', 'playtest_reviewer':'tests/test_movement.gd',
+                 'asset_reviewer':'assets/LICENSE.txt'}
+        events = []
+        reviewed = []
+        def respond(payload):
+            history = payload['messages']
+            if history[0]['content'].startswith('You are a read-only project reviewer'):
+                role = history[1]['content'].split('Role: ', 1)[1].split('.', 1)[0]
+                self.assertLessEqual({item['function']['name'] for item in payload['tools']}, workers.READ_TOOLS)
+                if history[-1]['role'] == 'user':
+                    return call('read_file', {'path':names[role]})
+                return {'content':'Observed local evidence in ' + names[role]}
+            self.assertIn('You are Agent Zero', history[0]['content'])
+            self.assertIn('Work as a game developer', history[0]['content'])
+            reviewed.extend(json.loads(item['content']) for item in history if item.get('tool_name') == 'delegate_review')
+            return {'content':'Applied the gameplay, playtest and license evidence in the review.'}
+        with tempfile.TemporaryDirectory() as folder, fixture(respond) as (url, payloads):
+            for role, relative in names.items():
+                path = Path(folder, relative)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text('Verified fixture for ' + role, encoding='utf-8')
+            task = 'Review gameplay, tests and asset licenses in this Godot project.'
+            core.run_agent_zero(url, 'local-qwen', [{'role':'user','content':task}], folder, False,
+                                threading.Event(), lambda kind,value: events.append((kind,value)),
+                                task_kind='chat', focus='game')
+        self.assertEqual([item['role'] for item in reviewed], list(names))
+        self.assertTrue(all(item['status'] == 'completed' and 'read_file' in item['tools_used'] for item in reviewed))
+        self.assertEqual(sum(kind=='tool' and value.get('automatic') and value.get('name')=='delegate_review'
+                             for kind,value in events), 3)
+
     def test_chat_worker_predicate_leaves_ordinary_single_and_external_tasks_to_the_normal_router(self):
         for text in (
             'Fix the loader in src/load.py.', 'Fix the implementation and run the tests.',

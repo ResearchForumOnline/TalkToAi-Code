@@ -1,6 +1,7 @@
 """A single tool-free conversational turn, shared by local and API routes."""
 import time
 
+from agent_focus import focus_guidance
 from ollama_retention import keep_alive_for, local_port
 from reasoning_stream import ReasoningActivity
 
@@ -14,7 +15,7 @@ CHAT_PROMPT = (
 )
 
 
-def _conversation_payload(model, history, performance, *, url=None):
+def _conversation_payload(model, history, performance, *, url=None, focus=None):
     turns = []
     for item in history:
         role = item.get('role')
@@ -34,9 +35,12 @@ def _conversation_payload(model, history, performance, *, url=None):
 
     capacity = max(2048, int(performance.get('num_ctx', 8192)))
     output_tokens = min(1536, capacity // 2)
+    guidance = focus_guidance(focus)
+    system_prompt = CHAT_PROMPT + ('\n' + guidance if guidance else '')
+    prompt_bytes = len(system_prompt.encode('utf-8'))
     # Keep complete recent exchanges, with space for the reply and template.
     # The full transcript remains in Studio. Never silently cut an attachment.
-    budget = (capacity - output_tokens - 256) * 3 - len(CHAT_PROMPT)
+    budget = (capacity - output_tokens - 256) * 3 - prompt_bytes
     size = 0
     selected = []
     for turn in reversed(turns):
@@ -47,7 +51,7 @@ def _conversation_payload(model, history, performance, *, url=None):
             break
         selected.append(turn)
         size += cost
-    messages = [{'role': 'system', 'content': CHAT_PROMPT}]
+    messages = [{'role': 'system', 'content': system_prompt}]
     for turn in reversed(selected):
         for message in turn:
             if messages[-1]['role'] == message['role']:
@@ -56,7 +60,7 @@ def _conversation_payload(model, history, performance, *, url=None):
                 messages.append(dict(message))
     # Cold short chats can fit a smaller KV cache. Reuse a suitable warm context
     # because changing num_ctx can make Ollama reload the same model.
-    context = min(capacity, 4096) if size + len(CHAT_PROMPT) <= (4096 - output_tokens - 256) * 3 else capacity
+    context = min(capacity, 4096) if size + prompt_bytes <= (4096 - output_tokens - 256) * 3 else capacity
     resident = performance.get('resident_context')
     if (url is None or local_port(url) is not None) and type(resident) is int and context <= resident <= capacity:
         context = resident
@@ -95,8 +99,8 @@ def describe_switch(switch):
             + 'Cooldown ' + str(switch['cooldown_seconds']) + 's.')
 
 
-def conversational_reply(url, model, history, cancel, emit, performance, stream):
-    payload = _conversation_payload(model, history, performance or {}, url=url)
+def conversational_reply(url, model, history, cancel, emit, performance, stream, *, focus=None):
+    payload = _conversation_payload(model, history, performance or {}, url=url, focus=focus)
     started = time.monotonic()
     first = None
     chunks = []

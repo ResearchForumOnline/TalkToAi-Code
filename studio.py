@@ -11,7 +11,7 @@ import copy
 import subprocess
 import hashlib
 from shiboken6 import isValid
-from PySide6.QtCore import Qt, Signal, QObject, QTimer, QEvent, QSize
+from PySide6.QtCore import Qt, Signal, QObject, QTimer, QEvent, QSize, QSignalBlocker
 from PySide6.QtGui import QFont, QTextCharFormat, QTextCursor, QKeySequence, QShortcut, QDesktopServices, QIcon, QPixmap, QPainter, QColor, QImageReader
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtCore import QUrl
@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout, 
     QTextBrowser, QPlainTextEdit, QFileDialog, QMessageBox, QFrame, QInputDialog,
     QSystemTrayIcon, QMenu, QDialog, QLineEdit, QCheckBox, QDialogButtonBox, QScrollArea, QSpinBox)
 from agent_core import AGENT_NAME, ProjectTools, run_agent_zero as run_agent, run_conversation, restore_checkpoint, set_active_remote, set_agent_preferences, set_active_provider
+from agent_focus import FOCUS_CHOICES, needs_project_kind, normalize_focus, resolve_focus
 from routing import choose_route, ensure_local_model, ensure_local_runtime, matching_model
 from model_library import DEFAULT_LOCAL_MODEL, QWEN_LOCAL_MODEL, DownloadCancelled
 from ollama_retention import DEFAULT_KEEP_ALIVE, KEEP_ALIVE_CHOICES, local_port, normalize_keep_alive
@@ -487,7 +488,24 @@ class Studio(QMainWindow):
         self.mode_hint=QLabel();self.mode_hint.setObjectName('muted');self.mode_hint.setWordWrap(True)
         def show_mode():self.mode_hint.setText('Act: the agent can edit files and run project commands.' if self.mode.currentText()=='Act' else 'Plan: read-only research and planning. Select Act to build or edit your project.')
         self.mode.currentTextChanged.connect(show_mode);show_mode();chat.addWidget(self.mode_hint)
-        self.compose_hint=QLabel();self.compose_hint.setObjectName('muted');chat.addWidget(self.compose_hint)
+        footer = QHBoxLayout()
+        self.compose_hint = QLabel()
+        self.compose_hint.setObjectName('muted')
+        self.compose_hint.setWordWrap(True)
+        footer.addWidget(self.compose_hint, 1)
+        focus_label = QLabel('Agent Zero specialist')
+        focus_label.setWordWrap(True)
+        self.agent_focus = QComboBox()
+        self.agent_focus.setObjectName('agent_focus')
+        self.agent_focus.setAccessibleName(focus_label.text())
+        self.agent_focus.setToolTip('Auto picks a specialty for each message. Agent Zero can use up to three local workers on independent project tasks.')
+        for key, label in FOCUS_CHOICES:
+            self.agent_focus.addItem(label, key)
+        focus_label.setBuddy(self.agent_focus)
+        footer.addWidget(focus_label)
+        footer.addWidget(self.agent_focus)
+        self.agent_focus.currentIndexChanged.connect(self.save_agent_focus)
+        chat.addLayout(footer)
         self.performance_label=QLabel('Auto prefers a verified coding route, then falls back when unavailable.');self.performance_label.setObjectName('muted');chat.addWidget(self.performance_label)
         self.performance_label.setWordWrap(True)
         split.addWidget(center)
@@ -554,6 +572,11 @@ class Studio(QMainWindow):
     def save_draft(self):
         if self.task:self.task['draft']=self.prompt.toPlainText()
         if hasattr(self,'draft_timer'):self.draft_timer.start(750)
+
+    def save_agent_focus(self):
+        if self.task:
+            self.task['agent_focus'] = normalize_focus(self.agent_focus.currentData())
+            self.autosave_draft()
 
     def autosave_draft(self):
         try:self.persist()
@@ -893,6 +916,10 @@ class Studio(QMainWindow):
         if not self.task:return
         kind=self.task.get('kind','code')
         is_chat=kind=='chat'
+        preference = normalize_focus(self.task.get('agent_focus'))
+        self.task['agent_focus'] = preference
+        with QSignalBlocker(self.agent_focus):
+            self.agent_focus.setCurrentIndex(self.agent_focus.findData(preference))
         if self.voice_task_id and (self.voice_task_id != task_id or not is_chat):
             self.voice_task_id = None
             self.voice.stop('')
@@ -1527,9 +1554,19 @@ class Studio(QMainWindow):
             self.start_media_request(text,generation)
             return
         is_chat=self.task.get('kind','code')=='chat'
+        focus_preference = self.task.get('agent_focus', 'auto')
+        project_kind = ''
+        if focus_preference == 'auto' and needs_project_kind(text):
+            from asset_library import asset_engine
+            try:
+                project_kind = asset_engine(self.task['project'])
+            except (OSError, ValueError):
+                pass
+        resolved_focus = resolve_focus(focus_preference, text, project_kind=project_kind)
+        focus_options = {'focus': resolved_focus} if resolved_focus != 'everyday' else {}
         previous=next((item for item in reversed(messages) if item.get('role')=='user' and item.get('source')!='app'),{})
         followup=previous.get('chat_mode')=='tools'
-        conversation=is_chat and (retry or not chat_requests_tools(text,attached=bool(self.attachments),followup=followup))
+        conversation=is_chat and (retry or not chat_requests_tools(text,attached=bool(self.attachments),followup=followup,focus=resolved_focus))
         if self.route.currentIndex()==4 and not self.active_provider():
             self.status.setText('Add an API key and choose a model in your private vault to begin. Your draft is kept.')
             self.providers_dialog()
@@ -1628,7 +1665,7 @@ class Studio(QMainWindow):
                     from agent_core import OllamaCapacityError
                     try:
                         run_conversation(selected['url'],selected['model'],history,self.cancel,self.bus.event.emit,
-                                         performance=self._local_chat_performance(selected,performance))
+                                         performance=self._local_chat_performance(selected,performance), **focus_options)
                     except OllamaCapacityError as exc:
                         small=self.config.get('local_model','')
                         if (self.cancel.is_set() or preference!='auto' or selected['route'] not in ('local','local_large')
@@ -1645,11 +1682,11 @@ class Studio(QMainWindow):
                         if self.cancel.is_set():return
                         self.bus.event.emit('route',fallback)
                         run_conversation(fallback['url'],fallback['model'],history,self.cancel,self.bus.event.emit,
-                                         performance=self._local_chat_performance(fallback,performance))
+                                         performance=self._local_chat_performance(fallback,performance), **focus_options)
                     return
                 def job_event(kind,data):self.bus.event.emit(kind,dict(data,task_id=task_id))
                 self.job_manager=ProcessJobs(project,self.cancel,job_event)
-                run_agent(selected['url'],selected['model'],history,project,act,self.cancel,self.bus.event.emit,rounds=rounds,performance=performance,jobs=self.job_manager,task_kind=task_kind,keep_going=keep_going,task_goal=task_goal,app_preferences=self.preferences_manager,preference_change_notify=lambda result:self.bus.event.emit('app_preferences_changed',result),mcp_config=self.config.get('mcp_plugins'))
+                run_agent(selected['url'],selected['model'],history,project,act,self.cancel,self.bus.event.emit,rounds=rounds,performance=performance,jobs=self.job_manager,task_kind=task_kind,keep_going=keep_going,task_goal=task_goal,app_preferences=self.preferences_manager,preference_change_notify=lambda result:self.bus.event.emit('app_preferences_changed',result),mcp_config=self.config.get('mcp_plugins'),**focus_options)
             except DownloadCancelled:
                 self.bus.event.emit('status','Model download stopped')
             except Exception as exc:self.bus.event.emit('error',str(exc))
@@ -1857,7 +1894,7 @@ class Studio(QMainWindow):
         if not busy:self.refresh_route_labels()
         self.refresh_model_setup()
         self.escape_shortcut.setEnabled(busy and not self.global_escape)
-        for w in (self.new_button,self.project_button,self.task_list,self.task_view,self.route,self.mode,self.step_budget,self.keep_going,self.work_duration,self.goal_button,self.chat_space,self.code_space,self.skynet_button,self.local_tools_button,self.chat_models):w.setEnabled(not busy)
+        for w in (self.new_button,self.project_button,self.task_list,self.task_view,self.route,self.agent_focus,self.mode,self.step_budget,self.keep_going,self.work_duration,self.goal_button,self.chat_space,self.code_space,self.skynet_button,self.local_tools_button,self.chat_models):w.setEnabled(not busy)
         steer=busy and self.execution_kind!='conversation'
         self.prompt.setEnabled(True);self.send_button.setEnabled(not busy or steer);self.send_button.setText('✦  Steer' if steer else '↑  Send')
         self.stop.setVisible(busy or self.workspace=='code')

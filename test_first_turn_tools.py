@@ -69,6 +69,41 @@ class FirstTurnToolTests(unittest.TestCase):
         _, events = self.first_turn('Check my latest Gmail inbox message', task_kind='chat')
         self.assertFalse(any(kind == 'tool' and value.get('automatic') and value.get('name') == 'browser' for kind, value in events))
 
+    def test_shopping_compares_in_a_headless_read_only_browser(self):
+        payloads = []
+        events = []
+        query = '2 TB SSD retail price and delivery'
+
+        def stream(_url, payload, _cancel):
+            payloads.append(copy.deepcopy(payload))
+            step = len(payloads)
+            actions = [('search', query), ('click', 'Order now')]
+            if step > len(actions):
+                return iter([_done()])
+            action, target = actions[step - 1]
+            return iter([{'message': {'tool_calls': [{'function': {
+                'name': 'browser', 'arguments': {'action': action, 'target': target},
+            }}]}, 'done': True}])
+
+        with tempfile.TemporaryDirectory() as folder, \
+             patch.object(core, 'stream_chat', side_effect=stream), \
+             patch.object(core, 'model_supports_vision', return_value=False), \
+             patch.object(core, 'load_project_instructions', side_effect=AssertionError('Shopping opened a project note')), \
+             patch.object(core, 'DESKTOP_ACCESS', True), \
+             patch('browser_tools.BrowserTools') as browser:
+            browser.return_value.execute.return_value = json.dumps({'page':'2 TB SSD, £89 from a fixture seller.'})
+            core.run_agent('fixture','fixture',[{'role':'user','content':'Find a 2 TB SSD under £100.'}],
+                           folder,True,threading.Event(),lambda kind,value:events.append((kind,value)),
+                           task_kind='chat',focus='shopping')
+
+        self.assertGreaterEqual(len(payloads), 3)
+        self.assertEqual([tool['function']['name'] for tool in payloads[0]['tools']], ['browser'])
+        self.assertIn('You are Agent Zero', payloads[0]['messages'][0]['content'])
+        browser.assert_called_once()
+        self.assertEqual(browser.call_args.kwargs['mode'],'headless')
+        browser.return_value.execute.assert_called_once_with('search',query,'')
+        self.assertTrue(any('Plan mode permits web search' in str(value) for kind,value in events if kind=='result'))
+
     def test_code_first_model_turn_receives_named_project_source(self):
         payloads = []
         events = []

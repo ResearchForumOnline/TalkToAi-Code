@@ -133,6 +133,16 @@ class ConversationTests(unittest.TestCase):
         self.assertEqual([v for k, v in self.events if k == 'message'], [{'role': 'assistant', 'content': 'Hi!'}])
         self.assertEqual(next(v for k, v in self.events if k == 'metrics')['tokens_per_second'], 2)
 
+    def test_writing_focus_uses_same_agent_and_ordinary_tool_free_chat(self):
+        with fixture([OLLAMA_RESPONSE]) as (url, received):
+            core.run_conversation(url, 'qwen3.6:35b', [{'role':'user','content':'Write a short thank-you letter.'}],
+                                  self.cancel, lambda kind, value: self.events.append((kind, value)), focus='writing')
+        payload = received[0][1]
+        self.assertEqual(payload['model'], 'qwen3.6:35b')
+        self.assertIn('You are Agent Zero', payload['messages'][0]['content'])
+        self.assertIn('Work as an editor and writer', payload['messages'][0]['content'])
+        self.assertNotIn('tools', payload)
+
     def test_history_respects_budget_without_silently_truncating_current_message(self):
         older = [{'role': 'user', 'content': 'old' * 9000}, {'role': 'assistant', 'content': 'old result'}]
         latest = {'role': 'user', 'content': 'Read this: attached excerpt'}

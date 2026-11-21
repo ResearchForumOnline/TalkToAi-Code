@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param([string]$BuildName = '9.0.2', [string]$OutputDirectory = '', [string]$AssetCollection = '')
+param([string]$BuildName = '9.0.3', [string]$OutputDirectory = '', [string]$AssetCollection = '')
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 if ($BuildName -notmatch '^\d+\.\d+\.\d+(?:-[a-zA-Z0-9]+)?$') { throw 'BuildName must identify the source release.' }

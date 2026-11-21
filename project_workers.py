@@ -7,6 +7,7 @@ import re
 import time
 from urllib.parse import urlsplit
 
+from agent_focus import normalize_focus
 
 MAX_WORKERS = 3
 WORKER_SECONDS = 180
@@ -19,7 +20,16 @@ ROLE_FOCUS = {
     'reviewer': 'Review the relevant behavior for correctness and regressions. Cite specific source locations.',
     'test_planner': 'Inspect existing project tests and report coverage and gaps. Suggest specific checks.',
     'documenter': 'Check the project documentation and examples against the requested behavior. Cite the relevant files.',
+    'gameplay_reviewer': 'Trace the requested gameplay through the actual scenes, scripts or input settings. Name the relevant mechanics and source paths.',
+    'playtest_reviewer': 'Inspect existing game tests or checks. Identify a reproducible playtest, its expected result, and any missing coverage.',
+    'asset_reviewer': 'Inspect asset references, engine compatibility and available license notices. Identify what needs verification before import.',
+    'evidence_reviewer': 'Find the project evidence behind the claim. Cite exact local paths and observations, separating cited material from inference.',
+    'methods_reviewer': 'Review the method, assumptions and comparisons in the actual project. Name the evidence that a second reader can check.',
+    'fact_checker': 'Verify key claims using the available project evidence. Cite specific sources and flag statements that still need support.',
+    'draft_reviewer': 'Review the local draft for audience, structure and clarity. Quote the relevant passage and explain a concrete improvement.',
+    'consistency_reviewer': 'Check wording, terminology and examples across the relevant project documents. Point to specific inconsistencies.',
 }
+_GENERAL_ROLES = ('reviewer', 'investigator', 'test_planner', 'documenter')
 _WORKER = r'(?:local\s+|read-only\s+)?(?:sub[- ]?agents?|agents?|workers?|reviewers?)\b'
 _COUNT = {'a': 1, 'an': 1, 'one': 1, 'two': 2, 'three': 3}
 _NUMBER = r'\d{1,3}|one|two|three|a|an'
@@ -60,6 +70,26 @@ _NONREVIEW_CLAUSE = re.compile(r'^(?:also\s+)?(?:' + _CHANGE_VERBS + r'|run|exec
 _NONLOCAL = re.compile(r'https?://|\b(?:ssh|inbox|mailbox|send an? email|publish|deploy|search the web|'
                        r'(?:on|from) (?:the )?(?:web|internet|github)|online documentation|remote server|'
                        r'pasted (?:below|here)|in this (?:message|snippet)|following (?:passage|excerpt|snippet))\b', re.I)
+_SPECIALTY_SCOPE = re.compile(r'\b(?:projects?|repo(?:sitory)?|workspace|local files?|checked[- ]in|godot|unity|unreal engine|'
+                              r'(?:my|our|this|existing) game)\b|\b[\w./-]+\.(?:md|txt|gd|tscn|cs|yaml|json)\b', re.I)
+_WRITING_START = re.compile(r'^\s*' + _POLITE + r'(?:edit|revise|rewrite|polish|proofread|fact[- ]check)\b', re.I)
+_SPECIALTY_TOPICS = {
+    'game': (
+        ('gameplay_reviewer', r'\b(?:gameplay|mechanics|controls?|movement|collisions?|scenes?|levels?|platformer)\b'),
+        ('playtest_reviewer', r'\b(?:playtest(?:s|ing)?|tests?|test coverage|regression checks?)\b'),
+        ('asset_reviewer', r'\b(?:assets?|sprites?|textures?|licenses?|licences?|asset imports?)\b'),
+    ),
+    'research': (
+        ('evidence_reviewer', r'\b(?:sources?|evidence|citations?|references?|datasets?|data)\b'),
+        ('methods_reviewer', r'\b(?:methods?|methodology|assumptions?|benchmarks?|experiments?|controls?)\b'),
+        ('fact_checker', r'\b(?:findings?|claims?|conclusions?|interpretation|limitations?|uncertainty)\b'),
+    ),
+    'writing': (
+        ('draft_reviewer', r'\b(?:draft|structure|audience|rewrite|introduction|headings?|argument)\b'),
+        ('fact_checker', r'\b(?:facts?|sources?|evidence|citations?|claims?)\b'),
+        ('consistency_reviewer', r'\b(?:terminology|consistency|style guide|wording|glossary)\b'),
+    ),
+}
 
 
 def worker_limit(value):
@@ -86,12 +116,12 @@ def requested_count(text):
     return 2 if match[0].lower().endswith('s') else 1
 
 
-def requests_project_workers(text):
+def requests_project_workers(text, *, focus=None):
     """Whether Chat has a request for project work that can use local reviewers."""
     count = requested_count(text)
     if count is not None:
         return bool(count and _PROJECT.search(text))
-    return bool(_implicit_roles(text))
+    return bool(_specialty_roles(text, focus) or _implicit_roles(text))
 
 
 def review_question(text):
@@ -137,15 +167,39 @@ def _implicit_roles(text):
     return roles if len(roles) > 1 else []
 
 
-def plan_reviews(text, limit=MAX_WORKERS):
+def delegation_roles(focus):
+    topics = _SPECIALTY_TOPICS.get(normalize_focus(focus))
+    return tuple(role for role, _ in topics) if topics else _GENERAL_ROLES
+
+
+def _specialty_roles(text, focus):
+    topics = _SPECIALTY_TOPICS.get(normalize_focus(focus))
+    if not topics or not (_TASK_START.match(text) or _WRITING_START.match(text)):
+        return []
+    if _NONLOCAL.search(text) or not _SPECIALTY_SCOPE.search(text):
+        return []
+    clauses = [part.strip() for part in _CLAUSES.split(text) if part.strip()]
+    independent = [part for part in clauses[1:] if not (_NEGATED.match(part) or _NONREVIEW_CLAUSE.match(part))]
+    if not independent:
+        return []
+    positive = ' '.join([clauses[0], *independent])
+    roles = [role for role, pattern in topics if re.search(pattern, positive, re.I)]
+    return roles if len(roles) >= 2 else []
+
+
+def plan_reviews(text, limit=MAX_WORKERS, *, focus=None):
     """Preselect independent project questions. Simple turns stay on the parent."""
     limit = worker_limit(limit)
+    focus = normalize_focus(focus)
     count = requested_count(text)
     if not limit or count == 0 or _QUESTION.search(text.strip()):
         return []
     if count is None:
-        roles = _implicit_roles(text)
+        roles = _specialty_roles(text, focus) or _implicit_roles(text)
         count = len(roles)
+    elif focus in _SPECIALTY_TOPICS:
+        roles = [role for role, pattern in _SPECIALTY_TOPICS[focus] if re.search(pattern, text, re.I)]
+        roles.extend(role for role in delegation_roles(focus) if role not in roles)
     else:
         roles = [role for role, pattern in _FOCUSES if pattern.search(text)]
         roles.extend(role for role in ('reviewer', 'investigator', 'test_planner') if role not in roles)
@@ -167,7 +221,18 @@ def starting_files(paths, task, role):
         test = any(word in ('test', 'tests', '__tests__') for word in path.parts) or bool(
             re.search(r'(^test[_-]|[_\-.](?:tests?|spec)\.)', path.name))
         doc = path.suffix in ('.md', '.rst', '.txt')
-        related = test if role == 'test_planner' else doc if role == 'documenter' else not (test or doc)
+        if role in ('test_planner', 'playtest_reviewer'):
+            related = test
+        elif role in ('documenter', 'evidence_reviewer', 'fact_checker', 'draft_reviewer', 'consistency_reviewer'):
+            related = doc
+        elif role == 'gameplay_reviewer':
+            related = not test and path.suffix in ('.gd', '.gdshader', '.tscn', '.godot', '.cs', '.cpp', '.lua')
+        elif role == 'asset_reviewer':
+            related = any(word in path.as_posix() for word in ('asset', 'sprite', 'licen', 'credit'))
+        elif role == 'methods_reviewer':
+            related = test or any(word in path.name for word in ('bench', 'method', 'experiment', 'protocol'))
+        else:
+            related = not (test or doc)
         named = path.as_posix() in mentioned or path.name in mentioned or (' ' in path.name and path.name in task)
         if named or related:
             ranked.append((not related, not named, len(path.parts), len(name), name))
