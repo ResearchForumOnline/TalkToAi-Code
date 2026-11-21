@@ -162,11 +162,12 @@ class InklingRuntimeTests(unittest.TestCase):
 
     def test_child_only_environment_adds_verified_bundled_crt_after_system_paths(self):
         crt = (str(self.root / '_internal'), str(self.root / '_internal' / 'PySide6'))
+        system_root = self.root / 'Windows'
         with (patch.object(runtime, 'bundled_crt_paths', return_value=crt),
-              patch.dict(runtime.os.environ, {'SYSTEMROOT': r'C:\Windows', 'PATH': 'user-bin', 'OPENAI_API_KEY': 'fixture'})):
+              patch.dict(runtime.os.environ, {'SYSTEMROOT': str(system_root), 'PATH': 'user-bin', 'OPENAI_API_KEY': 'fixture'})):
             env = runtime._engine_environment('runner-only-key')
             self.assertEqual(runtime.os.environ['PATH'], 'user-bin')
-        self.assertEqual(env['PATH'].split(runtime.os.pathsep), [str(Path(r'C:\Windows') / 'System32'), r'C:\Windows', *crt])
+        self.assertEqual(env['PATH'].split(runtime.os.pathsep), [str(system_root / 'System32'), str(system_root), *crt])
         self.assertNotIn('OPENAI_API_KEY', env)
         self.assertEqual(env['LLAMA_API_KEY'], 'runner-only-key')
 
