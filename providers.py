@@ -162,12 +162,16 @@ def store_api_key(profile, key, remember=False):
 
 
 def forget_api_key(profile):
-    _SESSION_KEYS.pop(key_identity(profile),None)
+    forget_session_api_key(profile)
     if os.name=='nt':key_path(profile).unlink(missing_ok=True)
     else:
         import keyring
         try:keyring.delete_password(key_namespace(),key_identity(profile))
         except keyring.errors.PasswordDeleteError:pass
+
+
+def forget_session_api_key(profile):
+    _SESSION_KEYS.pop(key_identity(profile), None)
 
 
 def environment_key_allowed(profile):

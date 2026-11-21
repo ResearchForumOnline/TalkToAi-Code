@@ -23,9 +23,12 @@ from agent_core import AGENT_NAME, ProjectTools, run_agent_zero as run_agent, ru
 from agent_focus import FOCUS_CHOICES, needs_project_kind, normalize_focus, resolve_focus
 from routing import choose_route, ensure_local_model, ensure_local_runtime, matching_model
 from model_library import DEFAULT_LOCAL_MODEL, QWEN_LOCAL_MODEL, DownloadCancelled
+from inkling_models import INKLING_PRESETS, prepared_path
+from inkling_runtime import INKLING_CONTEXT, INKLING_MODEL, InklingRuntime, supported as inkling_supported
 from ollama_retention import DEFAULT_KEEP_ALIVE, KEEP_ALIVE_CHOICES, local_port, normalize_keep_alive
 from ssh_tools import SSHProfile, SSHSession, load_profiles, save_profiles, validate_alias
-from providers import ProviderProfile, load_profiles as load_provider_profiles, save_profiles as save_provider_profiles
+from providers import (ProviderProfile, forget_session_api_key, store_api_key,
+                       load_profiles as load_provider_profiles, save_profiles as save_provider_profiles)
 from desktop_inventory import inspect_desktop
 from session_store import load_tasks, save_tasks, matches_task
 from task_starters import STARTERS, STARTER_GROUPS
@@ -75,6 +78,7 @@ STATE.mkdir(parents=True, exist_ok=True)
 SESSION = STATE / 'studio.json'
 CONNECTIONS = STATE / 'connections.json'
 PROVIDERS = STATE / 'providers.json'
+MODEL_ROUTES = ('auto', 'local', 'server', 'local_large', 'provider', 'inkling')
 
 STYLE = '''
 QWidget { background:#111923; color:#e8edf3; font-family:'Segoe UI'; font-size:13px; }
@@ -183,6 +187,7 @@ class Studio(QMainWindow):
         self.local_inventory_revision = 0
         self.local_recent_model = None
         self.local_removed_models = set()
+        self.inkling_runtime = InklingRuntime(STATE) if inkling_supported() else None
         self.execution_kind = 'model'
         self.control_overlay=None;self.control_active=False;self.global_escape=False
         self.escape_cancel=EscapeCancel();self.control_cancel_token=None
@@ -207,6 +212,7 @@ class Studio(QMainWindow):
             'project': str(Path.home() if os.name != 'nt' else (Path.home() / 'Documents' if STORE_PACKAGE and (Path.home() / 'Documents').is_dir() else Path.home() if STORE_PACKAGE else HOME.parent)),
             'local_model': DEFAULT_LOCAL_MODEL,
             'local_large_model': QWEN_LOCAL_MODEL,
+            'inkling_model': '',
             'server_model': 'qwen3-coder:30b',
             'server_label': 'Server',
             'approval_policy': 'ask_remote',
@@ -255,9 +261,8 @@ class Studio(QMainWindow):
         self.workspace = previous if previous in ('chat','code') else next(
             (t.get('kind','code') for t in self.tasks if not t.get('archived')), 'chat')
         self.build()
-        if self.config.get('preferred_route') in ('local','server','local_large'):
-            self.route.setCurrentIndex(('auto','local','server','local_large').index(self.config['preferred_route']))
-        if self.config.get('preferred_route')=='provider':self.route.setCurrentIndex(4)
+        if self.config.get('preferred_route') in MODEL_ROUTES[:self.route.count()]:
+            self.route.setCurrentIndex(MODEL_ROUTES.index(self.config['preferred_route']))
         if self.config.get('approval_policy')=='plan':self.mode.setCurrentText('Plan')
         self.refresh_tasks()
         if self.task_list.count():
@@ -466,8 +471,11 @@ class Studio(QMainWindow):
         self.attachment_list=QListWidget();self.attachment_list.setMaximumHeight(70);self.attachment_list.hide();composer.addWidget(self.attachment_list)
         self.refresh_attachments()
         options = QHBoxLayout()
-        self.route = QComboBox(); self.route.addItems(['Auto', 'Local', 'Server', 'Local large', 'API · optional provider']);self.refresh_route_labels();options.addWidget(self.route)
-        self.route.currentIndexChanged.connect(self.refresh_model_setup)
+        self.route = QComboBox()
+        self.route.addItems(['Auto', 'Local', 'Server', 'Local large', 'API · optional provider'])
+        if self.inkling_runtime is not None:self.route.addItem('Inkling 2 Mini')
+        self.refresh_route_labels();options.addWidget(self.route)
+        self.route.currentIndexChanged.connect(self.model_route_changed)
         self.route.activated.connect(self.remember_route)
         self.mode = QComboBox(); self.mode.addItems(['Act', 'Plan']); self.mode.setToolTip('Act permits file edits and host commands. Plan only reads project files. Commands are not OS-sandboxed.'); options.addWidget(self.mode)
         self.step_budget=QComboBox()
@@ -1571,6 +1579,10 @@ class Studio(QMainWindow):
             self.status.setText('Add an API key and choose a model in your private vault to begin. Your draft is kept.')
             self.providers_dialog()
             if not self.active_provider():return
+        if MODEL_ROUTES[self.route.currentIndex()] == 'inkling' and not self._inkling_weights():
+            self.status.setText('Set up Inkling in Models and setup. Your draft is kept.')
+            self.models_dialog()
+            if MODEL_ROUTES[self.route.currentIndex()] == 'inkling' and not self._inkling_weights():return
         if not conversation:
             if not self.prepare_task_target(text):return
             try:ProjectTools(self.task['project'])
@@ -1597,7 +1609,7 @@ class Studio(QMainWindow):
         self.chat_response_received=False
         self.chat_recovery=''
         self.partial=''; self.render(); self.persist(); self.cancel=threading.Event(); self.set_busy(True)
-        preference=('auto','local','server','local_large','provider')[self.route.currentIndex()]
+        preference=MODEL_ROUTES[self.route.currentIndex()]
         self.started_at=time.monotonic();self.route_description=f'{AGENT_NAME} · selecting model';self.status.setText('Checking installed models…')
         project=self.task['project']; history=list(self.task['messages']); act=self.mode.currentText()=='Act';task_id=self.task['id']
         task_kind=self.task.get('kind','code');rounds=self.step_budget.currentData() if task_kind=='code' else 16
@@ -1623,10 +1635,26 @@ class Studio(QMainWindow):
                 web_browser_cdp_port=self.config.get('web_browser_cdp_port',9222),
             )
         def work():
+            inkling_profile = None
+            model_performance = performance
             try:
                 try:benchmarks=json.loads((HOME/'benchmark-results.json').read_text(encoding='utf-8'))
                 except (OSError,ValueError):benchmarks={}
-                if preference=='provider':
+                if preference=='inkling':
+                    weights = self._inkling_weights()
+                    if weights is None:
+                        raise ValueError('Inkling weights could not be found. Open Models and setup and choose Inkling again.')
+                    url, key = self.inkling_runtime.start(weights, self.cancel,
+                        lambda message, *_: self.bus.event.emit('status', message))
+                    inkling_profile = ProviderProfile('Inkling 2 Mini', url, INKLING_MODEL, engine='llama.cpp',
+                        api_mode='chat_completions', cost_tier='self_hosted', max_output_tokens=1024)
+                    store_api_key(inkling_profile, key)
+                    set_active_provider(inkling_profile)
+                    selected = {'route':'inkling', 'url':url, 'model':INKLING_MODEL,
+                                'display_model':INKLING_PRESETS[self.config['inkling_model']].label,
+                                'reason':'local llama.cpp runner on this PC'}
+                    model_performance = dict(performance, num_ctx=INKLING_CONTEXT)
+                elif preference=='provider':
                     profile=self.active_provider()
                     if not profile:raise ValueError('No API provider is configured. Open the private API vault and add a provider.')
                     set_active_provider(profile,self.provider_profiles)
@@ -1665,7 +1693,7 @@ class Studio(QMainWindow):
                     from agent_core import OllamaCapacityError
                     try:
                         run_conversation(selected['url'],selected['model'],history,self.cancel,self.bus.event.emit,
-                                         performance=self._local_chat_performance(selected,performance), **focus_options)
+                                         performance=self._local_chat_performance(selected,model_performance), **focus_options)
                     except OllamaCapacityError as exc:
                         small=self.config.get('local_model','')
                         if (self.cancel.is_set() or preference!='auto' or selected['route'] not in ('local','local_large')
@@ -1686,7 +1714,7 @@ class Studio(QMainWindow):
                     return
                 def job_event(kind,data):self.bus.event.emit(kind,dict(data,task_id=task_id))
                 self.job_manager=ProcessJobs(project,self.cancel,job_event)
-                run_agent(selected['url'],selected['model'],history,project,act,self.cancel,self.bus.event.emit,rounds=rounds,performance=performance,jobs=self.job_manager,task_kind=task_kind,keep_going=keep_going,task_goal=task_goal,app_preferences=self.preferences_manager,preference_change_notify=lambda result:self.bus.event.emit('app_preferences_changed',result),mcp_config=self.config.get('mcp_plugins'),**focus_options)
+                run_agent(selected['url'],selected['model'],history,project,act,self.cancel,self.bus.event.emit,rounds=rounds,performance=model_performance,jobs=self.job_manager,task_kind=task_kind,keep_going=keep_going,task_goal=task_goal,app_preferences=self.preferences_manager,preference_change_notify=lambda result:self.bus.event.emit('app_preferences_changed',result),mcp_config=self.config.get('mcp_plugins'),**focus_options)
             except DownloadCancelled:
                 self.bus.event.emit('status','Model download stopped')
             except Exception as exc:self.bus.event.emit('error',str(exc))
@@ -1695,6 +1723,8 @@ class Studio(QMainWindow):
                     set_active_remote(None)
                     set_agent_preferences(False, True, False, True, False)
                 set_active_provider(None)
+                if inkling_profile is not None:
+                    forget_session_api_key(inkling_profile)
                 self.bus.event.emit('finished',None)
         threading.Thread(target=work,daemon=True).start()
 
@@ -1770,6 +1800,9 @@ class Studio(QMainWindow):
 
     def start_skynet(self):
         if self.busy or not self.task or self.task.get('kind','code')!='code':return
+        if MODEL_ROUTES[self.route.currentIndex()] == 'inkling':
+            self.status.setText('Choose an Ollama or API route for Skynet Mode. Inkling is available in Chat and Code.')
+            return
         from project_workbench import choose_improvement
         settings=choose_improvement(self,self.prompt.toPlainText().strip(),self.config.get('skynet_iterations',2))
         if settings is None:return
@@ -1786,7 +1819,7 @@ class Studio(QMainWindow):
         self.cancel=threading.Event();self.set_busy(True);self.skynet_button.setEnabled(False)
         self.started_at=time.monotonic();self.route_description='Selecting Skynet Mode runtime'
         self.status.setText('Skynet Mode: preparing a separate candidate…')
-        project=self.task['project'];preference=('auto','local','server','local_large','provider')[self.route.currentIndex()]
+        project=self.task['project'];preference=MODEL_ROUTES[self.route.currentIndex()]
         performance=self.model_performance()
         def work():
             try:
@@ -2106,12 +2139,13 @@ class Studio(QMainWindow):
             self.persist();self.render()
         elif kind=='route':
             label=self.server_name() if data['route']=='server' else 'API' if data['route']=='provider' else 'Local'
-            self.route_description=label+' · '+data['model'];self.status.setText(self.route_description+' · '+data['reason'])
+            display_model = data.get('display_model', data['model'])
+            self.route_description=label+' · '+display_model;self.status.setText(self.route_description+' · '+data['reason'])
             if data['route'] in ('local','local_large'):
                 self._record_local_model(data['model'])
             if self.execution_kind=='conversation':
-                self.chat_model=local_model_name(data['model'])
-                self.chat_local=data['route'] in ('local','local_large')
+                self.chat_model=local_model_name(display_model)
+                self.chat_local=data['route'] in ('local','local_large','inkling')
                 self.observe_progress('Waiting for reply');self.tick()
         elif kind=='metrics':
             self.observe_progress('Model response received',data.get('step',self.run_step))
@@ -2641,14 +2675,24 @@ Use an available local or server model, stop a task, or steer it into a smaller 
         labels=['Auto · available models',local,name+' · '+str(self.config.get('server_model','configured model')),large]
         profile=self.active_provider()
         labels.append('API · '+(profile.label+' / '+profile.model if profile else 'Set up a provider…'))
+        if self.inkling_runtime is not None:
+            key = self.config.get('inkling_model')
+            preset = INKLING_PRESETS.get(key) if isinstance(key, str) else None
+            labels.append(preset.label if preset and self._inkling_weights() else 'Inkling 2 Mini · set up in Models')
         for index,label in enumerate(labels):
             self.route.setItemText(index,label[:72]);self.route.setItemData(index,label,Qt.ToolTipRole)
         self.route.setItemData(1,local_tip,Qt.ToolTipRole)
         self.route.setItemData(3,large_tip,Qt.ToolTipRole)
         self.reconnect_button.setText('Reconnect '+name+' model')
 
+    def model_route_changed(self,index):
+        if index >= 0 and MODEL_ROUTES[index] != 'inkling' and self.inkling_runtime is not None:
+            self.inkling_runtime.stop()
+        self.refresh_model_setup()
+
     def remember_route(self,index):
-        self.config['preferred_route']=('auto','local','server','local_large','provider')[index]
+        if index < 0:return
+        self.config['preferred_route']=MODEL_ROUTES[index]
         self.write_config()
 
     def model_performance(self):
@@ -2857,7 +2901,8 @@ Use an available local or server model, stop a task, or steer it into a smaller 
                                   self.diagnose_models,self.compare_installed_models,self.providers_dialog,
                                   configured_models={'Local':self.config.get('local_model',''),'Local large':self.config.get('local_large_model','')},
                                   keep_alive=self.config.get('ollama_keep_alive'),inventory_changed=self._model_dialog_inventory,
-                                  tune=lambda:self.start_local_tuning(preserve_draft=True))
+                                  tune=lambda:self.start_local_tuning(preserve_draft=True),
+                                  inkling=self.inkling_runtime, inkling_removed=self._on_inkling_download_removed)
         try:
             dialog.exec()
         finally:
@@ -2875,10 +2920,27 @@ Use an available local or server model, stop a task, or steer it into a smaller 
                 self.config.update(original)
                 raise
         self.refresh_route_labels()
-        self.route.setCurrentIndex(3 if route=='local_large' else 1)
-        self._record_local_model(model)
-        self.status.setText('Selected '+model)
+        self.route.setCurrentIndex(MODEL_ROUTES.index(route))
+        if route != 'inkling':self._record_local_model(model)
+        self.status.setText('Selected '+(INKLING_PRESETS[model].label if route=='inkling' else model))
         self.health()
+
+    def _inkling_weights(self):
+        key = self.config.get('inkling_model')
+        if self.inkling_runtime is not None and isinstance(key, str) and key in INKLING_PRESETS:
+            return prepared_path(STATE/'models', key)
+        return None
+
+    def _on_inkling_download_removed(self):
+        if not self.config.get('inkling_model') or self._inkling_weights():
+            return
+        self.config['inkling_model'] = ''
+        if self.config.get('preferred_route') == 'inkling':
+            self.config['preferred_route'] = 'auto'
+        if MODEL_ROUTES[self.route.currentIndex()] == 'inkling':
+            self.route.setCurrentIndex(MODEL_ROUTES.index('auto'))
+        self.write_config()
+        self.refresh_route_labels()
 
     def _on_local_model_removed(self, model):
         # The default can otherwise reinstall itself on the next Send.
@@ -2916,7 +2978,10 @@ Use an available local or server model, stop a task, or steer it into a smaller 
     def start_local_tuning(self,text='Tune my local model',*,preserve_draft=False):
         if self.busy:return
         from local_tuning import apply_retention, measure_retention
-        route=('auto','local','server','local_large','provider')[self.route.currentIndex()]
+        route=MODEL_ROUTES[self.route.currentIndex()]
+        if route == 'inkling':
+            self.status.setText('Ollama retention tuning applies to the Ollama routes. Inkling stays loaded while selected.')
+            return
         config=dict(self.config)
         config['num_ctx']=self.model_performance()['num_ctx']
         self.begin_local_run(text,kind='tuning',preserve_draft=preserve_draft)
@@ -3035,6 +3100,7 @@ Use an available local or server model, stop a task, or steer it into a smaller 
         if self.tray and not self.allow_quit:
             self.hide();event.ignore();return
         self.cancel.set();self.control_cancel_token=None;self.escape_cancel.disarm();self.escape_shortcut.setEnabled(False);self.end_control_session()
+        if self.inkling_runtime is not None:self.inkling_runtime.stop()
         if self.control_overlay:self.control_overlay.close();self.control_overlay.deleteLater()
         event.accept()
 

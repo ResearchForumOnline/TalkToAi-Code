@@ -311,6 +311,16 @@ def _ollama_error(status, detail, output_started=False):
     """Give specific recovery steps without displaying local paths or raw prompts."""
     lower = str(detail).lower().replace('_', ' ')
     prefix = f'Ollama HTTP {status}. ' if status else 'Ollama stopped. '
+    architecture = re.search(r'unknown model architecture\s*:\s*["\x27]?([a-z0-9_.-]{1,60})',
+                             str(detail), re.I)
+    if architecture:
+        name = architecture.group(1).lower()
+        if name in ('inkling2', 'inkling2_loop'):
+            return RuntimeError(prefix + 'This Ollama runner cannot load Inkling 2 Mini. On Windows x64, open '
+                                'Models and setup → Recommended and choose Inkling, or use its existing GGUF '
+                                'from Saved downloads. Inkling uses a separate llama.cpp runner.')
+        return RuntimeError(prefix + f'This Ollama runner cannot load the {name} architecture. '
+                            'Check for an Ollama update or load this GGUF in its supported runtime.')
     capacity_status = status in (None, 400, 413, 422, 500, 503, 507)
     if capacity_status and re.search(r'\brequires more (?:system |gpu )?memory\b|\bout of (?:system |gpu |device |host )?memory\b|\bcannot allocate memory\b|\b(?:insufficient|not enough) (?:vram|(?:system |gpu )?memory)\b', lower):
         amounts = re.search(r'requires more system memory \((\d+(?:\.\d+)? [kmgt]i?b)\) than is available \((\d+(?:\.\d+)? [kmgt]i?b)\)', str(detail), re.I)

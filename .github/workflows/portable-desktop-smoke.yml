@@ -22,7 +22,7 @@ jobs:
       - name: Test desktop chat, storage, model setup and local tools
         env:
           QT_QPA_PLATFORM: offscreen
-        run: python -m unittest test_conversation test_chat_ui test_chat_intent test_first_turn_tools test_agent_focus test_agent_focus_ui test_media_generation test_voice_transcription test_voice_ui test_model_storage test_model_library test_model_library_dialog test_model_routing test_runtime_setup test_runtime_diagnostics test_local_tuning test_project_workers test_subagents test_asset_library test_engine_discovery test_computer_route -v
+        run: python -m unittest test_conversation test_chat_ui test_chat_intent test_first_turn_tools test_agent_focus test_agent_focus_ui test_media_generation test_voice_transcription test_voice_ui test_model_storage test_model_library test_model_library_dialog test_model_routing test_runtime_setup test_runtime_diagnostics test_inkling_models test_inkling_runtime test_inkling_ui test_local_tuning test_project_workers test_subagents test_asset_library test_engine_discovery test_computer_route -v
       - name: Start the default OpenZero chat on a fresh Windows runner
         shell: python
         env:
@@ -148,7 +148,7 @@ jobs:
             runtime="$HOME/.local/share/talktoai-code/.venv/bin/python"
           fi
           "$runtime" -m unittest test_free_provider_policy test_api_router test_api_integration test_inventory_providers test_attachment_ingest test_conversation_export test_offline_assistant test_offline_ui test_project_templates test_work_packet test_tool_chains test_first_turn_tools test_remote_intent test_task_navigation test_project_context test_context_window test_computer_route test_project_target test_skynet_mode test_candidate_apply test_app_preferences test_app_capabilities test_routing_evaluation test_agent_workflow test_progress_guard test_engine_discovery test_benchmark_models test_keep_going test_long_session test_reasoning_stream test_research_journal test_project_playbooks test_project_workbench test_workspace_change_evidence test_runtime_diagnostics test_task_goals test_tool_protocol test_control_cancel test_workspace_ui test_source_discovery test_ethics_policy -v
-          "$runtime" -m unittest test_conversation test_chat_ui test_model_storage test_agent_zero test_asset_library test_mcp_plugins test_model_library test_model_library_dialog test_model_routing test_runtime_setup test_openai_provider -v
+          "$runtime" -m unittest test_conversation test_chat_ui test_model_storage test_agent_zero test_asset_library test_mcp_plugins test_model_library test_model_library_dialog test_model_routing test_runtime_setup test_inkling_models test_inkling_runtime test_inkling_ui test_openai_provider -v
           "$runtime" -m unittest test_local_tuning test_project_workers test_subagents test_chat_intent test_agent_focus test_agent_focus_ui test_media_generation test_voice_transcription test_voice_ui -v
           if [[ "$RUNNER_OS" == "Linux" ]]; then
             "$runtime" -m playwright install --with-deps chromium

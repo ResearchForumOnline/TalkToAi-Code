@@ -18,6 +18,7 @@ from model_library import (
     QWEN_LOCAL_MODEL, QWEN_FILE, QWEN_REPO, QWEN_REVISION, DownloadCancelled, ModelFile,
     download_files, format_size, gguf_selection, import_gguf, resolve_hf_selection, selected_files,
 )
+from inkling_models import INKLING_PRESETS, INKLING_REPO, prepare_inkling, preset_for_hub, preset_for_path
 from model_storage import (
     PARTIAL_RETENTION_DAYS, clear_partials, display_path, library_root, native_path,
     partial_inventory, remove_export, reviewed_export, saved_exports, storage_lock,
@@ -35,7 +36,8 @@ class _DownloadSignals(QObject):
 
 class ModelLibraryDialog(QDialog):
     def __init__(self, parent, root, select_model, model_removed, diagnose, compare, use_api, *,
-                 configured_models=None, keep_alive=None, inventory_changed=None, tune=None):
+                 configured_models=None, keep_alive=None, inventory_changed=None, tune=None,
+                 inkling=None, inkling_removed=None):
         super().__init__(parent)
         self.root = Path(root)
         self.reply_history_dir = self.root / '.reply-checks-v1'
@@ -43,6 +45,8 @@ class ModelLibraryDialog(QDialog):
         self.model_removed = model_removed
         self.keep_alive = keep_alive
         self.inventory_changed = inventory_changed
+        self.inkling = inkling
+        self.inkling_removed = inkling_removed
         self.configured_models = dict(configured_models or {})
         self.model_records = {}
         self.partials = []
@@ -79,7 +83,19 @@ class ModelLibraryDialog(QDialog):
                      DEFAULT_LOCAL_MODEL, 'local')
         self._preset(recommended, 'Install Qwen3.6 35B A3B', 'About 23 GB Q4 for Local large. 3B active per token.',
                      QWEN_LOCAL_MODEL, 'local_large')
-        recommended.addWidget(self._text('Local models use Ollama. Qwen needs disk space and memory for the full 35B model.'))
+        self.inkling_buttons = []
+        if self.inkling is not None:
+            row = QHBoxLayout()
+            for key, title in (('q4', 'Inkling 2 Mini Q4 · 16.6 GB'), ('q8', 'Inkling 2 Mini Q8 · 22.9 GB')):
+                button = QPushButton(title)
+                button.setToolTip('Set up Inkling for Chat and Code. A compatible existing download can be reused.')
+                button.clicked.connect(lambda checked=False, variant=key: self._inkling_setup(variant))
+                self.inkling_buttons.append(button)
+                row.addWidget(button)
+            row.addStretch(1)
+            recommended.addLayout(row)
+            recommended.addWidget(self._text('Inkling uses its own llama.cpp runner. Saved downloads can reuse an existing Q4 or Q8 GGUF.'))
+        recommended.addWidget(self._text('OpenZero and Qwen use Ollama. Delete registrations under Installed Ollama and separate files under Saved downloads.'))
         if os.name == 'nt':
             recommended.addWidget(self._text('Installing a model can set up missing Ollama through WinGet. Use Get Ollama if WinGet is unavailable.'))
         connection = QHBoxLayout()
@@ -170,7 +186,7 @@ class ModelLibraryDialog(QDialog):
         self.release_loaded.setToolTip('Free the selected model’s RAM or VRAM. Its downloaded weights stay installed.')
         self.release_loaded.clicked.connect(self._release_selected)
         inventory_actions.addWidget(self.release_loaded)
-        self.delete_installed = QPushButton('Remove from Ollama…')
+        self.delete_installed = QPushButton('Delete from Ollama…')
         self.delete_installed.clicked.connect(self._remove_installed)
         inventory_actions.addWidget(self.delete_installed)
         inventory_actions.addStretch(1)
@@ -191,10 +207,10 @@ class ModelLibraryDialog(QDialog):
         self.use_saved.clicked.connect(self._use_saved)
         storage_buttons.addWidget(self.use_saved)
         self.local_gguf = QPushButton('Browse for GGUF…')
-        self.local_gguf.setToolTip('Import an existing GGUF, including a file downloaded by another app. Select all shards for a split model.')
+        self.local_gguf.setToolTip('Use an existing GGUF, including a file downloaded by another app. Select all shards for a split model.')
         self.local_gguf.clicked.connect(self._choose_local_gguf)
         storage_buttons.addWidget(self.local_gguf)
-        self.remove_saved = QPushButton('Remove saved file…')
+        self.remove_saved = QPushButton('Delete saved file…')
         self.remove_saved.clicked.connect(self._remove_export)
         storage_buttons.addWidget(self.remove_saved)
         self.clear_cache = QPushButton('Clear unfinished…')
@@ -262,7 +278,7 @@ class ModelLibraryDialog(QDialog):
         callback()
 
     def _set_running(self, running):
-        for widget in [*self.presets, *self.local_actions, self.openzero_file, self.qwen_file,
+        for widget in [*self.presets, *self.inkling_buttons, *self.local_actions, self.openzero_file, self.qwen_file,
                        self.repo, self.revision, self.token, self.files, self.check_connection, self.api,
                        self.refresh_installed, self.installed, self.refresh_exports, self.exports, self.local_gguf]:
             widget.setEnabled(not running)
@@ -286,13 +302,19 @@ class ModelLibraryDialog(QDialog):
         except ValueError:
             files = []
         available = self.cancel is None and bool(files)
-        can_import = available and gguf_selection(files)
+        inkling_repo = bool(self.loaded and self.loaded[0].casefold() == INKLING_REPO.casefold())
+        inkling_key = preset_for_hub(self.loaded[0], files) if inkling_repo else None
+        can_import = available and (bool(self.inkling and inkling_key) if inkling_repo else gguf_selection(files))
+        self.install.setText('Set up Inkling with its own llama.cpp runner' if inkling_repo else
+                             'Import selected GGUF into Ollama and use it for Local')
         self.install.setEnabled(can_import)
         if not can_import and self.cancel is None:
             self.install.setChecked(False)
         self.download.setEnabled(available)
         if not files:
             title = 'Download selected files'
+        elif inkling_key and self.install.isChecked():
+            title = 'Set up ' + INKLING_PRESETS[inkling_key].label
         else:
             verb = 'Download and import' if self.install.isChecked() else 'Download'
             title = f'{verb} {len(files)} file(s) · {format_size(sum(file.size for file in files))}'
@@ -373,6 +395,16 @@ class ModelLibraryDialog(QDialog):
             except OSError as exc:
                 self._set_status(f'Ollama registered the model. Saving the route failed. {exc}', error=True)
             self.inventory_loaded = False
+        elif action == 'inkling':
+            key, path = data
+            self.destination = path.parent
+            try:
+                self.select_model(key, 'inkling')
+                self._set_status(f'{INKLING_PRESETS[key].label} is ready for Chat and Code.')
+                self.progress.setValue(100)
+            except (OSError, ValueError) as exc:
+                self.inkling.stop()
+                self._set_status(f'Inkling is ready. Saving the route failed. {exc}', error=True)
         elif action == 'saved':
             self.destination, message = data
             self._set_status(message)
@@ -419,7 +451,7 @@ class ModelLibraryDialog(QDialog):
             self._set_status(reply_check_text(result))
             if result['outcome'] != 'incomplete':
                 self.progress.setValue(100)
-        elif action == 'exports':
+        elif action in ('exports', 'removed_export'):
             files, capped, self.partials, label = data
             self.saved_files = files
             self.exports.clear()
@@ -430,6 +462,11 @@ class ModelLibraryDialog(QDialog):
             detail = (f'{len(files)} saved file(s), {format_size(sum(file.size for file in files))}. '
                       f'Unfinished downloads: {format_size(sum(file.size for file in self.partials))}.')
             self._set_status(label + detail + (' Showing a partial inventory.' if capped else ''))
+            if action == 'removed_export' and self.inkling_removed:
+                try:
+                    self.inkling_removed()
+                except OSError:
+                    self._set_status('File deleted. The model selection could not be saved. Choose another model.', error=True)
         elif action == 'removed':
             model, = data
             self.model_records.pop(model, None)
@@ -461,6 +498,23 @@ class ModelLibraryDialog(QDialog):
     def _save_preset(self, repo, commit, file):
         self._save_files(repo, commit, [file], '', False)
 
+    def _inkling_setup(self, key, source=None):
+        if self.inkling is None:
+            self._set_status('Guided Inkling setup is available on Windows x64. Use a compatible runtime for this file.', error=True)
+            return
+
+        def work(cancel, notify):
+            path = prepare_inkling(self.root, key, cancel, notify, source=source() if source else None)
+            try:
+                self.inkling.start(path, cancel, notify)
+            except (DownloadCancelled, InterruptedError):
+                return 'saved', path.parent, 'Inkling weights are saved. Select the same preset to start it again.'
+            except (OSError, RuntimeError, ValueError) as exc:
+                return 'saved_error', path.parent, f'Inkling weights are saved. {exc}'
+            return 'inkling', key, path
+
+        self._start(f'Preparing {INKLING_PRESETS[key].label}…', work)
+
     def _load_repository(self):
         reference, revision, token = self.repo.text().strip(), self.revision.text(), self._token()
         if not reference or self.cancel is not None:
@@ -488,6 +542,14 @@ class ModelLibraryDialog(QDialog):
             self._save_files(repo, commit, files, self._token(), self.install.isChecked())
 
     def _save_files(self, repo, commit, files, token, install):
+        if install and repo.casefold() == INKLING_REPO.casefold():
+            key = preset_for_hub(repo, files)
+            if key:
+                self._inkling_setup(key)
+            else:
+                self._set_status('Choose Inkling Q4 or Q8 to use it here. You can save other files separately.', error=True)
+            return
+
         def work(cancel, notify):
             folder, paths = download_files(repo, commit, files, self.root, token, cancel, notify)
             if install:
@@ -691,7 +753,10 @@ class ModelLibraryDialog(QDialog):
         item = self.exports.currentItem()
         selected = item.data(Qt.UserRole) if item is not None else None
         self.remove_saved.setEnabled(self.cancel is None and selected is not None)
-        self.use_saved.setEnabled(self.cancel is None and selected is not None and selected.relative.lower().endswith('.gguf'))
+        inkling = preset_for_path(selected.relative) if selected is not None else None
+        self.use_saved.setEnabled(self.cancel is None and selected is not None and
+                                  (selected.relative.lower().endswith('.gguf') or bool(inkling)))
+        self.use_saved.setText('Use selected with Inkling' if inkling else 'Use selected for chat')
 
     def _remove_export(self):
         item = self.exports.currentItem()
@@ -709,13 +774,17 @@ class ModelLibraryDialog(QDialog):
             return
 
         def work(*_):
+            if self.inkling:
+                path = reviewed_export(library_root(self.root), selected)
+                if self.inkling.running(path):
+                    self.inkling.stop()
             remove_export(self.root, selected)
-            return self._storage_result('File removed. ')
+            return 'removed_export', *self._storage_result('File deleted. ')[1:]
 
         self._start('Removing the selected download…', work, stoppable=False)
 
     def _choose_local_gguf(self):
-        paths, _ = QFileDialog.getOpenFileNames(self, 'Choose one GGUF or all its shards', '', 'GGUF models (*.gguf)')
+        paths, _ = QFileDialog.getOpenFileNames(self, 'Choose one GGUF or all its shards', '', 'GGUF models (*.gguf *.gguf_file)')
         if paths:
             self._import_existing(paths)
 
@@ -724,6 +793,9 @@ class ModelLibraryDialog(QDialog):
         if self.cancel is not None or item is None:
             return
         selected = item.data(Qt.UserRole)
+        if preset_for_path(selected.relative):
+            self._import_existing([selected.relative], [selected])
+            return
         siblings = {file.relative: file for file in self.saved_files
                     if Path(file.relative).parent == Path(selected.relative).parent}
         files = [ModelFile(name, file.size) for name, file in siblings.items()]
@@ -735,6 +807,15 @@ class ModelLibraryDialog(QDialog):
         self._import_existing([file.name for file in group], [siblings[file.name] for file in group])
 
     def _import_existing(self, paths, saved=None):
+        if len(paths) == 1 and (key := preset_for_path(paths[0])):
+            def source():
+                return reviewed_export(library_root(self.root), saved[0]) if saved is not None else Path(paths[0])
+
+            self._inkling_setup(key, source)
+            return
+        if any(Path(path).name.casefold().startswith('inkling-2-mini-') for path in paths):
+            self._set_status('Inkling 2 Mini uses its own runtime. Choose the Q4 or Q8 preset under Recommended.', error=True)
+            return
         if not gguf_selection([ModelFile(Path(path).name, 0) for path in paths]):
             self._set_status('Choose one GGUF model or all the files in one split model.', error=True)
             return

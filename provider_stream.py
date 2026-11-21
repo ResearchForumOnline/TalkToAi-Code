@@ -334,7 +334,8 @@ def _stream_request(profile, request, show_reasoning, cancel, key, scope):
             raise InterruptedError('Task stopped.')
         conn.connect()
         sock = conn.sock
-        sock.settimeout(900 if parsed.hostname == 'api.x.ai' else 300 if profile.is_openai else 180)
+        managed_llama = profile.engine == 'llama.cpp' and parsed.hostname == '127.0.0.1'
+        sock.settimeout(900 if managed_llama or parsed.hostname == 'api.x.ai' else 300 if profile.is_openai else 180)
 
         def watch():
             while not done.wait(.1):

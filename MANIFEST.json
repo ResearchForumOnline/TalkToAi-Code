@@ -5,7 +5,7 @@
   },
   {
     "path": ".github/workflows/portable-desktop-smoke.yml",
-    "sha256": "79b13b7e398587d03450afcca5b76f8530f0461efaf6892547008d15b388cf81"
+    "sha256": "1ec19f5b4d360c1b3acba60c8f9e0e9f94ad46379ab28fc22352b9cabc4cbe83"
   },
   {
     "path": ".gitignore",
@@ -33,7 +33,7 @@
   },
   {
     "path": "README.md",
-    "sha256": "6f44568ec2a6feb4a4152e19d7c1ba8706f1750b046b0aac8c61ca9cc3d30f31"
+    "sha256": "88b1eea43f9171014e573e4173599e8faf18d00481eb18e1c3cd97f6315dbd45"
   },
   {
     "path": "RELEASE-NOTES.md",
@@ -49,11 +49,11 @@
   },
   {
     "path": "TalkToAi-Code.iss",
-    "sha256": "159a8090736936975b7d600a51813c2767be99d623d82e422d65a1908b2a523c"
+    "sha256": "ba4d8b25512c89ab7cafb797396acaa6ac09d538ff0af6d75baebfd3e93de807"
   },
   {
     "path": "agent_core.py",
-    "sha256": "ca458ff37fc06d29afe0808d8e1d8ef8c5e4b4c8510f78c389bff25e1ee29771"
+    "sha256": "0fd00850f9a081e9b0447d172b345e03087a1de18bb02cb787c15cb815f90a76"
   },
   {
     "path": "agent_focus.py",
@@ -304,6 +304,10 @@
     "sha256": "4dbaf2811e2b219b92f3ee8162bf827d982a325671c5b7d644e7d9df7d318bcc"
   },
   {
+    "path": "docs/DESKTOP-9.0.4.md",
+    "sha256": "5e96e0d46e5a4c1ca60513580e819d0125410835b96790ccd79a32b09b55d0ae"
+  },
+  {
     "path": "docs/DEVSPACE-IDEAS-REVIEW.md",
     "sha256": "39815a502204db63900345e451ec9414f8d6c0ab259d463eed94c7de81c3965e"
   },
@@ -552,6 +556,14 @@
     "sha256": "45667be236b533545ce4effba4c80e16b69f36c98e97a69df098de5e82f95afb"
   },
   {
+    "path": "inkling_models.py",
+    "sha256": "3fa211da2e6d4cfe8367a7aa909197d53e9ebb25d2c6bfcfd34480c41f82b052"
+  },
+  {
+    "path": "inkling_runtime.py",
+    "sha256": "f51b8eceff33874d32e8deee7ba3aeea02fc029e277a2ae36bb94beba426fded"
+  },
+  {
     "path": "install-linux.sh",
     "sha256": "0e7895d2ab506a9ddac1c6604d10990b209b948e335e9b48f7c72ed3b03b3c2a"
   },
@@ -597,7 +609,7 @@
   },
   {
     "path": "model_library_dialog.py",
-    "sha256": "6dce225fd57658cc5a840aede75160d95766182d14cab54c878297d9b6ae529f"
+    "sha256": "3a68642588f52f98e8055d325087c4dd86a8b60b95dd42713c3bf6f8338dae0c"
   },
   {
     "path": "model_storage.py",
@@ -665,11 +677,11 @@
   },
   {
     "path": "provider_stream.py",
-    "sha256": "170b16e6cf074f52833fbc30f9dc795da1c40b87044d901c0fa9957547fbf9fd"
+    "sha256": "4a9097226cb95eb4c1f10492b2eef378197ea52c439043cef90eecb002b391de"
   },
   {
     "path": "providers.py",
-    "sha256": "b4ca8e2912e34e0a16fafcfa34c3293159d1d6325e5872662517ae1c5f7a7375"
+    "sha256": "da4e596fe3c10b2165a7c869a52b45a13b05d52a4060d150f31180cfbac3151b"
   },
   {
     "path": "reasoning_stream.py",
@@ -677,7 +689,7 @@
   },
   {
     "path": "release_checks.py",
-    "sha256": "e1c480bbc8569dbf4ea97c9c865ddb98362eaf1d757597b83644b0eccaab6c33"
+    "sha256": "c4b67e5c3604862920ad55a20d42773f5546517055cec9086a47e7d254654d78"
   },
   {
     "path": "remote_intent.py",
@@ -709,7 +721,7 @@
   },
   {
     "path": "runtime_diagnostics.py",
-    "sha256": "3cfd171cd45918692adb3a1e1e5a38311305e91ea285c404361fc809be594a83"
+    "sha256": "a39eb2d2e973e39397282634d270121fc1f01faeb58457340ac7554b7b6c1835"
   },
   {
     "path": "runtime_setup.py",
@@ -773,15 +785,15 @@
   },
   {
     "path": "store/build-msix.ps1",
-    "sha256": "7b3db2075d71a182b8ec767abf29fa4c43868ea543908ed8fc8879bd318ee162"
+    "sha256": "29609052e5da59435b3061e41e3042418ea83e54ab2bf57c22115401e84aacc0"
   },
   {
     "path": "store/build-payload.ps1",
-    "sha256": "6f5c9252cf0a9b4f6f71d0cf3fc9a23fc92e9fbdcfb94975ab42c8f6d7132620"
+    "sha256": "a4b12bc5623cb4d0c602b793825f20edb7671673f942b56c9d7b93109cdf270c"
   },
   {
     "path": "studio.py",
-    "sha256": "af60246046285c5b91d4832db1e1be708880c4b72b0f07b5a55d554202d4cca3"
+    "sha256": "966b4f0d4634f37f8a16c4b7444977e5f8befae81024bd4b9d757fb13f332862"
   },
   {
     "path": "task_goals.py",
@@ -902,6 +914,18 @@
   {
     "path": "test_free_provider_policy.py",
     "sha256": "d491f663817126172125e126b5bd2dc75a757bb9b6297f07fad14006a5a0a358"
+  },
+  {
+    "path": "test_inkling_models.py",
+    "sha256": "4494e0d1955d7a20ca5b2cda4060d7fb90e43ed36a495c0596c5ea7942a6830c"
+  },
+  {
+    "path": "test_inkling_runtime.py",
+    "sha256": "d3831a86449a5ddfeae7de828984ecb279e779892a21f370bd0ab08b03e96483"
+  },
+  {
+    "path": "test_inkling_ui.py",
+    "sha256": "7c1283ee988393874bceadd74b27a25d6f7feb7e5efbdbb9658b4098e21252e0"
   },
   {
     "path": "test_inventory_providers.py",
@@ -1125,7 +1149,7 @@
   },
   {
     "path": "updates.py",
-    "sha256": "24c10b0071a401919e08b25fbd3182a56f6372b5dfe8c4b81ac631e83bd2f9cf"
+    "sha256": "716096967a0a9009757f65caf79de1b22ab1b616da5d18c306d56161b9e6f471"
   },
   {
     "path": "voice_dialog.py",

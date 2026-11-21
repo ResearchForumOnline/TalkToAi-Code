@@ -136,7 +136,9 @@ def report(config):
     lines = [f'TalkToAi Code {VERSION} · Model diagnostics',
              'Selected route: ' + str(route).replace('_', ' ').title(),
              'This check does not load or download a model.']
-    if not server:
+    if route == 'inkling':
+        lines.append('Inkling uses a separate local llama.cpp runner. Open Models and setup to choose its Q4 or Q8 weights.')
+    elif not server:
         lines.append('Local downloads and local chat use Ollama on this PC. SSH is optional.')
     try:
         path = ollama_store()
