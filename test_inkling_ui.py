@@ -21,6 +21,57 @@ from model_library import DEFAULT_LOCAL_MODEL, QWEN_LOCAL_MODEL
 
 
 class InklingUITests(unittest.TestCase):
+    def test_saved_gpu_check_uses_selected_weights_and_copies_the_failure(self):
+        app = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            models = {key: root / preset.legacy.name for key, preset in INKLING_PRESETS.items()}
+            runner, selected = Mock(), Mock()
+            runner.status.return_value = None
+            runner.diagnostic.return_value = None
+            reason = 'The CUDA runner could not allocate GPU memory.'
+
+            def fail_gpu(*_, **__):
+                runner.diagnostic.return_value = reason
+                raise RuntimeError(reason)
+
+            runner.start.side_effect = fail_gpu
+            with patch.object(model_ui, 'prepared_path', side_effect=lambda _, key: models.get(key)), \
+                    patch.object(model_ui, 'prepare_inkling') as download:
+                dialog = model_ui.ModelLibraryDialog(None, root, selected, Mock(), Mock(), Mock(), Mock(),
+                                                     inkling=runner, inkling_model='q8')
+                try:
+                    self.assertTrue(dialog.test_inkling_gpu.isEnabled())
+                    self.assertFalse(dialog.copy_inkling_gpu.isEnabled())
+                    with patch('model_library_dialog.threading.Thread') as worker:
+                        dialog.test_inkling_gpu.click()
+                        self.assertFalse(dialog.test_inkling_gpu.isEnabled())
+                        self.assertIn('Checking hardware for Inkling 2 Mini Q8', dialog.inkling_status.text())
+                        worker.call_args.kwargs['target']()
+                    self.assertEqual(runner.start.call_args.args[0], models['q8'])
+                    self.assertEqual(runner.start.call_args.kwargs, {'acceleration': 'gpu'})
+                    self.assertIn(reason, dialog.inkling_status.text())
+                    with patch.object(model_ui.QApplication, 'clipboard') as clipboard:
+                        dialog.copy_inkling_gpu.click()
+                        copied = clipboard.return_value.setText.call_args.args[0]
+                    self.assertIn(reason, copied)
+                    self.assertIn(model_ui.VERSION, copied)
+                    self.assertIn(INKLING_PRESETS['q8'].label, copied)
+                    self.assertNotIn(str(root), copied)
+                    self.assertNotIn('Bearer', copied)
+                    selected.assert_not_called()
+                    runner.start.reset_mock()
+                    models.clear()
+                    dialog._refresh_inkling_status()
+                    self.assertFalse(dialog.test_inkling_gpu.isEnabled())
+                    dialog.test_inkling_gpu.click()
+                    runner.start.assert_not_called()
+                    download.assert_not_called()
+                finally:
+                    dialog.close()
+                    dialog.deleteLater()
+                    app.processEvents()
+
     def test_existing_q8_uses_the_dedicated_runner_and_preserves_original(self):
         app = QApplication.instance() or QApplication([])
         with tempfile.TemporaryDirectory() as folder:

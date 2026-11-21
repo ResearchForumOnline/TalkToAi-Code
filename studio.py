@@ -2952,7 +2952,7 @@ Use an available local or server model, stop a task, or steer it into a smaller 
                                   keep_alive=self.config.get('ollama_keep_alive'),inventory_changed=self._model_dialog_inventory,
                                   tune=lambda:self.start_local_tuning(preserve_draft=True),
                                   inkling=self.inkling_runtime, inkling_removed=self._on_inkling_download_removed,
-                                  inkling_acceleration=self.inkling_acceleration())
+                                  inkling_acceleration=self.inkling_acceleration(), inkling_model=self.config.get('inkling_model'))
         try:
             dialog.exec()
         finally:

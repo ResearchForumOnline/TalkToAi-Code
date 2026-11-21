@@ -161,7 +161,7 @@ def smoke(destination):
         from inkling_models import INKLING_PRESETS, INKLING_REPO, preset_for_hub
         from inspect import signature
         from inkling_cuda import CUDA_ARCHIVES
-        from inkling_runtime import InklingRuntime, InklingStatus
+        from inkling_runtime import InklingRuntime, InklingStatus, _GpuDevice, _offloaded_layers
         from model_library import QWEN_LOCAL_MODEL
         q8 = INKLING_PRESETS['q8']
         result['inkling_support'] = (
@@ -176,6 +176,18 @@ def smoke(destination):
             and InklingStatus(backend='vulkan', reason='Fixture', gpu_layers=8, total_layers=42).label == 'GPU · 8/42 layers'
             and InklingStatus(backend='cpu', reason='Fixture', gpu_layers=0, total_layers=None).label == 'CPU'
         )
+        with tempfile.TemporaryFile(mode='w+b') as gpu_log:
+            device = _GpuDevice('CUDA0', 'NVIDIA GeForce RTX 3050', 7202, 8191)
+            gpu_log.write(b'llama_model_loader: general.architecture str = inkling2_loop\n'
+                          b'llama_model_loader: inkling2_loop.block_count u32 = 24\n'
+                          b'load_tensors: offloaded 8/49 layers to GPU\n'
+                          b'load_tensors: CUDA0 model buffer size = 883.42 MiB\n')
+            gpu_log.flush()
+            output_only = _offloaded_layers(gpu_log, device)
+            gpu_log.write(b'load_tensors: offloaded 31/49 layers to GPU\n'
+                          b'load_tensors: CUDA0 model buffer size = 1199.52 MiB\n')
+            gpu_log.flush()
+            result['inkling_physical_offload'] = output_only[0] == 0 and _offloaded_layers(gpu_log, device) == (7, 25)
         result['inkling_acceleration_settings'] = (
             signature(InklingRuntime.start).parameters['acceleration'].default == 'auto'
             and callable(InklingRuntime.diagnostic)
@@ -350,7 +362,7 @@ def smoke(destination):
             ('conversation_round_trip', 'installed_model_reply_check', 'openzero_template_prefix_clean',
              'local_model_retention','reversible_local_tuning','local_project_reviewers','browser_live_reference',
              'automatic_chat_tools','local_media_entrypoints','local_voice_entrypoints','agent_specialties','inkling_support',
-             'inkling_gpu_status','inkling_acceleration_settings'))
+             'inkling_gpu_status','inkling_physical_offload','inkling_acceleration_settings'))
         if os.name == 'nt':
             result['passed'] = result['passed'] and result['windows_voice_plugins']
         if desktop_worker_check:result['passed']=result['passed'] and result.get('desktop_worker',False)

@@ -9,7 +9,7 @@ import threading
 from PySide6.QtCore import QObject, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QDialog, QFileDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget,
+    QAbstractItemView, QApplication, QCheckBox, QDialog, QFileDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget,
     QListWidgetItem, QMessageBox, QProgressBar, QPushButton, QTabWidget, QVBoxLayout, QWidget,
 )
 
@@ -18,7 +18,8 @@ from model_library import (
     QWEN_LOCAL_MODEL, QWEN_FILE, QWEN_REPO, QWEN_REVISION, DownloadCancelled, ModelFile,
     download_files, format_size, gguf_selection, import_gguf, resolve_hf_selection, selected_files,
 )
-from inkling_models import INKLING_PRESETS, INKLING_REPO, prepare_inkling, preset_for_hub, preset_for_path
+from inkling_models import INKLING_PRESETS, INKLING_REPO, prepare_inkling, prepared_path, preset_for_hub, preset_for_path
+from inkling_runtime import ENGINE_TAG
 from model_storage import (
     PARTIAL_RETENTION_DAYS, clear_partials, display_path, library_root, native_path,
     partial_inventory, remove_export, reviewed_export, saved_exports, storage_lock,
@@ -26,6 +27,7 @@ from model_storage import (
 from routing import delete_local_model, install_model, installed_model_records, matching_model, model_present, release_local_model, require_local_runtime
 from runtime_setup import require_model_runtime
 from runtime_diagnostics import last_reply_check, reply_check_text, resident_model, running_probe
+from updates import VERSION
 
 
 class _DownloadSignals(QObject):
@@ -37,7 +39,7 @@ class _DownloadSignals(QObject):
 class ModelLibraryDialog(QDialog):
     def __init__(self, parent, root, select_model, model_removed, diagnose, compare, use_api, *,
                  configured_models=None, keep_alive=None, inventory_changed=None, tune=None,
-                 inkling=None, inkling_removed=None, inkling_acceleration='auto'):
+                 inkling=None, inkling_removed=None, inkling_acceleration='auto', inkling_model=None):
         super().__init__(parent)
         self.root = Path(root)
         self.reply_history_dir = self.root / '.reply-checks-v1'
@@ -48,6 +50,9 @@ class ModelLibraryDialog(QDialog):
         self.inkling = inkling
         self.inkling_removed = inkling_removed
         self.inkling_acceleration = inkling_acceleration
+        self.inkling_model = inkling_model if isinstance(inkling_model, str) else None
+        self.inkling_attempt = None
+        self.inkling_result_model = self.inkling_model
         self.configured_models = dict(configured_models or {})
         self.model_records = {}
         self.partials = []
@@ -98,9 +103,18 @@ class ModelLibraryDialog(QDialog):
             recommended.addLayout(row)
             self.inkling_status = self._text('')
             self.inkling_status.setAccessibleName('Inkling hardware status')
-            self._refresh_inkling_status()
+            self.inkling_status.setTextInteractionFlags(Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard)
             recommended.addWidget(self.inkling_status)
-            recommended.addWidget(self._text('Saved downloads can reuse an existing Inkling Q4 or Q8 GGUF.'))
+            actions = QHBoxLayout()
+            self.test_inkling_gpu = QPushButton('Test Inkling GPU')
+            self.test_inkling_gpu.clicked.connect(self._test_inkling_gpu)
+            actions.addWidget(self.test_inkling_gpu)
+            self.copy_inkling_gpu = QPushButton('Copy GPU details')
+            self.copy_inkling_gpu.clicked.connect(self._copy_inkling_gpu)
+            actions.addWidget(self.copy_inkling_gpu)
+            actions.addStretch(1)
+            recommended.addLayout(actions)
+            self._refresh_inkling_status()
         recommended.addWidget(self._text('OpenZero and Qwen use Ollama. Delete registrations under Installed Ollama and separate files under Saved downloads.'))
         if os.name == 'nt':
             recommended.addWidget(self._text('Installing a model can set up missing Ollama through WinGet. Use Get Ollama if WinGet is unavailable.'))
@@ -295,6 +309,7 @@ class ModelLibraryDialog(QDialog):
         self._selection_changed()
         self._installed_selection_changed()
         self._export_selection_changed()
+        self._refresh_inkling_status()
 
     def _selection(self):
         if self.loaded is None:
@@ -344,6 +359,7 @@ class ModelLibraryDialog(QDialog):
         if self.inkling_status is None:
             return
         hardware = self.inkling.status()
+        detail = hardware.reason if hardware else self.inkling.diagnostic()
         if hardware:
             message = f'Inkling · {hardware.label}. {hardware.reason}'
         else:
@@ -351,9 +367,50 @@ class ModelLibraryDialog(QDialog):
                 'cpu': 'Inkling is set to CPU only.',
                 'gpu': 'Inkling is set to Require GPU. Detailed results appear after it starts.',
             }
-            message = self.inkling.diagnostic() or idle.get(
+            message = detail or idle.get(
                 self.inkling_acceleration, 'Inkling checks for GPU acceleration when it starts.')
+        if self.cancel is not None and self.inkling_attempt in INKLING_PRESETS:
+            message = f'Checking hardware for {INKLING_PRESETS[self.inkling_attempt].label}…'
         self.inkling_status.setText(message)
+        key, path = self._saved_inkling()
+        self.test_inkling_gpu.setEnabled(self.cancel is None and path is not None)
+        self.test_inkling_gpu.setToolTip(
+            f'Test {INKLING_PRESETS[key].label} with GPU acceleration using your saved weights.'
+            if path else 'Set up an Inkling preset to test its GPU acceleration.')
+        self.copy_inkling_gpu.setEnabled(self.cancel is None and bool(detail))
+
+    def _saved_inkling(self):
+        keys = sorted(INKLING_PRESETS, key=lambda key: key != self.inkling_model)
+        for key in keys:
+            path = prepared_path(self.root, key)
+            if path is not None:
+                return key, path
+        return None, None
+
+    def _test_inkling_gpu(self):
+        key, path = self._saved_inkling()
+        if path is None:
+            self._set_status('Choose an Inkling preset to prepare its weights first.')
+            self._refresh_inkling_status()
+            return
+
+        def work(cancel, notify):
+            self.inkling.start(path, cancel, notify, acceleration='gpu')
+            return 'status', f'{INKLING_PRESETS[key].label} passed the GPU check.'
+
+        self.inkling_attempt = key
+        self._start(f'Testing {INKLING_PRESETS[key].label} on your GPU…', work)
+
+    def _copy_inkling_gpu(self):
+        self._refresh_inkling_status()
+        if self.copy_inkling_gpu.isEnabled():
+            preset = INKLING_PRESETS.get(self.inkling_result_model)
+            message = (f'TalkToAi Code {VERSION} · Inkling GPU details\n'
+                       f'llama.cpp {ENGINE_TAG} · saved acceleration setting {self.inkling_acceleration}\n'
+                       + (f'{preset.label}\n' if preset else '')
+                       + self.inkling_status.text())
+            QApplication.clipboard().setText(message)
+            self._set_status('GPU details copied.')
 
     def _start(self, starting, work, *, stoppable=True):
         if self.cancel is not None:
@@ -421,6 +478,7 @@ class ModelLibraryDialog(QDialog):
             self.destination = path.parent
             try:
                 self.select_model(key, 'inkling')
+                self.inkling_model = key
                 self._set_status(f'{INKLING_PRESETS[key].label} is ready for Chat and Code.')
                 self.progress.setValue(100)
             except (OSError, ValueError) as exc:
@@ -504,8 +562,10 @@ class ModelLibraryDialog(QDialog):
             self._set_status(data[0], error=action == 'error')
         if not self.progress.value():
             self.progress.hide()
+        if self.inkling_attempt is not None:
+            self.inkling_result_model = self.inkling_attempt
+            self.inkling_attempt = None
         self._set_running(False)
-        self._refresh_inkling_status()
         if action in ('installed', 'removed', 'released', 'reply_check'):
             QTimer.singleShot(0, self._poll_installed)
 
@@ -535,6 +595,7 @@ class ModelLibraryDialog(QDialog):
                 return 'saved_error', path.parent, f'Inkling weights are saved. {exc}'
             return 'inkling', key, path
 
+        self.inkling_attempt = key
         self._start(f'Preparing {INKLING_PRESETS[key].label}…', work)
 
     def _load_repository(self):

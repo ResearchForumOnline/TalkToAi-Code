@@ -25,6 +25,7 @@ from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 import zipfile
 
+from inkling_cuda import bundled_crt_paths
 from model_library import DownloadCancelled
 from model_storage import _plain, library_root, native_path, storage_lock
 
@@ -53,13 +54,22 @@ _VULKAN_START_TIMEOUT = 240
 _DEVICE_TIMEOUT = 12
 _SMOKE_TIMEOUT = 120
 _SMOKE_TOKENS = 2
-_PARTIAL_GPU_LAYERS = 8
+# Inkling Mini has 24 physical blocks and 24 aliases for the repeated loop.
+# b12613 counts those aliases in --n-gpu-layers. 31 covers the six physical
+# blocks after the loop, the 24 aliases, and the output layer.
+_PARTIAL_GPU_LAYERS = 31
+_INKLING_LOOP_SLOTS_WITH_OUTPUT = 49
+_INKLING_PHYSICAL_LAYERS_WITH_OUTPUT = 25
+_COMPACT_VRAM_MIB = 8704
+_GPU_LOG_VERBOSITY = '4'  # b12613 sends model-loader INFO through its TRACE level
 _GPU_RETRY_COOLDOWN = 240
 
 _GPU_DEVICE = re.compile(r'^\s+((?:Vulkan|CUDA)[0-9]{1,2}): ([^\r\n]{1,256}) \(([0-9]+) MiB, ([0-9]+) MiB free\)\s*$')
 _SOFTWARE_DEVICES = ('llvmpipe', 'lavapipe', 'swiftshader', 'software', 'warp')
 _OFFLOAD = re.compile(rb'\boffloaded ([0-9]{1,4})/([0-9]{1,4}) layers to GPU\b')
 _DEVICE_BUFFER = re.compile(rb'\b((?:Vulkan|CUDA)[0-9]{1,2})\s+model buffer size =\s+([0-9]+(?:\.[0-9]+)?) MiB\b')
+_LOOP_ARCH = re.compile(rb'\bgeneral\.architecture[ \t]+str[ \t]*=[ \t]*inkling2_loop\b')
+_PHYSICAL_BLOCKS = re.compile(rb'\binkling2_loop\.block_count[ \t]+u32[ \t]*=[ \t]*([0-9]{1,4})\b')
 
 
 def supported():
@@ -168,7 +178,7 @@ def _engine_environment(key=None):
     keep = {'SYSTEMROOT', 'SYSTEMDRIVE', 'WINDIR', 'TEMP', 'TMP', 'USERPROFILE', 'LOCALAPPDATA', 'APPDATA'}
     env = {k: v for k, v in os.environ.items() if k.upper() in keep}
     sysroot = env.get('SYSTEMROOT', r'C:\Windows')
-    env['PATH'] = os.pathsep.join((str(Path(sysroot) / 'System32'), sysroot))
+    env['PATH'] = os.pathsep.join((str(Path(sysroot) / 'System32'), sysroot, *bundled_crt_paths()))
     if key is not None:
         env['LLAMA_API_KEY'] = key
     return env
@@ -306,10 +316,29 @@ def _probe_inference(port, key, check_cancel):
 
 def _log_tail(log, limit):
     # The child and its standard output share a write offset. Read with an independent position.
-    if isinstance(log.name, int):
+    if os.name != 'nt':
         end = os.fstat(log.fileno()).st_size
         return os.pread(log.fileno(), limit, max(0, end - limit))
-    with open(log.name, 'rb', opener=lambda path, flags: os.open(path, flags | os.O_TEMPORARY)) as reader:
+
+    import ctypes
+    from ctypes import wintypes
+    import msvcrt
+
+    windows = ctypes.WinDLL('kernel32', use_last_error=True)
+    reopen = windows.ReOpenFile
+    reopen.argtypes = (wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD)
+    reopen.restype = wintypes.HANDLE
+    # Share reads, writes and the original writer's delete access without adding delete-on-close.
+    handle = reopen(msvcrt.get_osfhandle(log.fileno()), 0x80000000, 0x7, 0)
+    if handle in (None, ctypes.c_void_p(-1).value):
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        descriptor = msvcrt.open_osfhandle(handle, os.O_RDONLY | os.O_BINARY | os.O_NOINHERIT)
+    except OSError:
+        windows.CloseHandle.argtypes = (wintypes.HANDLE,)
+        windows.CloseHandle(handle)
+        raise
+    with os.fdopen(descriptor, 'rb') as reader:
         end = reader.seek(0, os.SEEK_END)
         reader.seek(max(0, end - limit))
         return reader.read(limit)
@@ -317,12 +346,30 @@ def _log_tail(log, limit):
 
 def _offloaded_layers(log, device):
     detail = _log_tail(log, _CHUNK)
-    rows = _OFFLOAD.findall(detail)
-    identifier = device.identifier.encode('ascii')
-    if not rows or not any(name == identifier and float(size) > 0 for name, size in _DEVICE_BUFFER.findall(detail)):
+    rows = list(_OFFLOAD.finditer(detail))
+    if not rows:
         return 0, None
-    count, total = map(int, rows[-1])
-    return (count, total) if 0 < count <= total else (0, None)
+    last = rows[-1]
+    identifier = device.identifier.encode('ascii')
+    if not any(name == identifier and float(size) > 0 for name, size in _DEVICE_BUFFER.findall(detail, last.end())):
+        return 0, None
+    count, total = map(int, last.groups())
+    loop_model = bool(_LOOP_ARCH.search(detail))
+    if total == _INKLING_LOOP_SLOTS_WITH_OUTPUT and not loop_model:
+        return 0, None
+    if loop_model:
+        physical = set(_PHYSICAL_BLOCKS.findall(detail))
+        if len(physical) != 1:
+            return 0, None
+        physical_total = int(physical.pop()) + 1  # include the output layer, as llama.cpp does
+        if total == _INKLING_LOOP_SLOTS_WITH_OUTPUT and physical_total != _INKLING_PHYSICAL_LAYERS_WITH_OUTPUT:
+            return 0, None
+        if not 1 < physical_total <= total:
+            return 0, None
+        count -= total - physical_total
+        total = physical_total
+    # A GPU output projection by itself does not accelerate a transformer block.
+    return (count, total) if 1 < count <= total else (0, None)
 
 
 def _file_stamp(weights):
@@ -365,7 +412,11 @@ class _Session:
         return f'http://127.0.0.1:{self.port}/v1', self.key
 
 
-def _startup_error(session, device=None):
+def _startup_error(session, device=None, exit_code=0):
+    windows_status = exit_code & 0xffffffff
+    if windows_status in (0xc0000135, 0xc0000139, 0xc000007b):
+        runner = f'the {device.api} runner' if device else 'the Inkling runner'
+        return f'Windows could not load a library required by {runner} (0x{windows_status:08X}).'
     detail = _log_tail(session.log, 16_384).lower()
     if b'unknown model architecture' in detail or b'unknown model type' in detail:
         return 'This GGUF variant requires a different Inkling runner. Use a verified Mainline Support download from Models and setup.'
@@ -533,8 +584,7 @@ class InklingRuntime:
     def _start_gpu(self, stamp, cancel, notify, check_cancel, acceleration):
         reasons = []
         device = None
-        candidates = ((self._available_vulkan, (False, True)), (self._available_cuda, (True,)))
-        for available, profiles in candidates:
+        for available in (self._available_cuda, self._available_vulkan):
             check_cancel()
             try:
                 runner = available(cancel, notify, check_cancel)
@@ -544,6 +594,9 @@ class InklingRuntime:
             if not runner:
                 continue
             executable, device = runner
+            profiles = (False, True)
+            if device.free_mib <= _COMPACT_VRAM_MIB:
+                profiles = (True,) if device.backend == 'cuda' else (True, False)
             for partial in profiles:
                 check_cancel()
                 if partial:
@@ -564,32 +617,43 @@ class InklingRuntime:
             raise _GpuFallback('Windows has no Vulkan loader.')
         try:
             executable = self.ensure_engine(cancel, notify, vulkan=True)
-            check_cancel()
-            device = _probe_gpu(executable, 'Vulkan', check_cancel)
         except DownloadCancelled:
             raise
+        except ConnectionError:
+            raise _GpuFallback('Could not download the verified Vulkan runner from GitHub.') from None
         except (OSError, ValueError, RuntimeError, zipfile.BadZipFile):
-            raise _GpuFallback('The Vulkan runner could not verify a compatible GPU.') from None
-        if not device:
-            raise _GpuFallback('No compatible Vulkan GPU was detected.')
-        return executable, device
+            raise _GpuFallback('Could not prepare the verified Vulkan runner in local storage.') from None
+        return executable, self._checked_device(executable, 'Vulkan', check_cancel)
 
     def _available_cuda(self, cancel, notify, check_cancel):
         from inkling_cuda import cuda_runner
 
         try:
             executable = cuda_runner(self.state_folder, cancel, notify)
-            check_cancel()
-            if not executable:
-                return None
-            device = _probe_gpu(executable, 'CUDA', check_cancel)
         except DownloadCancelled:
             raise
+        except ConnectionError:
+            raise _GpuFallback('Could not download the verified NVIDIA CUDA runner from GitHub.') from None
         except (OSError, ValueError, RuntimeError, zipfile.BadZipFile):
-            raise _GpuFallback('The NVIDIA CUDA runner could not verify a compatible GPU.') from None
+            raise _GpuFallback('Could not prepare the verified NVIDIA CUDA runner in local storage.') from None
+        check_cancel()
+        if not executable:
+            return None
+        return executable, self._checked_device(executable, 'CUDA', check_cancel)
+
+    def _checked_device(self, executable, api, check_cancel):
+        check_cancel()
+        try:
+            device = _probe_gpu(executable, api, check_cancel)
+        except DownloadCancelled:
+            raise
+        except TimeoutError:
+            raise _GpuFallback(f'The {api} device check timed out.') from None
+        except (OSError, RuntimeError):
+            raise _GpuFallback(f'The verified {api} runner could not check for GPUs.') from None
         if not device:
-            raise _GpuFallback('No compatible NVIDIA CUDA GPU was detected.')
-        return executable, device
+            raise _GpuFallback(f'The verified {api} runner found no compatible GPU.')
+        return device
 
     def _launch_runner(self, executable, stamp, cancel, notify, check_cancel, acceleration, *,
                        device=None, partial=False, cpu_status=None):
@@ -600,14 +664,17 @@ class InklingRuntime:
                    '--ctx-size', str(INKLING_CONTEXT), '--parallel', '1', '--reasoning-effort', 'none',
                    '--sleep-idle-seconds', '3600']
         if partial:
-            command += ['--device', device.identifier, '--log-verbosity', '3', '--fit', 'off',
-                        '--batch-size', '128', '--ubatch-size', '32', '--n-gpu-layers', str(_PARTIAL_GPU_LAYERS),
+            command += ['--fit', 'off',
+                        '--batch-size', '128', '--n-gpu-layers', str(_PARTIAL_GPU_LAYERS),
                         '--cpu-moe', '--no-kv-offload']
         elif device:
-            command += ['--device', device.identifier, '--log-verbosity', '3', '--fit', 'on', '--fit-target', '1024',
-                        '--batch-size', '256', '--ubatch-size', '64']
+            command += ['--fit', 'on', '--fit-target', '1024', '--batch-size', '256']
         else:
             command += ['--device', 'none', '--fit', 'off', '--n-gpu-layers', '0', '--log-verbosity', '2']
+        if device:
+            # Avoid copying host-resident experts into the GPU scheduler's looped graph.
+            command += ['--device', device.identifier, '--log-verbosity', _GPU_LOG_VERBOSITY,
+                        '--no-op-offload', '--ubatch-size', '16', '--flash-attn', 'off']
         session = None
         try:
             with self._guard:
@@ -630,10 +697,11 @@ class InklingRuntime:
                 with self._guard:
                     if self._session is not session:
                         raise DownloadCancelled('Inkling setup stopped.')
-                    if process.poll() is not None:
+                    exit_code = process.poll()
+                    if exit_code is not None:
                         if device:
-                            raise _GpuFallback(_startup_error(session, device))
-                        raise RuntimeError(_startup_error(session))
+                            raise _GpuFallback(_startup_error(session, device, exit_code))
+                        raise RuntimeError(_startup_error(session, exit_code=exit_code))
                 if _ready(port, key):
                     status = cpu_status if not device else self._verify_gpu(session, device, partial, notify, check_cancel)
                     with self._guard:
@@ -657,7 +725,7 @@ class InklingRuntime:
             check_cancel()
             count, total = _offloaded_layers(session.log, device)
         if not count:
-            raise _GpuFallback(f'The {device.api} GPU did not offload any verified Inkling model layers.')
+            raise _GpuFallback(f'The {device.api} GPU did not offload any verified Inkling transformer blocks.')
         notify('Checking Inkling generation on the GPU.', 0, 0)
         if not _probe_inference(session.port, session.key, check_cancel):
             raise _GpuFallback(f'The {device.api} runner did not pass its generation check.')

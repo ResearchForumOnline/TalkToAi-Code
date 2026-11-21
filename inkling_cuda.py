@@ -33,6 +33,34 @@ CUDA_ARCHIVES = {
 _DLL_NAME = re.compile(r'[a-z0-9][a-z0-9_.-]*\.dll')
 _EXTRACT_LIMIT = 3 * 1024**3
 _PROMOTION_TIMEOUT = 30
+_LOAD_LIBRARY_SEARCH_SYSTEM32 = 0x00000800
+_CUDA_ERROR_NOT_INITIALIZED = 3
+
+
+def bundled_crt_paths():
+    """Return app-owned fallback CRT directories for a frozen Windows runner."""
+    if sys.platform != 'win32' or not getattr(sys, 'frozen', False):
+        return ()
+    frozen = getattr(sys, '_MEIPASS', '')
+    if not frozen:
+        return ()
+    root = Path(frozen)
+    app = Path(sys.executable).parent
+    if not app.is_absolute() or root not in (app, app / '_internal') or os.pathsep in str(root):
+        return ()
+    # Prefer the loader's CRT over the copies bundled for Qt when both exist.
+    candidates = (
+        (root, ('vcruntime140.dll', 'vcruntime140_1.dll')),
+        (root / 'PySide6', ('msvcp140.dll',)),
+    )
+    paths = []
+    for folder, names in candidates:
+        try:
+            if _plain(folder).is_dir() and all(_plain(folder / name).is_file() for name in names):
+                paths.append(str(folder))
+        except (OSError, ValueError):
+            continue
+    return tuple(paths)
 
 
 def _driver_version():
@@ -43,11 +71,19 @@ def _driver_version():
         return 0
     try:
         # Keep dependency lookup in the Windows system directory.
-        query = ctypes.WinDLL(str(driver), winmode=0x00000800).cuDriverGetVersion
+        api = ctypes.WinDLL(str(driver), winmode=_LOAD_LIBRARY_SEARCH_SYSTEM32)
+        query = api.cuDriverGetVersion
         query.argtypes = [ctypes.POINTER(ctypes.c_int)]
         query.restype = ctypes.c_int
         version = ctypes.c_int()
-        return version.value if query(ctypes.byref(version)) == 0 else 0
+        result = query(ctypes.byref(version))
+        if result == _CUDA_ERROR_NOT_INITIALIZED:
+            initialize = api.cuInit
+            initialize.argtypes = [ctypes.c_uint]
+            initialize.restype = ctypes.c_int
+            if initialize(0) == 0:
+                result = query(ctypes.byref(version))
+        return version.value if result == 0 else 0
     except (OSError, AttributeError):
         return 0
 

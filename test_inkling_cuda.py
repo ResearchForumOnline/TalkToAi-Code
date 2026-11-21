@@ -2,6 +2,7 @@
 
 import hashlib
 import io
+import os
 from pathlib import Path
 import tempfile
 import threading
@@ -22,6 +23,74 @@ def _zip(names):
 
 
 class InklingCudaTests(unittest.TestCase):
+    def test_only_frozen_windows_app_directories_supply_crt_fallbacks(self):
+        with tempfile.TemporaryDirectory() as location:
+            folder = Path(location).resolve()
+            for name in ('flat', 'onedir'):
+                with self.subTest(layout=name):
+                    app = folder / name
+                    root = app / '_internal' if name == 'onedir' else app
+                    qt = root / 'PySide6'
+                    qt.mkdir(parents=True)
+                    for target in (root / 'vcruntime140.dll', root / 'vcruntime140_1.dll', qt / 'msvcp140.dll'):
+                        target.touch()
+                    with patch.object(inkling_cuda.sys, 'platform', 'win32'), \
+                            patch.object(inkling_cuda.sys, 'executable', str(app / 'TalkToAiCode.exe')), \
+                            patch.object(inkling_cuda.sys, '_MEIPASS', str(root), create=True):
+                        with patch.object(inkling_cuda.sys, 'frozen', False, create=True):
+                            self.assertEqual(inkling_cuda.bundled_crt_paths(), ())
+                        with patch.object(inkling_cuda.sys, 'frozen', True, create=True):
+                            self.assertEqual(inkling_cuda.bundled_crt_paths(), (str(root), str(qt)))
+                            with patch.object(inkling_cuda.sys, '_MEIPASS', str(folder)):
+                                self.assertEqual(inkling_cuda.bundled_crt_paths(), ())
+                            (root / 'vcruntime140_1.dll').unlink()
+                            self.assertEqual(inkling_cuda.bundled_crt_paths(), (str(qt),))
+
+    def test_crt_fallback_rejects_a_windows_path_separator_inside_the_directory(self):
+        with tempfile.TemporaryDirectory() as location:
+            app = Path(location).resolve() / f'App{os.pathsep}Folder'
+            app.mkdir()
+            (app / 'vcruntime140.dll').touch()
+            (app / 'vcruntime140_1.dll').touch()
+            with patch.object(inkling_cuda.sys, 'platform', 'win32'), \
+                    patch.object(inkling_cuda.sys, 'frozen', True, create=True), \
+                    patch.object(inkling_cuda.sys, 'executable', str(app / 'TalkToAiCode.exe')), \
+                    patch.object(inkling_cuda.sys, '_MEIPASS', str(app), create=True):
+                self.assertEqual(inkling_cuda.bundled_crt_paths(), ())
+
+    def test_driver_version_retries_only_when_driver_requests_initialization(self):
+        with tempfile.TemporaryDirectory() as location:
+            driver = Path(location) / 'System32' / 'nvcuda.dll'
+            driver.parent.mkdir()
+            driver.touch()
+            for results, init_result, expected, retries in (
+                ([0], 0, 13050, 0),
+                ([100], 0, 0, 0),
+                ([3, 0], 0, 13050, 1),
+                ([3, 3], 0, 0, 1),
+                ([3], 803, 0, 1),
+            ):
+                with self.subTest(results=results, init_result=init_result):
+                    outcomes = iter(results)
+
+                    def query(pointer):
+                        status = next(outcomes)
+                        if status == 0:
+                            pointer._obj.value = 13050
+                        return status
+
+                    api = Mock(cuDriverGetVersion=Mock(side_effect=query), cuInit=Mock(return_value=init_result))
+                    with patch.object(inkling_cuda.sys, 'platform', 'win32'), \
+                            patch.dict(inkling_cuda.os.environ, {'SYSTEMROOT': location}), \
+                            patch.object(inkling_cuda.ctypes, 'WinDLL', return_value=api, create=True) as load_library:
+                        self.assertEqual(inkling_cuda._driver_version(), expected)
+                    load_library.assert_called_once_with(str(driver), winmode=0x00000800)
+                    self.assertEqual(api.cuDriverGetVersion.call_count, len(results))
+                    if retries:
+                        api.cuInit.assert_called_once_with(0)
+                    else:
+                        api.cuInit.assert_not_called()
+
     def test_driver_selection_and_no_gpu_skips_provisioning(self):
         for version, sdk in ((11990, None), (12000, '12.4'), (12080, '12.4'), (13000, '13.5'), (14000, '13.5')):
             self.assertEqual(inkling_cuda._sdk_for_driver(version), sdk)
