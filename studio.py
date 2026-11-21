@@ -174,6 +174,9 @@ class Studio(QMainWindow):
         self.bus.event.connect(self.handle_event)
         self.cancel = threading.Event()
         self.busy = False
+        self.voice = None
+        self.voice_task_id = None
+        self.voice_reply = ''
         self.local_model_state = None
         self.local_inventory_names = None
         self.local_inventory_revision = 0
@@ -357,6 +360,7 @@ class Studio(QMainWindow):
         for title,callback in [('Actions · Ctrl+K',self.command_palette),('Project memory · Ctrl+Shift+M',self.memory_dialog),('Project instructions · AGENTS.md',self.instructions_dialog),('Back up conversations',self.backup_conversations),('Private API vault',self.providers_dialog),('Model downloads',self.models_dialog),('FAQ / How to · F1',self.faq_dialog),('Open app data folder',lambda:QDesktopServices.openUrl(QUrl.fromLocalFile(str(STATE))))]:
             more_menu.addAction(title,callback)
         more_menu.addAction('Operating policy',self.operating_policy_dialog)
+        self.voice_file_action=more_menu.addAction('Transcribe WAV…',self.choose_voice_file)
         more_menu.addAction('Project workbench · playbooks & experiments',self.project_workbench)
         performance_menu=more_menu.addMenu('Local model performance')
         performance_menu.addAction('Tune local model',lambda:self.start_local_tuning(preserve_draft=True))
@@ -444,11 +448,20 @@ class Studio(QMainWindow):
         attachment_row=QHBoxLayout()
         self.attach_button=self.button('＋ Attach files',self.choose_attachments,attachment_row)
         self.attach_button.setToolTip('Add up to five local text, code, CSV, JSON, or text PDF files as bounded context for the next message. Extracted text is sent to the selected model route and saved in local chat history. Drag files onto the composer too.')
+        self.voice_record_button=self.button('Record',self.toggle_voice_recording,attachment_row)
+        self.voice_record_button.setToolTip('Dictate up to 90 seconds into your message draft using the default microphone.')
+        self.voice_cancel_button=self.button('Cancel recording',self.cancel_voice,attachment_row)
+        self.voice_read_button=self.button('Read aloud',self.toggle_voice_reading,attachment_row)
+        self.voice_read_button.setToolTip('Read the latest completed reply using a voice on this computer.')
         self.attachment_label=QLabel('No files attached');self.attachment_label.setObjectName('muted');self.attachment_label.setTextFormat(Qt.PlainText)
         attachment_row.addWidget(self.attachment_label,1)
         self.remove_attachment_button=self.button('Remove selected',self.remove_attachment,attachment_row)
         self.clear_attachments_button=self.button('Clear',self.clear_attachments,attachment_row)
         composer.addLayout(attachment_row)
+        self.voice_status=QLabel()
+        self.voice_status.setTextFormat(Qt.PlainText);self.voice_status.setWordWrap(True)
+        self.voice_status.setAccessibleName('Voice status');self.voice_status.hide()
+        composer.addWidget(self.voice_status)
         self.attachment_list=QListWidget();self.attachment_list.setMaximumHeight(70);self.attachment_list.hide();composer.addWidget(self.attachment_list)
         self.refresh_attachments()
         options = QHBoxLayout()
@@ -880,6 +893,9 @@ class Studio(QMainWindow):
         if not self.task:return
         kind=self.task.get('kind','code')
         is_chat=kind=='chat'
+        if self.voice_task_id and (self.voice_task_id != task_id or not is_chat):
+            self.voice_task_id = None
+            self.voice.stop('')
         self.chat_space.setChecked(is_chat);self.code_space.setChecked(not is_chat)
         self.new_button.setText('+  New chat' if is_chat else '+  New code task')
         self.space_label.setText('CHATS' if is_chat else 'CODE CONVERSATIONS')
@@ -916,8 +932,87 @@ class Studio(QMainWindow):
             self.prompt.setPlainText(text);self.prompt.moveCursor(QTextCursor.End)
         self.prompt.setFocus()
 
+    def _chat_voice(self):
+        if not self.task or self.task.get('kind') != 'chat':
+            return None
+        if self.voice is None:
+            from voice_dialog import VoiceController
+            self.voice = VoiceController(STATE, self)
+            self.voice.changed.connect(self._voice_changed)
+            self.voice.dictated.connect(self._append_dictation)
+        self.voice_task_id = self.task['id']
+        return self.voice
+
+    def _voice_changed(self, phase, message):
+        self.voice_status.setText(message)
+        self._update_voice_controls()
+
+    def _update_voice_controls(self):
+        chat = bool(self.task and self.task.get('kind') == 'chat')
+        phase = self.voice.phase if self.voice is not None else 'idle'
+        record_text = {'permission':'Stop', 'recording':'Finish', 'transcribing':'Stop'}.get(phase, 'Record')
+        self.voice_record_button.setText(record_text)
+        self.voice_record_button.setVisible(chat)
+        self.voice_record_button.setEnabled(phase != 'speaking')
+        self.voice_cancel_button.setVisible(chat and phase == 'recording')
+        self.voice_read_button.setText('Stop reading' if phase == 'speaking' else 'Read aloud')
+        self.voice_read_button.setVisible(chat)
+        self.voice_read_button.setEnabled(phase == 'speaking' or (phase == 'idle' and bool(self.voice_reply)))
+        self.voice_file_action.setVisible(chat)
+        self.voice_file_action.setEnabled(chat and phase == 'idle')
+        self.voice_status.setVisible(chat and bool(self.voice_status.text()))
+
+    def _append_dictation(self, text):
+        if not self.task or self.task.get('kind') != 'chat' or self.task['id'] != self.voice_task_id:
+            return
+        draft = self.prompt.toPlainText()
+        cursor = self.prompt.textCursor()
+        cursor.movePosition(QTextCursor.End)
+        cursor.insertText((' ' if draft and not draft[-1].isspace() else '') + text)
+        self.prompt.setTextCursor(cursor)
+        self.prompt.setFocus()
+
+    def toggle_voice_recording(self):
+        voice = self._chat_voice()
+        if voice is None:
+            return
+        if voice.phase == 'idle':
+            self.prompt.setFocus()
+            voice.record()
+        elif voice.phase == 'recording':
+            voice.finish()
+        else:
+            self.cancel_voice()
+
+    def cancel_voice(self):
+        if self.voice is not None:
+            self.voice.stop('Stopped.')
+
+    def toggle_voice_reading(self):
+        voice = self._chat_voice()
+        if voice is None:
+            return
+        if voice.phase == 'speaking':
+            self.cancel_voice()
+        elif self.voice_reply:
+            from PySide6.QtGui import QTextDocument
+            doc = QTextDocument()
+            doc.setMarkdown(self.voice_reply)
+            voice.read(doc.toPlainText())
+
+    def choose_voice_file(self):
+        path, _ = QFileDialog.getOpenFileName(self, 'Transcribe a recording', '', 'WAV recordings (*.wav)')
+        if path:
+            self.transcribe_voice_file(path)
+
+    def transcribe_voice_file(self, path):
+        voice = self._chat_voice()
+        if voice is not None:
+            voice.transcribe_file(path)
+
     def render(self):
         parts=[];hidden_protocol=False
+        self.voice_reply = ''
         is_chat=self.task.get('kind','code')=='chat'
         user_heading='#### You' if is_chat else '## You'
         assistant_heading='#### TalkToAi' if is_chat else '## TalkToAi Code'
@@ -931,6 +1026,9 @@ class Studio(QMainWindow):
             if m['role']=='assistant' and m.get('source')!='local':
                 content,hidden=conversation_prose(content);hidden_protocol=hidden_protocol or hidden
             if content:
+                if (is_chat and m['role']=='assistant' and not m.get('tool_calls')
+                        and m.get('source') not in ('app','chat_error','chat_partial')):
+                    self.voice_reply = content
                 heading=user_heading if m['role']=='user' else assistant_heading
                 if is_chat and m.get('source')=='chat_error':heading='#### Reply interrupted'
                 if is_chat and m.get('auto_model'):heading+=' · '+str(m['auto_model'])
@@ -948,6 +1046,7 @@ class Studio(QMainWindow):
         scroll=self.transcript.verticalScrollBar();follow=scroll.value()>=scroll.maximum()-40;position=scroll.value()
         self.transcript.setMarkdown(('\n\n' if is_chat else '\n\n---\n\n').join(parts))
         if is_chat:self.format_chat_turns()
+        self._update_voice_controls()
         if follow:self.transcript.moveCursor(QTextCursor.End)
         else:scroll.setValue(position)
 
@@ -2893,6 +2992,7 @@ Use an available local or server model, stop a task, or steer it into a smaller 
     def error(self,exc):QMessageBox.warning(self,'TalkToAi Code',str(exc))
 
     def closeEvent(self,event):
+        if self.voice is not None:self.voice.stop('')
         if self.task:self.task['draft']=self.prompt.toPlainText()
         self.persist()
         if self.tray and not self.allow_quit:
@@ -2900,6 +3000,11 @@ Use an available local or server model, stop a task, or steer it into a smaller 
         self.cancel.set();self.control_cancel_token=None;self.escape_cancel.disarm();self.escape_shortcut.setEnabled(False);self.end_control_session()
         if self.control_overlay:self.control_overlay.close();self.control_overlay.deleteLater()
         event.accept()
+
+    def hideEvent(self, event):
+        if self.voice is not None and self.voice.phase != 'idle':
+            self.voice.stop('Stopped.')
+        super().hideEvent(event)
 
 if __name__=='__main__':
     import multiprocessing

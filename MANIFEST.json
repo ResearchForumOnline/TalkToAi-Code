@@ -5,7 +5,7 @@
   },
   {
     "path": ".github/workflows/portable-desktop-smoke.yml",
-    "sha256": "26eecfe035288883a63d9854008c31c44a5086a9dc98a3a9cfb69daf1b4cae1b"
+    "sha256": "264752253fb512ff26e7fdbb83682a4b65144318983164e9a297ebc345b5db4e"
   },
   {
     "path": ".gitignore",
@@ -33,7 +33,7 @@
   },
   {
     "path": "README.md",
-    "sha256": "ce0c64f2d974a12e306122b6bdb8c48bc8997b6796cf9821620b2be8629fe89d"
+    "sha256": "1c79cad2ac1d3d7edecc9db78515575260330b5dd852ecdc988d8799e56bfcfd"
   },
   {
     "path": "RELEASE-NOTES.md",
@@ -45,11 +45,11 @@
   },
   {
     "path": "THIRD-PARTY-NOTICES.md",
-    "sha256": "72bd4498a2a9eaf90b807851f2c01523aff1c04c22817c7b8880d7628a13b495"
+    "sha256": "2ff4fe1e96542d8297c1981de26e8e6ed71212ee1c151271764fe36a5dcb77d3"
   },
   {
     "path": "TalkToAi-Code.iss",
-    "sha256": "bbe575631a096c4c2e1a7a3ec2364b0eaac9b133c19621336b488b648334cc48"
+    "sha256": "83f7770ef92ccd060a5cd65db5b6aacfd4cb410f7d8b66f86d87ef226d252b86"
   },
   {
     "path": "agent_core.py",
@@ -130,6 +130,10 @@
   {
     "path": "assets/screens/studio-chat-901.png",
     "sha256": "5837874245438eb2b722d8096b0b18c8839673756525e270b6769c8a0313cdc5"
+  },
+  {
+    "path": "assets/screens/studio-chat-902.png",
+    "sha256": "5f4c49686e131126d4d49d0f381b1d334a7f8b58391d42c0e7f9543767cdec48"
   },
   {
     "path": "assets/screens/studio-chat-code-040.png",
@@ -282,6 +286,10 @@
   {
     "path": "docs/DESKTOP-9.0.1.md",
     "sha256": "a7cd1ef71beb22ebd58b64dd8963b5129280a99fec1169a8ce5a24ee4f03f5f5"
+  },
+  {
+    "path": "docs/DESKTOP-9.0.2.md",
+    "sha256": "c2e84f14983740898a9a76189deae67351a5572c9f071195bf81ddc013d77772"
   },
   {
     "path": "docs/DEVSPACE-IDEAS-REVIEW.md",
@@ -657,7 +665,7 @@
   },
   {
     "path": "release_checks.py",
-    "sha256": "b9ba35ccf98dd31f0fada653136cc0e5fd88c93426a2ab03e21584c7c61b77a2"
+    "sha256": "1887f3c6ff57abda89b8095adaa31d43ec23ae0b33381767befda6e07d411e4f"
   },
   {
     "path": "remote_intent.py",
@@ -729,7 +737,7 @@
   },
   {
     "path": "scripts/package-runtime-notices.py",
-    "sha256": "a758252ba34f112fbbf4440dec9943a71b6dda71c8bb9c191093705aefd4e6cf"
+    "sha256": "58469932be9438cb5261b9683cdfcbc67e9bddc55d4a618785ae4abdc2fd7ae2"
   },
   {
     "path": "search_provider.py",
@@ -753,15 +761,15 @@
   },
   {
     "path": "store/build-msix.ps1",
-    "sha256": "d719d5ec35e99c13ca97d0b1f21b43d42d204a9ec80255c3e3ca1e5f11d44284"
+    "sha256": "e6a1badebfb5d74ffa6d446ec5243aa9c7523bdeea91c27993984de69bc7d17e"
   },
   {
     "path": "store/build-payload.ps1",
-    "sha256": "ea2a60f88c9f632427f4b44bf9a0530f3ad234b9aa2c7e0308ee467ec17e024c"
+    "sha256": "d7fe2e74d4eff6e2339fd3b3bf9b2a33cbd30d73daa526796338c80173b56fec"
   },
   {
     "path": "studio.py",
-    "sha256": "eaa6bab617a6e0a36a88a6e018983cd7f0bae63afe92dcd49caaad00a6b5b671"
+    "sha256": "7db08f2f4c31fb5e333cdf81ef5f4bdbf7d74a58d47dc58c063a4853d8205d35"
   },
   {
     "path": "task_goals.py",
@@ -1052,6 +1060,14 @@
     "sha256": "4c761ca7ba5e29520843efe97d40fdb65bac32d1180ef7ec532d33d4e5931999"
   },
   {
+    "path": "test_voice_transcription.py",
+    "sha256": "9551f1138aa1ab0c4cc0a7df41d74b3019d9b885e773afe537dd3b29db8c89c4"
+  },
+  {
+    "path": "test_voice_ui.py",
+    "sha256": "1640f76f0de84c4921c83faaa8bea6caad552e543cb314f8a9d35c4ca16c620f"
+  },
+  {
     "path": "test_work_packet.py",
     "sha256": "d64db261dc3758f84946eedd949b2d856b705d77891e0fe4a24036002d202029"
   },
@@ -1089,7 +1105,15 @@
   },
   {
     "path": "updates.py",
-    "sha256": "d018c5e01d06ad036e1dd0a1d7cf56d391eefe149bc8b56c4dfc1f38c3905902"
+    "sha256": "21d012225649f9546685de42b97478b2857237e92cd32b0a5c3fe71bfd7d9088"
+  },
+  {
+    "path": "voice_dialog.py",
+    "sha256": "0861a9b7f9c39201cb57f0e2f5c9d427ac552e37ec6642034ae1b8302555643f"
+  },
+  {
+    "path": "voice_transcription.py",
+    "sha256": "92b2633d6765427cd38be05251c1b3ac1e1b4c16a76b003f9ba19806a3a0aba1"
   },
   {
     "path": "website/index.html",

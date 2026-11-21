@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Version = '1.9.1.0',
+    [string]$Version = '1.9.2.0',
     [string]$IdentityName = 'talktoai.TalkToAiCode-AICodingStudio',
     [string]$Publisher = 'CN=9B704446-6F62-4D52-954E-775436315422',
     [string]$PublisherDisplayName = 'talktoai',
@@ -62,7 +62,10 @@ $manifest = @"
   </Properties>
   <Resources><Resource Language="en-US" /></Resources>
   <Dependencies><TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.19041.0" MaxVersionTested="10.0.26100.0" /></Dependencies>
-  <Capabilities><rescap:Capability Name="runFullTrust" /></Capabilities>
+  <Capabilities>
+    <rescap:Capability Name="runFullTrust" />
+    <DeviceCapability Name="microphone" />
+  </Capabilities>
   <Applications>
     <Application Id="TalkToAiCode" Executable="TalkToAiCode.exe" uap10:RuntimeBehavior="packagedClassicApp" uap10:TrustLevel="mediumIL">
       <uap:VisualElements DisplayName="TalkToAi Code" Description="Chat, coding and game development with your chosen AI" BackgroundColor="#081016" Square150x150Logo="Assets\icon-150.png" Square44x44Logo="Assets\icon-44.png" />

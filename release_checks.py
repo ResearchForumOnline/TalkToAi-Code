@@ -147,6 +147,21 @@ def smoke(destination):
         result['local_media_entrypoints'] = (callable(generate_media)
                                              and media_request('Create an image of a pine tree.')[0] == 'image'
                                              and media_request('Make a short video of rainfall.')[0] == 'video')
+        from voice_dialog import VoiceController
+        from voice_transcription import transcribe_audio
+        result['local_voice_entrypoints'] = callable(VoiceController) and callable(transcribe_audio)
+        if os.name == 'nt':
+            from PySide6.QtCore import QCoreApplication
+            from PySide6.QtMultimedia import QAudioFormat, QAudioSource
+            from PySide6.QtTextToSpeech import QTextToSpeech
+
+            qt_app = QCoreApplication.instance() or QCoreApplication([])
+            audio_format = QAudioFormat()
+            audio_format.setSampleRate(16000)
+            audio_format.setChannelCount(1)
+            audio_format.setSampleFormat(QAudioFormat.SampleFormat.Int16)
+            result['windows_voice_plugins'] = (bool({'sapi', 'winrt'}.intersection(QTextToSpeech.availableEngines()))
+                                               and callable(QAudioSource) and audio_format.isValid())
         with tempfile.TemporaryDirectory(prefix='talktoai-release-') as folder:
             check_directory = Path(folder, 'model-checks')
             check = measure_local_reply(DEFAULT_LOCAL_MODEL, threading.Event(), lambda *_: None,
@@ -298,7 +313,9 @@ def smoke(destination):
         result['passed'] = result['passed'] and all(result[key] for key in
             ('conversation_round_trip', 'installed_model_reply_check', 'openzero_template_prefix_clean',
              'local_model_retention','reversible_local_tuning','local_project_reviewers','browser_live_reference',
-             'automatic_chat_tools','local_media_entrypoints'))
+             'automatic_chat_tools','local_media_entrypoints','local_voice_entrypoints'))
+        if os.name == 'nt':
+            result['passed'] = result['passed'] and result['windows_voice_plugins']
         if desktop_worker_check:result['passed']=result['passed'] and result.get('desktop_worker',False)
         if getattr(__import__('sys'),'frozen',False):result['passed']=result['passed'] and result.get('bundled_game_assets',False)
         if os.name=='nt' and getattr(__import__('sys'),'frozen',False):result['passed']=result['passed'] and result.get('per_monitor_v2',False)
