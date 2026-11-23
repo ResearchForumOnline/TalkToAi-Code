@@ -225,7 +225,7 @@
   },
   {
     "path": "browser_tools.py",
-    "sha256": "16d4e4b830db05db7b817cef4f110ab06cac1492d2e5b4124398838e4399f1b9"
+    "sha256": "edfb92f44167bdddd426c0ce8deade225f5a14d514bfb232c31b256ef9f924b4"
   },
   {
     "path": "candidate_apply.py",
@@ -897,7 +897,7 @@
   },
   {
     "path": "test_browser_workflows.py",
-    "sha256": "f682a32944f87ca39f2f62b774d4ec95c7ec00153861848046e79aaea77ea665"
+    "sha256": "fe519bf126ea6e83d5def6d0fda498666d1d3ad2616a076868a30ae12a61e1ab"
   },
   {
     "path": "test_candidate_apply.py",

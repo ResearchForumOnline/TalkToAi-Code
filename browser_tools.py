@@ -8,6 +8,7 @@ import os
 import shutil
 import socket
 import subprocess
+import time
 import uuid
 import base64
 import re
@@ -467,6 +468,11 @@ class BrowserTools:
         element=self._target(target) if action!='press' else None
         opened=[]
         try:
+            expects_popup = action == 'click' and element.evaluate("""el => {
+                const link = el.closest('a[href],area[href]');
+                return !!link && (link.getAttribute('target') ||
+                    link.ownerDocument.querySelector('base[target]')?.target || '').toLowerCase() === '_blank';
+            }""")
             if action=='fill' and element.evaluate(r"""el => el.matches('input[type=password]') ||
                     /(?:^|\s)(?:current-password|new-password|one-time-code)(?:\s|$)/i.test(el.autocomplete || '')"""):
                 raise ValueError('The password field or verification-code field requires user input.')
@@ -479,6 +485,12 @@ class BrowserTools:
                 if action=='press':page.keyboard.press(target)
                 elif action=='fill':element.fill(value,timeout=2500)
                 else:element.click(timeout=2500)
+                if expects_popup:
+                    # Playwright delivers the originating tab's popup event after
+                    # the new page's first HTTP response, which can arrive after click().
+                    deadline = time.monotonic() + 8
+                    while not opened and not self.cancel.is_set() and not page.is_closed() and time.monotonic() < deadline:
+                        page.wait_for_timeout(80)
                 if not page.is_closed() and not self.cancel.is_set():
                     page.wait_for_timeout(60)
             finally:

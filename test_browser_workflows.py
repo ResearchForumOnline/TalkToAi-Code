@@ -18,6 +18,8 @@ class Fixture(BaseHTTPRequestHandler):
     def log_message(self,*args):pass
     def do_GET(self):
         if self.path.startswith('/report'):
+            if self.path == '/report?delayed':
+                time.sleep(.5)
             html='<title>Report</title><h1>Report ready</h1><button onclick="window.close()">Close report</button>'
         elif self.path.startswith('/panel'):
             html='''<label>Nested player <input></label><p id="inside">Nested panel ready</p>
@@ -31,6 +33,7 @@ class Fixture(BaseHTTPRequestHandler):
 <button aria-label="Duplicate" onclick="document.querySelector('#status').textContent='Selected first duplicate'">A</button>
 <button aria-label="Duplicate" onclick="document.querySelector('#status').textContent='Selected second duplicate'">B</button>
 <a target="_blank" href="/report">Open report</a>
+<a target="_blank" href="/report?delayed">Open delayed report</a>
 <button onclick="window.open('/report?1');window.open('/report?2')">Open two reports</button>'''
             if self.path.startswith('/nested'):
                 html+=f'<iframe title="Nested panel" src="http://localhost:{self.server.server_port}/panel"></iframe>'
@@ -109,6 +112,12 @@ class BrowserWorkflowTests(unittest.TestCase):
         result=json.loads(self.tools.execute('click','Close report'))
         self.assertIn('Original fixture',result['page']);self.assertEqual(result['url'],self.url)
         self.assertEqual(len(self.tools.context.pages),1)
+    def test_new_tab_waits_for_its_initial_response(self):
+        report = json.loads(self.tools.execute('click', 'Open delayed report'))
+        self.assertEqual(report['url'], self.url + 'report?delayed')
+        self.assertIn('Report ready', report['page'])
+        self.assertEqual(len(report['tabs']), 2)
+
     def test_multiple_popups_not_guessed(self):
         original=self.tools.page
         with self.assertRaisesRegex(ValueError,'multiple browser pages'):
