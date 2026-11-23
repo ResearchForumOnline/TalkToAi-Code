@@ -93,6 +93,39 @@ def _project_python_smoke(folder):
             return (root / 'gallery.html').read_text(encoding='utf-8') == '<svg fill=#2468AC></svg>'
 
 
+def _autonomous_question_smoke(folder):
+    from unittest.mock import patch
+    from agent_core import run_agent_zero
+
+    def reply(text='', **calls):
+        message = {'content': text}
+        if calls:
+            message['tool_calls'] = [{'function': {'name': name, 'arguments': arguments}}
+                                     for name, arguments in calls.items()]
+        return iter([{'message': message, 'done': True}])
+
+    root = Path(folder, 'answer-task')
+    root.mkdir()
+    question = 'What greeting name should I use?'
+    events = []
+    initial = [{'role':'user','content':'Create a Python script that prints a greeting.'}]
+    responses = [reply(ask_user={'question':question}),
+                 reply(write_file={'path':'hello.py','content':"print('Hello Ada')\n"}),
+                 reply('Greeting saved and checked.')]
+    with (patch('agent_core.stream_chat', side_effect=responses),
+          patch('agent_core.model_supports_vision', return_value=False)):
+        def run(history):
+            run_agent_zero('http://127.0.0.1:11434', 'fixture', history, root, True, threading.Event(),
+                           lambda kind, data: events.append((kind, data)), keep_going=True)
+
+        run(initial)
+        if ('question_pending', {'question':question}) not in events or (root / 'hello.py').exists():
+            return False
+        run([*initial, {'role':'assistant','content':question},
+             {'role':'user','content':'Ada','answers_task_question':True}])
+    return (root / 'hello.py').read_text(encoding='utf-8') == "print('Hello Ada')\n" and events[-1] == ('status','Ready')
+
+
 def smoke(destination):
     from model_library import DEFAULT_LOCAL_MODEL
     from runtime_diagnostics import REPLY_CHECK_PROMPT, last_reply_check, measure_local_reply
@@ -271,6 +304,7 @@ def smoke(destination):
                                                and callable(QAudioSource) and audio_format.isValid())
         with tempfile.TemporaryDirectory(prefix='talktoai-release-') as folder:
             result['project_python'] = _project_python_smoke(folder)
+            result['autonomous_question_and_resume'] = _autonomous_question_smoke(folder)
             from engine_discovery import find_blender
             from agent_core import ProjectTools
             blender = find_blender()
@@ -454,7 +488,7 @@ def smoke(destination):
         result['passed'] = result['passed'] and all(result[key] for key in
             ('conversation_round_trip', 'installed_model_reply_check', 'openzero_template_prefix_clean',
              'local_model_retention','reversible_local_tuning','local_project_reviewers','browser_live_reference',
-             'project_python','interactive_html_repair','filing_tail_retrieval','automatic_chat_tools','local_media_entrypoints','local_voice_entrypoints','agent_specialties','inkling_support',
+             'project_python','interactive_html_repair','autonomous_question_and_resume','filing_tail_retrieval','automatic_chat_tools','local_media_entrypoints','local_voice_entrypoints','agent_specialties','inkling_support',
              'inkling_gpu_status','inkling_physical_offload','inkling_acceleration_settings'))
         if os.name == 'nt':
             result['passed'] = result['passed'] and result['windows_voice_plugins']

@@ -3,7 +3,7 @@
 ; %LOCALAPPDATA%\TalkToAiCode, so upgrades/uninstalls do not erase it.
 
 #define AppName "TalkToAi Code"
-#define AppVersion "9.0.10"
+#define AppVersion "9.0.11"
 #define AppExeName "TalkToAiCode.exe"
 #ifndef PayloadDirectory
   #define PayloadDirectory "dist-studio-store\TalkToAiCode"

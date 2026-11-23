@@ -33,7 +33,7 @@
   },
   {
     "path": "README.md",
-    "sha256": "366e11987fe9d6cebbc1ed3397ba296793d0d2ed54a0f297e1c73749d2399962"
+    "sha256": "9ce057e14a89d1b5f45a4d62528207a5c6fc869b2124bf36cec9c37c239b2718"
   },
   {
     "path": "RELEASE-NOTES.md",
@@ -49,11 +49,11 @@
   },
   {
     "path": "TalkToAi-Code.iss",
-    "sha256": "7bdbde96945b7e3f6abeff7622df9b8b65e371334701f1b4dd226cd006f11f83"
+    "sha256": "bdbc685ac06ea93898b31b6de5ea551f2e0d03527c0e12cb1e617b06a2d2ed4c"
   },
   {
     "path": "agent_core.py",
-    "sha256": "5114a8091617d366c4e03b5affe9e03783bba28d3d36ac8a3b8c9a206ec0cf3d"
+    "sha256": "f90435337f3568e4f0a73eacb3ff5dac5cabcb6823beedf2b2efc24856bf8644"
   },
   {
     "path": "agent_focus.py",
@@ -725,7 +725,7 @@
   },
   {
     "path": "release_checks.py",
-    "sha256": "a5a816cb4071818730ce8fe4b976941954972715c5924109908f639a43c370e9"
+    "sha256": "33d74d76402f6ab07009196e7aebdfa8a78166013711c9f784775bac3dc68e4b"
   },
   {
     "path": "remote_intent.py",
@@ -825,15 +825,15 @@
   },
   {
     "path": "store/build-msix.ps1",
-    "sha256": "116e5d2371e90f7c05c988bb8cbab25a3fd064e6c3d4baf0f11d454fe257c517"
+    "sha256": "ce585a986cc0ead7cfa0144111575915ef76aa478a57253361ccc3fb60d3902c"
   },
   {
     "path": "store/build-payload.ps1",
-    "sha256": "76fc4beadc1ebecdc1ddf6a49ec4832efb6137756ff9a19db20c35e05aa901a3"
+    "sha256": "d99f8b699de5347ed629ca558499d6a23e2aec16dc5cfa706f928156e80860db"
   },
   {
     "path": "studio.py",
-    "sha256": "b498425c54d04a8d73415f7a09f3ece9cf5a6a56077907eae38bab845259126f"
+    "sha256": "d12faba91ef5d7f2e01e81f3beaea9f2cb45c486c3690f543eb59ae7176511a2"
   },
   {
     "path": "task_goals.py",
@@ -861,7 +861,7 @@
   },
   {
     "path": "test_agent_workflow.py",
-    "sha256": "1a0c40aae9dc6290ef071086e5aa6f8e6aff63b184d4da802246bff855599f28"
+    "sha256": "f912b42d88bf42678088b05670b89d8ac1868366d1a1323ba608bcdd06501d26"
   },
   {
     "path": "test_agent_zero.py",
@@ -1181,7 +1181,7 @@
   },
   {
     "path": "test_workspace_ui.py",
-    "sha256": "dc2b518fb16e601667cf775a7d14443b475673c04ad0a72fa9acb098a8885025"
+    "sha256": "351c35b93783b995e935e33919035a56474cf65d55aef9eafd44186984672593"
   },
   {
     "path": "tool_chains.py",
@@ -1205,7 +1205,7 @@
   },
   {
     "path": "updates.py",
-    "sha256": "6acc7d5eb97ca21512a3e58d4501babcd9ee049f3ef714bda3541287a345eb6e"
+    "sha256": "0cabfeb6fbac75ecc3a50a232a206ed8279838ccbba2cf897e68ee4d46b6a2d7"
   },
   {
     "path": "voice_dialog.py",

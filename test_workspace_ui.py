@@ -273,6 +273,18 @@ class WorkspaceUITests(unittest.TestCase):
         self.assertNotIn('goal_checkpoint',w.task);self.assertIsNone(w.current_task_goal())
         self.assertNotIn('goal_checkpoint',load_tasks(studio.SESSION)[0][0])
 
+    def test_short_answer_to_pending_question_resumes_chat_tools(self):
+        w = self.window
+        w.switch_workspace('chat')
+        w.mode.setCurrentText('Act')
+        w.handle_event('question_pending', {'question':'Which greeting name should I use?'})
+        w.prompt.setPlainText('Ada')
+        with patch('studio.threading.Thread'):
+            w.send()
+        self.assertEqual(w.execution_kind, 'model')
+        self.assertTrue(w.task['messages'][-1]['answers_task_question'])
+        self.assertNotIn('pending_question', w.task)
+
     def test_empty_tool_call_messages_do_not_create_blank_chat_rows(self):
         w=self.window
         w.task['messages']=[{'role':'user','content':'Inspect game'},

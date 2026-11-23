@@ -882,7 +882,7 @@ class Studio(QMainWindow):
         for step in plan.get('steps',[]):
             item=QListWidgetItem(labels[step['status']]+' · '+step['step']);item.setToolTip(step['step']);self.plan_list.addItem(item)
         checkpoint=self.task.get('goal_checkpoint') or {}
-        progress=(f"Work pass {checkpoint.get('pass',1)}/{checkpoint.get('total_passes',1)} · {checkpoint.get('steps',0)} steps · {checkpoint.get('state','')}\n\n" if checkpoint else '')
+        progress=(self.checkpoint_status(checkpoint)+'\n\n' if checkpoint else '')
         self.plan_summary.setText(progress+(plan.get('explanation')+'\n\n' if plan.get('explanation') else '')+'Checklist status is agent-reported, not independent proof. Inspect checks and evidence before relying on it.')
         context=self.task.get('project_context',{})
         checks=context.get('checks',{}) if isinstance(context,dict) else {}
@@ -1282,6 +1282,13 @@ class Studio(QMainWindow):
         self.last_observed_at=time.monotonic()
         if phase:self.run_phase=phase
         if step is not None:self.run_step=step
+
+    @staticmethod
+    def checkpoint_status(checkpoint):
+        label = str(checkpoint.get('pass', 1))
+        if checkpoint.get('total_passes'):
+            label += '/' + str(checkpoint['total_passes'])
+        return f"Work pass {label} · {checkpoint.get('steps', 0)} steps · {checkpoint.get('state', '')}"
 
     def pause_report(self,checkpoint):
         steps=checkpoint.get('steps',self.run_step);changes=checkpoint.get('changes',0)
@@ -1747,9 +1754,10 @@ class Studio(QMainWindow):
         previous=next((item for item in reversed(messages) if item.get('role')=='user' and item.get('source')!='app'),{})
         followup=previous.get('chat_mode')=='tools'
         doc_history = any(m.get('typed_content') or m.get('document_refs') for m in messages if m.get('role') == 'user')
+        answering_task = bool(self.task.get('pending_question')) and not retry
         web_query = chat_web_query(text, attached=bool(self.attachments or (original and original.get('typed_content'))),
-                                   document_history=doc_history) if is_chat else None
-        conversation=is_chat and (retry or bool(web_query) or not chat_requests_tools(text,attached=bool(self.attachments),followup=followup,focus=resolved_focus))
+                                   document_history=doc_history) if is_chat and not answering_task else None
+        conversation=is_chat and not answering_task and (retry or bool(web_query) or not chat_requests_tools(text,attached=bool(self.attachments),followup=followup,focus=resolved_focus))
         if self.route.currentIndex()==4 and not self.active_provider():
             self.status.setText('Add an API key and choose a model in your private vault to begin. Your draft is kept.')
             self.providers_dialog()
@@ -1793,6 +1801,9 @@ class Studio(QMainWindow):
                 user_message['typed_content']=text
                 user_message['display_content']=text+('\n\nAttached: '+', '.join(summaries) if self.attachments else '')
             self.prompt.clear();self.clear_attachments();messages.append(user_message)
+            if answering_task:
+                user_message['answers_task_question'] = True
+                self.task.pop('pending_question', None)
             self.task['draft']=''
         self.task.pop('chat_retry_index',None)
         if self.task['title'] in ('New task','New chat'):self.task['title']=text.splitlines()[0][:45];self.title.setText(self.task['title']);self.refresh_tasks()
@@ -1815,7 +1826,7 @@ class Studio(QMainWindow):
             history[:-1] = [dict(m,content=m['typed_content']) if m.get('role')=='user' and m.get('typed_content') else m for m in history[:-1]]
         task_kind=self.task.get('kind','code');rounds=self.step_budget.currentData() if task_kind=='code' else 16
         performance=self.model_performance()
-        keep_going=bool(self.keep_going.isChecked()) and task_kind=='code'
+        keep_going=not conversation and (bool(self.keep_going.isChecked()) if task_kind=='code' else act)
         task_goal=None if conversation else copy.deepcopy(self.current_task_goal())
         auto_openzero=self._auto_install_openzero()
         if not conversation:
@@ -2255,12 +2266,15 @@ class Studio(QMainWindow):
             if state_changed:self.persist()
         elif kind=='project_context':
             self.task['project_context']=data;self.refresh_plan();self.persist()
+        elif kind=='question_pending':
+            self.task['pending_question'] = data['question']
+            self.persist()
         elif kind=='goal_checkpoint':
             run_summary=self.task.get('run_summary') or {}
             if data.get('state')=='paused' and run_summary.get('steps')==data.get('steps'):
                 data=dict(data,**{key:run_summary[key] for key in ('next_action','last_tool_error','workspace_changes') if key in run_summary})
             self.task['goal_checkpoint']=data;self.refresh_plan();self.persist()
-            self.status.setText(f"Work pass {data.get('pass',1)}/{data.get('total_passes',1)} · {data.get('steps',0)} steps · {data.get('state','')}")
+            self.status.setText(self.checkpoint_status(data))
             self.observe_progress('Paused' if data.get('state')=='paused' else 'Continuing work',data.get('steps',self.run_step))
             if data.get('state')=='paused':
                 summary=self.pause_report(data)

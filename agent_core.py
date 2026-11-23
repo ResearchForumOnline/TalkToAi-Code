@@ -16,6 +16,7 @@ import http.client
 import socket
 import queue
 import hashlib
+import itertools
 import base64
 import io
 import re
@@ -117,6 +118,8 @@ def schema(name, description, properties):
     return {'type': 'function', 'function': {'name': name, 'description': description,
         'parameters': {'type': 'object', 'properties': {k: {'type': 'string', 'description': v} for k, v in properties.items()},
                        'required': list(properties)}}}
+
+ASK_USER = schema('ask_user', 'Pause until the user answers one necessary question. Use alone when you cannot safely make further useful progress without an answer. Resolve ordinary choices with the available tools.', {'question': 'One concrete question for the user'})
 
 TOOLS = [
     schema('list_files', 'List project-relative files, excluding generated directories. Optional glob pattern filters before the result limit; use *.gd or *.tscn for Godot source instead of shell discovery.', {'pattern':'Optional filename/path glob, e.g. *.gd, *.tscn, src/*.py; empty lists all'}),
@@ -1232,6 +1235,11 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
     performance = performance or {}
     named_worker_sources = getattr(tools, 'named_sources', ()) if worker_mode else ()
     request_text = _capability_request(history, preserve_case=True)
+    if history and history[-1].get('answers_task_question'):
+        original = next((m for m in reversed(history[:-1]) if m.get('role') == 'user'
+                         and not m.get('answers_task_question') and not m.get('_automation_nudge')), None)
+        if original:
+            request_text = _capability_request([original], preserve_case=True) + '\n' + request_text
     latest = request_text.lower()
     shopping_comparison = not worker_mode and not improvement_mode and wants_shopping_lookup(request_text)
     if shopping_comparison:
@@ -1421,6 +1429,8 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
         tools.strict_browser=bool(requested_browser)
     first_turn_system=messages[0]['content']
     active_tools=list(TOOLS)
+    if not worker_mode and not improvement_mode:
+        active_tools.append(ASK_USER)
     mail_requested=bool(_MAIL_INTENT.search(latest))
     if mail_requested and not small_context:
         active_tools+=MAIL_TOOLS
@@ -1567,7 +1577,7 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
             'Answer this direct read-only question from the packet. State any evidence limit; do not invent additional files or checks.')
         emit('status','Answering from complete project evidence…')
     performance=performance or {}
-    essential_tools={t['function']['name'] for t in TOOLS}|{'enable_tools','update_plan','delegate_review','run_checks'}
+    essential_tools={t['function']['name'] for t in TOOLS}|{'enable_tools','update_plan','delegate_review','run_checks','ask_user'}
     malformed_retries=0
     checked_changes=0
     verification_requested_at=-1
@@ -1637,13 +1647,14 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
     except (TypeError,ValueError):work_session_minutes=0
     work_session_minutes=max(0,min(240,work_session_minutes))
     if work_session_minutes and work_session_minutes<15:work_session_minutes=15
-    total_passes=(12 if work_session_minutes else 3) if extended_session else 1
-    max_steps=rounds*total_passes
+    total_passes = (None if work_session_minutes else 3) if extended_session else 1
+    max_steps = rounds * total_passes if total_passes is not None else float('inf')
     work_started=time.monotonic()
     work_deadline=work_started+work_session_minutes*60 if extended_session and work_session_minutes else None
     inference_cancel=project_workers.WorkerStop(cancel,work_deadline) if work_deadline else cancel
     workspace_evidence=WorkspaceChangeTracker(tools.root) if act and not worker_mode else None
     workspace_report=workspace_evidence.report('run_start') if workspace_evidence else None
+    pass_revision = workspace_report['revision'] if workspace_report else None
     checked_workspace_revision=workspace_report['revision'] if workspace_report else None
     workspace_unknown_dirty=False
     if workspace_report:emit('workspace_changes',workspace_report)
@@ -1681,7 +1692,7 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
 
     def goal_checkpoint(state,steps,blockers=None):
         if keep_going and not worker_mode and not improvement_mode:
-            emit('goal_checkpoint',{'pass':max(1,min(total_passes,(max(1,steps)-1)//rounds+1)),
+            emit('goal_checkpoint',{'pass':(max(1,steps)-1)//rounds+1,
                  'total_passes':total_passes,'steps':steps,'changes':len(tools.changes),
                  'verification':verification,'state':state,'progress_observations':pass_progress,
                  'elapsed_seconds':round(time.monotonic()-work_started,1),
@@ -1766,7 +1777,7 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
         if not cancel.is_set():
             emit('status','Ready')
         return
-    for step in range(max_steps):
+    for step in (itertools.count() if total_passes is None else range(max_steps)):
         if cancel.is_set():
             goal_checkpoint('stopped',step)
             emit('status', 'Stopped')
@@ -1776,7 +1787,11 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
             emit('status','Work session time reached; progress is saved. Send Continue to resume.')
             return
         if step and step%rounds==0 and not request_file_draft:
-            if not pass_progress or pass_errors or unresolved_tool_failures or goal_validation_error or protocol_error or discovery_guard.paused:
+            revision = workspace_report['revision'] if workspace_report else None
+            changed = revision != pass_revision
+            jobs_running = bool(tools.jobs and tools.jobs.running())
+            unresolved = pass_errors or unresolved_tool_failures or goal_validation_error or protocol_error
+            if (not pass_progress and not jobs_running) or (unresolved and not (changed or jobs_running)) or discovery_guard.paused:
                 reasons=[]
                 if not pass_progress:reasons.append('No new tool evidence in the last pass')
                 if pass_errors or unresolved_tool_failures:reasons.append('Unresolved tool errors; inspect the latest tool results')
@@ -1790,7 +1805,8 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
             messages.append({'role':'user','_automation_nudge':True,'content':
                 'Continue the same authorized task from the saved observations and checklist. Another bounded pass is available because the last pass produced new tool evidence. '+
                 'Do not repeat completed work or expand the scope. Verify remaining outcomes; finish as soon as the requested task is done. Report genuine blockers.'})
-            emit('status',f'Keep going: continuing pass {step//rounds+1}/{total_passes} with saved progress.')
+            emit('status',f'Keep going: continuing pass {step//rounds+1} with saved progress.')
+            pass_revision = revision
             pass_progress=0;pass_errors=bool(unresolved_tool_failures);pass_recovered_errors=False
         emit('status', f'Working - step {step + 1}')
         num_ctx=performance.get('num_ctx',8192)
@@ -1970,7 +1986,12 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
                     'For a tool with no arguments omit parameter tags. Continue the original task. Error: '+str(exc)[:180]})
                 emit('status','Retrying malformed tool response - no action executed')
                 continue
-        try:calls=validate_calls(calls,active_tools)
+        try:
+            calls=validate_calls(calls,active_tools)
+            questions = [c['function']['arguments']['question'].strip() for c in calls
+                         if c['function']['name'] == 'ask_user']
+            if questions and (len(calls) != 1 or not 1 <= len(questions[0]) <= 600):
+                raise ValueError('Call ask_user alone with a concrete question of at most 600 characters.')
         except (ValueError,TypeError) as exc:
             protocol_error=True
             malformed_retries+=1
@@ -1978,6 +1999,12 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
             messages.append({'role':'user','_automation_nudge':True,'content':'Your previous structured tool batch was invalid and none of it was executed. Return function names and JSON-object arguments for available tools. Error: '+str(exc)[:200]})
             emit('status','Repairing invalid tool arguments - no action executed')
             continue
+        if questions:
+            emit('message', {'role':'assistant','content':questions[0]})
+            emit('question_pending', {'question':questions[0]})
+            goal_checkpoint('awaiting answer', step+1)
+            emit('status','Waiting for your answer')
+            return
         if calls:protocol_error=False
         assistant = {'role': 'assistant', 'content': content}
         if calls:
@@ -1996,7 +2023,7 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
                         'The user asked for project action, but no task tool action has been observed this turn. '
                         'Use the available tools to inspect and carry out the authorized request. '
                         'For a new file call write_file_checked with path, content and expected_sha256 set to __absent__. '
-                        'If it cannot be done, report the precise blocker and remaining work; do not claim completion.'})
+                        'If a specific user answer is needed, use ask_user. Otherwise report the exact blocker if there is no useful action left.'})
                     emit('status','Checking requested project action before finishing')
                     continue
                 reason = ('No requested file was observed' if needs_file else

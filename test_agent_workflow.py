@@ -516,5 +516,35 @@ class AgentAutomationTests(unittest.TestCase):
         self.assertTrue(checkpoints)
         self.assertIn('browser: RuntimeError',checkpoints[-1]['last_tool_error'])
 
+    def test_timed_task_continues_beyond_twelve_passes_until_a_check_passes(self):
+        with tempfile.TemporaryDirectory() as root:
+            writes = [response(calls=[call('write_file', path='result.py', content=f'value = {step}\n')])
+                      for step in range(13)]
+            payloads, events = self.run_sequence(root, [
+                *writes, response(calls=[call('run_checks')]), response('Updated and checked result.py.')],
+                text='Fix the project', rounds=1, keep_going=True, performance={'work_session_minutes':60})
+        self.assertEqual(len(payloads), 15)
+        checkpoint = [data for kind, data in events if kind == 'goal_checkpoint'][-1]
+        self.assertEqual(checkpoint['state'], 'completed')
+        self.assertEqual(checkpoint['verification']['status'], 'passed')
+
+    def test_task_asks_once_and_uses_the_answer_to_finish(self):
+        question = 'What name should I use in the greeting?'
+        original = {'role':'user', 'content':'Create a Python script that prints a greeting.'}
+        design = "print('Hello Ada')\n"
+        with tempfile.TemporaryDirectory() as root:
+            _, first = self.run_sequence(root, [response(calls=[call('ask_user', question=question)])],
+                                         history=[original], keep_going=True)
+            self.assertFalse(list(Path(root).glob('*.py')))
+            _, second = self.run_sequence(root, [
+                response(calls=[call('write_file', path='hello.py', content=design)]),
+                response('Created and checked hello.py.')], keep_going=True,
+                history=[original, {'role':'assistant', 'content':question},
+                         {'role':'user', 'content':'Ada', 'answers_task_question':True}])
+            self.assertEqual(Path(root,'hello.py').read_text(), design)
+        self.assertIn(('question_pending', {'question':question}), first)
+        self.assertIn(('status', 'Waiting for your answer'), first)
+        self.assertEqual([v['state'] for k,v in second if k=='goal_checkpoint'][-1], 'completed')
+
 
 if __name__=='__main__':unittest.main()
