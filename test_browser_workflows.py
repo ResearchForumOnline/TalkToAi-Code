@@ -18,8 +18,8 @@ class Fixture(BaseHTTPRequestHandler):
     def log_message(self,*args):pass
     def do_GET(self):
         if self.path.startswith('/report'):
-            if self.path == '/report?delayed':
-                time.sleep(.5)
+            if self.path in ('/report?delayed', '/report?1', '/report?2'):
+                time.sleep(.8 if self.path == '/report?2' else .4)
             html='<title>Report</title><h1>Report ready</h1><button onclick="window.close()">Close report</button>'
         elif self.path.startswith('/panel'):
             html='''<label>Nested player <input></label><p id="inside">Nested panel ready</p>

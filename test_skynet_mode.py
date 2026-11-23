@@ -441,13 +441,19 @@ class SkynetModeTests(unittest.TestCase):
             timer = None
 
             def fake_agent(url, model, history, project, act, stop, emit, rounds, performance, tools, **kwargs):
-                nonlocal timer
                 (Path(project) / 'app.py').write_text('error = 1\n', encoding='utf-8')
-                timer = threading.Timer(.2, cancel.set)
-                timer.start()
+
+            run_metric = skynet_mode._run_metric_contract
+            def cancel_candidate_metric(evaluation, contract, stop):
+                nonlocal timer
+                if (Path(evaluation) / 'app.py').read_text(encoding='utf-8').strip() == 'error = 1':
+                    timer = threading.Timer(.2, cancel.set)
+                    timer.start()
+                return run_metric(evaluation, contract, stop)
 
             try:
                 with patch.object(skynet_mode, '_run_agent', side_effect=fake_agent), \
+                     patch.object(skynet_mode, '_run_metric_contract', side_effect=cancel_candidate_metric), \
                      patch.object(skynet_mode.ProjectTools, 'execute', return_value='Exit 0\n1 test passed'):
                     report = skynet_mode.run_improvement('local', 'fixture', root, 'Reduce error',
                                                          cancel, lambda *_: None, max_iterations=1)

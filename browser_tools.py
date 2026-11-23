@@ -460,9 +460,10 @@ class BrowserTools:
         locator=locator.filter(visible=True)
         if locator.count()!=1:
             raise ValueError('The observed browser control moved, changed or was replaced. Inspect again before acting.')
-        return locator.element_handle(timeout=600)
+        return locator.element_handle(timeout=2500)
 
     def _input(self,action,target,value):
+        from playwright.sync_api import Error as PlaywrightError
         self._require_observation()
         page=self.page
         element=self._target(target) if action!='press' else None
@@ -480,20 +481,38 @@ class BrowserTools:
             self.observed_page=None
             def on_popup(popup):
                 opened.append(popup)
+            provisional = 0
+            arrivals = 0
+            def on_request(request):
+                nonlocal provisional
+                if request.is_navigation_request() and request.redirected_from is None:
+                    try:
+                        request.frame
+                    except PlaywrightError:
+                        # A new window's first request can precede its Playwright frame.
+                        provisional += 1
+            def on_page(_page):
+                nonlocal arrivals
+                arrivals += 1
             page.on('popup',on_popup)
+            self.context.on('request', on_request)
+            self.context.on('page', on_page)
             try:
                 if action=='press':page.keyboard.press(target)
                 elif action=='fill':element.fill(value,timeout=2500)
                 else:element.click(timeout=2500)
-                if expects_popup:
-                    # Playwright delivers the originating tab's popup event after
-                    # the new page's first HTTP response, which can arrive after click().
-                    deadline = time.monotonic() + 8
-                    while not opened and not self.cancel.is_set() and not page.is_closed() and time.monotonic() < deadline:
-                        page.wait_for_timeout(80)
                 if not page.is_closed() and not self.cancel.is_set():
                     page.wait_for_timeout(60)
+                # First responses can arrive in different orders. Wait for outstanding
+                # new pages, then select exclusively from this tab's own popup events.
+                deadline = time.monotonic() + 8
+                while (arrivals < provisional or (expects_popup and not opened)):
+                    if self.cancel.is_set() or page.is_closed() or time.monotonic() >= deadline:
+                        break
+                    page.wait_for_timeout(80)
             finally:
+                self.context.remove_listener('request', on_request)
+                self.context.remove_listener('page', on_page)
                 page.remove_listener('popup',on_popup)
         finally:
             if element:

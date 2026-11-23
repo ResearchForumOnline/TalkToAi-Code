@@ -225,7 +225,7 @@
   },
   {
     "path": "browser_tools.py",
-    "sha256": "edfb92f44167bdddd426c0ce8deade225f5a14d514bfb232c31b256ef9f924b4"
+    "sha256": "5aac6155654e7ceaa319fb1d3e32decc4ce33acb4abfe5dfec3faa718aaf3437"
   },
   {
     "path": "candidate_apply.py",
@@ -897,7 +897,7 @@
   },
   {
     "path": "test_browser_workflows.py",
-    "sha256": "fe519bf126ea6e83d5def6d0fda498666d1d3ad2616a076868a30ae12a61e1ab"
+    "sha256": "3b6758ed5df3a5b0683c914fb9c2612e0e727fe059eb3fd6e013e31bdfca9ddf"
   },
   {
     "path": "test_candidate_apply.py",
@@ -1113,7 +1113,7 @@
   },
   {
     "path": "test_skynet_mode.py",
-    "sha256": "a8eb4be56efa3e2cf85b56ac9fb93dbc7e05964382e36907d483ffa8a6868f26"
+    "sha256": "9f816f65a1804c50c4c98fb0e0be8e709ee429916bd3f0277c00cf124fcd360d"
   },
   {
     "path": "test_source_discovery.py",
