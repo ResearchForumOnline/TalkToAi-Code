@@ -302,11 +302,14 @@ for chunk in (b'abcdef', b'XYZ', b'q' * (1024 * 1024) + b'END'):
 
         for failure, reason in (('allocation', 'ran out of available memory'), ('generation', 'generation check')):
             with self.subTest(failure=failure):
-                weights.write_bytes(b'GGUF' + failure.encode())
+                # Equal-sized fixtures written in one clock tick share a file
+                # stamp on some Windows volumes. Give each scenario its own model.
+                scenario_weights = weights.with_name(f'{failure}.gguf')
+                scenario_weights.write_bytes(b'GGUF' + failure.encode())
                 with (patch.object(runtime, '_probe_inference', return_value=False),
                       patch.object(runtime, '_choose_port', side_effect=[40600, 40601, 40602]),
                       patch.object(runtime.subprocess, 'Popen', side_effect=spawn_attempt) as spawn):
-                    url, key = self.manager.start(weights, self.cancel, self.notify)
+                    url, key = self.manager.start(scenario_weights, self.cancel, self.notify)
                 self.assertEqual(url, 'http://127.0.0.1:40602/v1')
                 self.assertEqual(self.manager.status().backend, 'cpu')
                 self.assertIn(reason, self.manager.status().reason)
