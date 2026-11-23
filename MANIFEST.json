@@ -53,7 +53,7 @@
   },
   {
     "path": "agent_core.py",
-    "sha256": "4b240b46957f2333f25ce2c07963cb874600066c8e2409815487aca9bb0f5a26"
+    "sha256": "570425dd17b865866899f10dbbcb8820fc456960ae3d131391dc3d3ee0b8ee40"
   },
   {
     "path": "agent_focus.py",
@@ -325,7 +325,7 @@
   },
   {
     "path": "docs/DESKTOP-9.0.8.md",
-    "sha256": "b86abf05888622e9ba557bb4cec496f40b10d38e831d2142780ece611586a0fd"
+    "sha256": "bc57ac73ab97d702390f58ca49de55caa3dbcf7dbb78d62631cc5cd722e6a91c"
   },
   {
     "path": "docs/DEVSPACE-IDEAS-REVIEW.md",
@@ -993,7 +993,7 @@
   },
   {
     "path": "test_long_session.py",
-    "sha256": "ca45c969aa94b02cd65757defb5448d0ad90e170cbcd35c187a328b2c7fd776d"
+    "sha256": "3b3407cced259dacac5f7d7f104b42f74bb6236519656f54987891c2795e9b11"
   },
   {
     "path": "test_mail_connectors.py",

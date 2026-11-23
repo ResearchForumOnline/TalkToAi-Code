@@ -6,6 +6,8 @@ Ask “Make me an interactive generative art page.” Agent Zero can use the sel
 
 The Windows installer and Store package include Python 3.14 and pip for project scripts. TalkToAi first checks for a working project environment and installed Python. The bundled interpreter keeps dependencies installed by pip in the current project. Source and portable installations use their available Python. Shell and file tools run as the signed-in user in Act mode. Plan mode remains available for read-only work. Changes to protected system locations are subject to the operating system’s permissions.
 
+On slower CPUs, Ollama can generate the arguments for a tool call before showing any text. TalkToAi now allows extra time for that response in proportion to its output budget. Stop and the selected work-session deadline remain available.
+
 ## Ask about a long filing
 
 Attach a selectable-text PDF or SEC filing in HTML and ask a question. TalkToAi indexes the text on this device and selects passages for the current model window. PDF labels refer to the PDF viewer's page number. You can ask about a specific page, item, exhibit, or the back half in a later message. The source index stays on the device that received the attachment.

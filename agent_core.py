@@ -26,7 +26,7 @@ from workspace_outputs import read_batch, register_output
 from progress_guard import DiscoveryProgressGuard
 from reasoning_stream import OpenZeroReplyStart, ReasoningActivity
 from model_library import DEFAULT_LOCAL_MODEL
-from ollama_retention import keep_alive_for
+from ollama_retention import keep_alive_for, local_port
 from conversation import conversational_reply, describe_switch, model_metrics
 from workspace_change_evidence import WorkspaceChangeTracker
 from task_goals import normalize_goal, goal_context
@@ -349,7 +349,14 @@ def _http_stream(url,payload,cancel):
         conn.connect()
         # A cold local model can spend minutes loading weights and processing
         # its first prompt. Keep that deadline separate from connecting.
-        conn.sock.settimeout(OLLAMA_REQUEST_SECONDS)
+        idle_seconds = OLLAMA_REQUEST_SECONDS
+        if local_port(url) is not None and (payload.get('tools') or payload.get('format')):
+            # Ollama can buffer a whole tool call before sending its first byte.
+            # Give a slow CPU 1.5 seconds per requested output token plus cold start.
+            predicted = (payload.get('options') or {}).get('num_predict',1536)
+            predicted = predicted if type(predicted) is int and predicted>0 else 1536
+            idle_seconds = min(3600, idle_seconds+int(1.5*min(predicted,4096)))
+        conn.sock.settimeout(idle_seconds)
         sock=conn.sock.dup()
         def watch():
             while not completed.wait(.1):
@@ -1569,6 +1576,7 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
     max_steps=rounds*total_passes
     work_started=time.monotonic()
     work_deadline=work_started+work_session_minutes*60 if extended_session and work_session_minutes else None
+    inference_cancel=project_workers.WorkerStop(cancel,work_deadline) if work_deadline else cancel
     workspace_evidence=WorkspaceChangeTracker(tools.root) if act and not worker_mode else None
     workspace_report=workspace_evidence.report('run_start') if workspace_evidence else None
     checked_workspace_revision=workspace_report['revision'] if workspace_report else None
@@ -1754,7 +1762,7 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
         emit('model_wait',{'step':step+1,'elapsed_seconds':0,'silent_seconds':0,
                            'phase':'waiting_for_first_response'})
         try:
-            stream = stream_chat(url,payload,cancel,local_only=True) if worker_mode else stream_chat(url,payload,cancel)
+            stream = stream_chat(url,payload,inference_cancel,local_only=True) if worker_mode else stream_chat(url,payload,inference_cancel)
             for data in stream:
                 if data.get('_openai_replay_reset'):
                     messages=[{k:v for k,v in m.items() if k!='_openai_response'} for m in messages]
@@ -1801,6 +1809,10 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
         except InterruptedError:
             reasoning_finished=reasoning.finish()
             if reasoning_finished:emit('reasoning',reasoning_finished)
+            if work_deadline and not cancel.is_set() and time.monotonic()>=work_deadline:
+                goal_checkpoint('paused',step,['Work session time limit reached'])
+                emit('status','Work session time limit reached. Progress is saved.')
+                return
             goal_checkpoint('stopped',step)
             emit('status','Stopped');return
         except Exception:

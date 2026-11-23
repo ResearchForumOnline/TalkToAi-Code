@@ -24,6 +24,22 @@ class LongSessionTests(unittest.TestCase):
         connection.sock.dup.return_value.close.assert_called_once()
         connection.getresponse.return_value.close.assert_called_once()
 
+    def test_buffered_tool_calls_get_time_to_finish_on_local_cpu(self):
+        # Production Ollama can produce no HTTP frame until all arguments are generated.
+        for port,payload,expected in (
+            (11434,{'tools':[{'type':'function'}],'options':{'num_predict':1536}},2904),
+            (11434,{'format':'json','options':{'num_predict':3072}},3600),
+            (11435,{'tools':[{}]},600),
+            (11434,{'options':{'num_predict':3072}},600)):
+            with self.subTest(port=port,payload=payload):
+                connection=Mock()
+                response=connection.getresponse.return_value
+                response.status=200
+                response.readline.side_effect=[b'{"done":true}\n',b'']
+                with patch.object(core.http.client,'HTTPConnection',return_value=connection):
+                    self.assertEqual(list(core._http_stream(f'http://127.0.0.1:{port}',payload,threading.Event())),[{'done':True}])
+                connection.sock.settimeout.assert_called_once_with(expected)
+
     def test_unsupported_ollama_thinking_retries_without_it(self):
         received = []
 
