@@ -1,4 +1,5 @@
 import copy
+import hashlib
 import json
 import tempfile
 import threading
@@ -238,6 +239,24 @@ class AgentAutomationTests(unittest.TestCase):
         self.assertEqual(checkpoint['state'], 'completed')
         self.assertEqual(checkpoint['last_tool_error'], '')
         self.assertIn('Browser rendering and scripts were not run', checkpoint['verification']['summary'])
+
+    def test_malformed_button_is_reported_to_the_model_and_can_be_repaired_in_the_same_run(self):
+        complete = """<!doctype html><body><button onclick="this.textContent='Done'">Try</button></body>"""
+        broken = complete.replace('">Try', '>Try')
+        digest = hashlib.sha256(broken.encode()).hexdigest()
+        with tempfile.TemporaryDirectory() as root:
+            payloads, events = self.run_sequence(root, [
+                response(calls=[call('write_file', path='art.html', content=broken)]),
+                response(calls=[call('write_file_checked', path='art.html', expected_sha256=digest, content=complete)]),
+                response('Created art.html and corrected the button.')],
+                text='Create an interactive page called art.html with a button.', keep_going=True)
+            self.assertEqual(Path(root, 'art.html').read_text(encoding='utf-8'), complete)
+        self.assertTrue(any(m['role'] == 'tool' and '<button>' in m['content'] and 'Exit 1' in m['content']
+                            for m in payloads[1]['messages']))
+        statuses = [v['status'] for k, v in events if k == 'verification']
+        self.assertIn('failed', statuses)
+        self.assertEqual(statuses[-1], 'passed')
+        self.assertEqual([v['state'] for k, v in events if k == 'goal_checkpoint'][-1], 'completed')
 
     def test_prose_only_creation_recovers_without_running_generated_python(self):
         contents = "raise RuntimeError('must not execute the submitted code')\n"

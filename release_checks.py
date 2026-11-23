@@ -145,6 +145,8 @@ def smoke(destination):
             self.send_response(200);self.send_header('Content-Type','text/html');self.end_headers()
             if self.path=='/report':
                 self.wfile.write(b'<title>Report</title><h1>Packaged report ready</h1>')
+            elif self.path == '/art-check':
+                self.wfile.write(art_page.read_bytes())
             else:
                 self.wfile.write(b'<label>Player<input aria-label="Player"></label><button aria-label="Start" onclick="document.querySelector(\'h1\').textContent=\'Hello \'+document.querySelector(\'input\').value">+</button><h1>Ready</h1><a href="/report" target="_blank">Open report</a>')
     server=None;browser=None
@@ -421,6 +423,20 @@ def smoke(destination):
             report=json.loads(browser.execute('click','Open report'))
             result['browser_popup']=report['url'].endswith('/report') and 'Packaged report ready' in report['page']
             result['browser_tabs']=len(report['tabs'])==2 and 'Hello Builder' in browser.execute('switch',home_tab)
+            art_page = Path(folder, 'art-check', 'art.html')
+            art_page.parent.mkdir()
+            art_tools = ProjectTools(art_page.parent, True)
+            button = """<button onclick="this.textContent='Color changed'">Change color</button>"""
+            complete = '<!doctype html><html><body>' + button + '</body></html>'
+            broken = complete.replace('">Change color', '>Change color')
+            art_tools.execute('write_file', {'path': art_page.name, 'content': broken})
+            rejected = art_tools.execute('run_checks', {}).startswith('Exit 1\n')
+            digest = json.loads(art_tools.execute('file_fingerprint', {'path': art_page.name}))['sha256']
+            art_tools.execute('write_file_checked', {'path': art_page.name, 'expected_sha256': digest, 'content': complete})
+            checked = art_tools.execute('run_checks', {}).startswith('Exit 0\n')
+            browser.execute('open', f'http://127.0.0.1:{server.server_port}/art-check')
+            clicked = json.loads(browser.execute('click', 'Change color'))
+            result['interactive_html_repair'] = rejected and checked and 'Color changed' in clicked['page']
             browser.close();browser=None
         result['passed']=all(result.get(key,False) for key in ('free_provider_policy','offline_program','offline_starter','operating_policy','bundled_example','browser_interaction','browser_popup','browser_screenshot','vision_attachment','read_only_chain','remote_intent','named_project_target','batch_read','output_registration','project_playbooks','research_comparison','source_change_evidence','audited_preferences','routing_audit','candidate_controls_imported')) and (os.name!='nt' or (result.get('managed_process',False) and result.get('escape_hook_registration',False)))
         result['passed']=result['passed'] and all(result.get(key,False) for key in
@@ -428,7 +444,7 @@ def smoke(destination):
         result['passed'] = result['passed'] and all(result[key] for key in
             ('conversation_round_trip', 'installed_model_reply_check', 'openzero_template_prefix_clean',
              'local_model_retention','reversible_local_tuning','local_project_reviewers','browser_live_reference',
-             'project_python','filing_tail_retrieval','automatic_chat_tools','local_media_entrypoints','local_voice_entrypoints','agent_specialties','inkling_support',
+             'project_python','interactive_html_repair','filing_tail_retrieval','automatic_chat_tools','local_media_entrypoints','local_voice_entrypoints','agent_specialties','inkling_support',
              'inkling_gpu_status','inkling_physical_offload','inkling_acceleration_settings'))
         if os.name == 'nt':
             result['passed'] = result['passed'] and result['windows_voice_plugins']

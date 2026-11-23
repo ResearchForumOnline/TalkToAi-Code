@@ -8,6 +8,35 @@ from agent_core import ProjectTools
 
 
 class CheckDetectionTests(unittest.TestCase):
+    def test_html_opening_tag_errors_identify_the_control_and_source_position(self):
+        with tempfile.TemporaryDirectory() as folder:
+            page = Path(folder) / 'color-art.html'
+            for button in (
+                    """<button onclick="document.body.style.background='red'>Change</button>""",
+                    """<button title='missing end>Change</button>""",
+                    """<button onclick="choose('red')>Change</button><p title="details">Color</p>"""):
+                with self.subTest(button=button):
+                    page.write_text('<!DOCTYPE html><body><canvas></canvas>\n  ' + button + '</body></html>',
+                                    encoding='utf-8')
+                    result = check_edited_files([page])
+                    self.assertTrue(result.startswith('Exit 1'), result)
+                    self.assertIn('color-art.html', result)
+                    self.assertIn('<button> opening tag at line 2, column 3', result)
+                    self.assertIn('quoted attribute', result)
+
+    def test_html_allows_quoted_delimiters_literal_markup_and_optional_end_tags(self):
+        with tempfile.TemporaryDirectory() as folder:
+            page = Path(folder) / 'example.html'
+            page.write_text('''<!DOCTYPE html><title>Art</title>
+                <!-- <button title="unfinished> -->
+                <style>p::after { content: '<button title="unfinished>'; }</style>
+                <script>const example = '<button title="unfinished>';</script>
+                <textarea><button title="unfinished></textarea>
+                <button title="2 > 1" onclick="if (2 > 1) this.innerHTML = '<b>Ready</b>'">Go</button>
+                <p>&lt;button title="example&gt;<p>Next<ul><li>One<li>Two</ul>''', encoding='utf-8')
+            result = check_edited_files([page])
+            self.assertTrue(result.startswith('Exit 0'), result)
+
     def test_standalone_checks_catch_unclosed_scripts_and_python_syntax(self):
         with tempfile.TemporaryDirectory() as folder:
             root=Path(folder)

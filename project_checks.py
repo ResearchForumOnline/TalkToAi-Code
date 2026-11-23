@@ -1,5 +1,6 @@
 """Detect existing project checks without installing dependencies."""
 import json
+import re
 from html.parser import HTMLParser
 from pathlib import Path
 from xml.etree import ElementTree
@@ -7,6 +8,7 @@ from xml.etree import ElementTree
 
 class _PageStructure(HTMLParser):
     """Check document structure without loading scripts, images or remote URLs."""
+    CDATA_CONTENT_ELEMENTS = (*HTMLParser.CDATA_CONTENT_ELEMENTS, 'title', 'textarea')
     def __init__(self):
         super().__init__()
         self.elements = set()
@@ -14,7 +16,14 @@ class _PageStructure(HTMLParser):
         self.text = False
 
     def handle_starttag(self, tag, attrs):
+        if any(re.search(r"""["'<]""", name) for name, _ in attrs):
+            raise self.tag_error(tag)
         self.elements.add(tag)
+
+    def tag_error(self, tag):
+        line, column = self.getpos()
+        return ValueError(f'Malformed <{tag}> opening tag at line {line}, column {column + 1}. '
+                          'Check that every quoted attribute value and the opening tag are closed.')
 
     def handle_endtag(self, tag):
         self.closed.add(tag)
@@ -25,6 +34,11 @@ class _PageStructure(HTMLParser):
 
     def verify(self, document):
         self.feed(document)
+        # close() recovers an unfinished opening tag as ordinary text. Check
+        # the parser's buffered token first, while its source position is known.
+        unfinished = re.match(r'<([a-zA-Z][^\s/>]*)', self.rawdata)
+        if unfinished and not self.cdata_elem:
+            raise self.tag_error(unfinished[1][:80])
         self.close()
         if not self.elements - {'html', 'head', 'body', 'title', 'meta', 'link'}:
             if not ('body' in self.elements and self.text):
