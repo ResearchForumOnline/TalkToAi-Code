@@ -12,6 +12,7 @@ import subprocess
 import threading
 import time
 import uuid
+from project_python import command_environment
 
 
 class ProcessJobs:
@@ -47,7 +48,11 @@ class ProcessJobs:
                 raise InterruptedError('Task stopped; no process started.')
             if len(self.jobs) >= 20 or sum(j['process'].poll() is None for j in self.jobs.values()) >= 3:
                 raise ValueError('Job limit reached: at most 3 running and 20 total per turn.')
-            process = subprocess.Popen([executable, *args], cwd=directory, stdin=subprocess.DEVNULL,
+            interpreter, environment = command_environment(self.root)
+            python_names = ('python', 'python3', 'python.exe', 'python3.exe') if os.name == 'nt' else ('python', 'python3')
+            name = executable.casefold() if os.name == 'nt' else executable
+            program = str(interpreter) if interpreter and name in python_names else executable
+            process = subprocess.Popen([program, *args], cwd=directory, env=environment, stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0,
                 start_new_session=os.name != 'nt')
@@ -198,3 +203,7 @@ class ProcessJobs:
             job['done'].wait(3)
             if not job['done'].is_set():
                 raise RuntimeError('A command has not confirmed exit; inspect the Jobs panel before continuing.')
+            if os.name == 'nt' and job['process'].returncode is not None:
+                # status() uses the cached exit code. Release the native process
+                # handle so disposable Windows virtual environments can be removed.
+                job['process']._handle.Close()

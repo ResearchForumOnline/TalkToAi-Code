@@ -9,7 +9,8 @@ from pathlib import Path
 import time
 
 
-_OFFLINE = re.compile(r'\b(?:offline|no (?:web|internet|search)|do not (?:browse|search)|don.t (?:browse|search))\b', re.I)
+_OFFLINE = re.compile(r'\b(?:offline|no (?:web|internet|search)|(?:do not|don.t|never) (?:browse|search)|'
+                      r'(?:without|avoid|skip|do not use|don.t use|never use) (?:the |any )?(?:web|internet|online search))\b', re.I)
 _BUILD = re.compile(r'\b(?:build|make|create|upgrade|improve|moderni[sz]e|redesign)\b', re.I)
 _CURRENT = re.compile(r'\b(?:current|latest|modern|202[5-9]|best practice|research)\b', re.I)
 _GAME = re.compile(r'\b(?:game|godot|unity|unreal|level|player|combat)\b', re.I)
@@ -76,9 +77,15 @@ def public_freshness_request(request):
     return bool(_FRESH.search(request or '')) and not _OFFLINE.search(request or '') and not _SENSITIVE_REQUEST.search(request or '')
 
 
+def public_search_allowed(request):
+    return bool(request) and not (_OFFLINE.search(request) or _SENSITIVE_REQUEST.search(request))
+
+
 def public_current_query(request):
     """Fixed official-source query for a few public software-release topics."""
     if not public_freshness_request(request):
+        return None
+    if not re.search(r'\b(?:releases?|versions?|updates?|stable|changelogs?|release-notes)\b|\b\d+\.\d+\b', request, re.I):
         return None
     if re.search(r'\bgodot\b',request,re.I):
         return 'site:godotengine.org Godot Engine latest release'

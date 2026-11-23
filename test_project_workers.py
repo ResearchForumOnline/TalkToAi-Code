@@ -70,6 +70,8 @@ class ProjectWorkerTests(unittest.TestCase):
         self.assertTrue(chat_requests_tools('Please use 3 subagents to review my project.'))
         self.assertFalse(chat_requests_tools('Use 2 agents to write a poem.'))
         self.assertEqual(workers.requested_count('Use two or three local agents to inspect my project.'),3)
+        self.assertEqual(workers.requested_count('Create three agents to review my project code and tests.'),3)
+        self.assertEqual(len(workers.plan_reviews('Create 9 agents to review my project code and tests.')),3)
         self.assertFalse(workers.plan_reviews('Review the source and tests without workers.'))
         self.assertFalse(workers.plan_reviews('Review src/app.py.'))
         self.assertEqual([item.role for item in workers.plan_reviews('Review the implementation, tests and documentation.')],

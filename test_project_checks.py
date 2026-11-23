@@ -3,11 +3,38 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
-from project_checks import detect_checks
+from project_checks import check_edited_files, detect_checks
 from agent_core import ProjectTools
 
 
 class CheckDetectionTests(unittest.TestCase):
+    def test_standalone_checks_catch_unclosed_scripts_and_python_syntax(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder)
+            page=root/'art.html'
+            page.write_text('<html><title>Test</title><script>unfinished',encoding='utf-8')
+            self.assertIn('Exit 1',check_edited_files([page]))
+            page.write_text('<html><body><canvas></canvas></body></html>',encoding='utf-8')
+            script=root/'art.py'
+            script.write_text('if True print(1)',encoding='utf-8')
+            self.assertIn('Exit 1',check_edited_files([page,script]))
+            script.write_text("raise RuntimeError('never run')",encoding='utf-8')
+            result=check_edited_files([page,script])
+            self.assertTrue(result.startswith('Exit 0'))
+            self.assertIn('HTML structure checked',result)
+            self.assertIn('Python syntax checked',result)
+            self.assertIsNone(check_edited_files([page,root/'unknown.game']))
+            svg=root/'orbit.svg'
+            svg.write_text('<svg xmlns="http://www.w3.org/2000/svg"><circle r="5"/></svg>',encoding='utf-8')
+            self.assertIn('SVG XML and root element checked',check_edited_files([svg]))
+            svg.write_text('<picture/>',encoding='utf-8')
+            self.assertIn('Exit 1',check_edited_files([svg]))
+            config=root/'project.json'
+            config.write_text('{"ok":true}',encoding='utf-8')
+            self.assertIn('JSON parsed successfully',check_edited_files([config]))
+            config.write_text('{"ok":',encoding='utf-8')
+            self.assertIn('Exit 1',check_edited_files([config]))
+
     def test_web_game_checks_skip_placeholder_and_watch(self):
         with tempfile.TemporaryDirectory() as folder:
             root=Path(folder)

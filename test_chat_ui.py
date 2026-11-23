@@ -226,6 +226,24 @@ class ChatUITests(unittest.TestCase):
         self.assertEqual([m['role'] for m in w.task['messages']], ['user','assistant'])
         self.assertFalse(w.retry_button.isVisible())
 
+    def test_long_pdf_can_send_while_indexing_and_query_last_page_again(self):
+        from test_document_filing import write_pdf
+        _,requests,_,ready = self.server()
+        ready.set()
+        source = self.root/'filing.pdf'
+        write_pdf(source,['Revenue and risk discussion.']*29+['The last note contains the code ORCHID-88.'])
+        self.w.attach_files([str(source)])
+        self.submit('What does PDF page 30 say?')
+        self.wait_for(lambda:len(requests)==1 and not self.w.busy,timeout=12)
+        self.assertIn('ORCHID-88',requests[-1][1]['messages'][-1]['content'])
+        self.assertEqual(self.w.task['messages'][0]['document_refs'][0]['pages'],30)
+        source.unlink()
+        self.submit('What code was in the last note?')
+        self.wait_for(lambda:len(requests)==2 and not self.w.busy,timeout=12)
+        self.assertIn('PDF p. 30',requests[-1][1]['messages'][-1]['content'])
+        self.assertIn('ORCHID-88',requests[-1][1]['messages'][-1]['content'])
+        self.agent.assert_not_called()
+
     def test_auto_recovers_from_pre_output_memory_rejection_once_on_this_pc(self):
         w=self.w
         http,requests,_,release=self.server()
@@ -312,6 +330,26 @@ class ChatUITests(unittest.TestCase):
         self.assertTrue(self.w.media_preview.isVisible())
         self.assertIn('Your image is ready',self.w.transcript.toPlainText())
         self.assertIsNone(self.w.retry_index())
+
+    def test_public_web_question_with_a_tool_free_model_needs_no_project_and_keeps_real_sources(self):
+        w = self.w
+        _, requests, _, release = self.server()
+        release.set()
+        w.task['project'] = str(self.root/'missing-project')
+        evidence = {'kind':'page', 'sources':[{'title':'Release archive', 'url':'https://godotengine.org/download/archive/',
+                                               'snippet':'Fixture release number 99.1 for testing.'}]}
+        with patch('studio.lookup_chat_web', return_value=evidence) as lookup, patch.object(w, 'prepare_task_target') as target:
+            self.submit('What is the latest Godot release?')
+            self.wait_for(lambda: not w.busy)
+            self.assertEqual(lookup.call_args.args[0], 'site:godotengine.org Godot Engine latest release')
+            target.assert_not_called()
+        self.assertEqual(len(requests), 1)
+        payload = requests[0][1]
+        self.assertNotIn('tools', payload)
+        self.assertIn('Fixture release number 99.1', payload['messages'][-1]['content'])
+        self.assertIn(evidence['sources'][0]['url'], w.task['messages'][-1]['content'])
+        self.assertNotIn('_chat_web', w.task['messages'][0])
+        self.agent.assert_not_called()
 
     def test_tune_runs_from_chat_and_undo_restores_retention(self):
         from local_tuning import Phase, RetentionTrial

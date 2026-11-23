@@ -16,6 +16,10 @@ The Aider automatic-check workflow and DevSpace Personal evidence-first ideas in
 
 ## Windows binary distributions
 
+The Windows package includes the CPython 3.14.10 x64 embeddable distribution for project commands. Its original license and component notices are included in `project-python/LICENSE.txt`. The build verifies the published SHA-256, omits the embedding-only path override so project modules can be imported, and includes a second executable name for `python3`. [CPython release and checksums](https://www.python.org/downloads/release/python-31410/) · [Corresponding source](https://github.com/python/cpython/tree/v3.14.10)
+
+The bundled project interpreter includes PyPA pip 26.3. The build verifies the original wheel against PyPI's SHA-256. Its MIT license is in `project-python/pip-LICENSE.txt`, and all bundled component notices are preserved inside the unchanged wheel. [PyPI release](https://pypi.org/project/pip/26.3/) · [Corresponding source](https://github.com/pypa/pip/tree/26.3)
+
 Windows builds from 9.0.2 include the Qt Multimedia and Qt TextToSpeech libraries from PySide6 Addons 6.8.3. The multimedia backend uses dynamically linked FFmpeg 7.1 under LGPL 2.1 or later. This software is based in part on the work of the Independent JPEG Group. The package preserves Qt’s FFmpeg and component credits and license texts in `LICENSES/FFmpeg`. [FFmpeg 7.1 source](https://github.com/FFmpeg/FFmpeg/archive/refs/tags/n7.1.tar.gz) · [Qt 6.8.3 attributions](https://github.com/qt/qtmultimedia/tree/v6.8.3/src/3rdparty/ffmpeg) · [Qt build scripts](https://github.com/qt/qt5/tree/v6.8.3/coin/provisioning)
 
 The 8.6.0 Store candidate uses the same dependency-notice process described below. Its exact bundled versions and included notices are recorded in its `LICENSES/DEPENDENCIES.json`.

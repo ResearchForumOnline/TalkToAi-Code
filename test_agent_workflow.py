@@ -213,6 +213,127 @@ class AgentAutomationTests(unittest.TestCase):
         self.assertNotIn(('status','Ready'),events)
         self.assertTrue(any(k=='status' and 'task unfinished: no task tool action' in v for k,v in events))
 
+    def test_missing_python_then_creative_promise_delivers_a_checked_file(self):
+        page = '<!doctype html><html><title>Orbit</title><body><canvas></canvas><script>let x=1;</script></body></html>'
+        request = 'create soemthing of your choosing to impress me'
+        with tempfile.TemporaryDirectory() as root:
+            tools = core.ProjectTools(root, True)
+            execute = tools.execute
+            def missing_python(name, args):
+                if name == 'run_command':
+                    return 'Exit 1\nPython was not found'
+                return execute(name, args)
+            with patch.object(tools, 'execute', side_effect=missing_python):
+                payloads, events = self.run_sequence(root, [
+                    response(calls=[call('run_command', command='python --version')]),
+                    response("Let me create a beautiful HTML generative art piece!"),
+                    response(json.dumps({'path':'orbit.html', 'content':page})),
+                    response('Created orbit.html. The app checked the HTML structure.')],
+                    text=request, tools=tools, rounds=4, keep_going=True)
+            self.assertEqual(Path(root, 'orbit.html').read_text(encoding='utf-8'), page)
+        self.assertNotIn('tools', payloads[2])
+        self.assertEqual(payloads[2]['format']['required'], ['path','content'])
+        self.assertTrue(any(k=='artifact' and v['title']=='orbit.html' for k,v in events))
+        checkpoint = [v for k,v in events if k=='goal_checkpoint'][-1]
+        self.assertEqual(checkpoint['state'], 'completed')
+        self.assertEqual(checkpoint['last_tool_error'], '')
+        self.assertIn('Browser rendering and scripts were not run', checkpoint['verification']['summary'])
+
+    def test_prose_only_creation_recovers_without_running_generated_python(self):
+        contents = "raise RuntimeError('must not execute the submitted code')\n"
+        with tempfile.TemporaryDirectory() as root:
+            _,events = self.run_sequence(root, [
+                response('I will write the script now.'),
+                response(json.dumps({'path':'new.py', 'content':contents})),
+                response('Saved the script and checked its syntax.')],
+                text='Create a Python script in my project')
+            self.assertEqual(Path(root, 'new.py').read_text(encoding='utf-8'), contents)
+        self.assertIn(('status','Ready'),events)
+        self.assertTrue(any(k=='verification' and 'Python syntax checked' in v['summary'] for k,v in events))
+
+    def test_failed_creation_can_resume_in_chat_after_the_reported_followup(self):
+        followup = ('hmm oh dear seems you cannot do anything you have full access to this computer '
+                    'do whatever you need etc install come on sir try harder')
+        history = [{'role':'user','content':'create soemthing of your choosing to impress me'},
+                   {'role':'assistant','content':'App pause report. No file edits.'},
+                   {'role':'user','content':followup}]
+        page = '<html><body><canvas></canvas></body></html>'
+        responses = iter([response("I'll create an interactive page."),response(json.dumps(
+            {'path':'art.html','content':page})),response('Saved art.html and checked the page structure.')])
+        with tempfile.TemporaryDirectory() as root,patch.object(core,'model_supports_vision',return_value=False), \
+                patch.object(core,'stream_chat',side_effect=lambda *args: iter([next(responses)])):
+            events=[]
+            core.run_agent_zero('fixture','fixture',history,root,True,threading.Event(),
+                               lambda k,v:events.append((k,v)),task_kind='chat')
+            self.assertEqual(Path(root,'art.html').read_text(encoding='utf-8'),page)
+            self.assertIn(('status','Ready'),events)
+
+    def test_readonly_turn_cannot_use_a_promised_file_recovery(self):
+        with tempfile.TemporaryDirectory() as root:
+            payloads,events=self.run_sequence(root,[response("I'll create a page.")],act=False,text='Create a web page')
+            self.assertFalse(list(Path(root).glob('*.html')))
+        self.assertEqual(len(payloads),1)
+        self.assertFalse(any(k=='change' for k,v in events))
+
+    def test_inspection_alone_does_not_prove_a_creation_request_succeeded(self):
+        with tempfile.TemporaryDirectory() as root:
+            _,events=self.run_sequence(root,[
+                response(calls=[call('list_files',pattern='*.html')]),
+                response('Everything is complete.'),response('Everything is complete.')],
+                text='Create an HTML page',rounds=3)
+        self.assertNotIn(('status','Ready'),events)
+        self.assertTrue(any(k=='status' and 'no requested file was observed' in v for k,v in events))
+
+    def test_incomplete_or_escaping_draft_cannot_write_a_file(self):
+        with tempfile.TemporaryDirectory() as root:
+            _,events=self.run_sequence(root,[
+                response("I'll create the page."),
+                response(json.dumps({'path':'index.html','content':'<body>partial</body>'}),reason='length'),
+                response(json.dumps({'path':'../escaped.html','content':'<body>also invalid</body>'}))],
+                text='Create a web page',rounds=4)
+            self.assertFalse(Path(root,'index.html').exists())
+        self.assertFalse(any(k=='change' for k,v in events))
+        self.assertNotIn(('status','Ready'),events)
+
+    def test_qwen_prose_with_markup_is_replaced_without_executing_the_mixed_batch(self):
+        unsafe_batch = ("I'll make the page. <tool_call><function=write_file><parameter=path>"
+                        "unrequested.html</parameter><parameter=content>partial</parameter></function></tool_call>")
+        with tempfile.TemporaryDirectory() as root:
+            payloads,events=self.run_sequence(root,[response(unsafe_batch),
+                response(json.dumps({'path':'page.html','content':'<body><p>Page</p></body>'})),
+                response('Saved page.html.')],text='Create a web page',rounds=3)
+            self.assertFalse(Path(root,'unrequested.html').exists())
+            self.assertTrue(Path(root,'page.html').exists())
+        self.assertNotIn('tools',payloads[1])
+        self.assertIn(('status','Ready'),events)
+
+    def test_draft_never_overwrites_an_existing_user_file(self):
+        with tempfile.TemporaryDirectory() as root:
+            path=Path(root,'index.html')
+            path.write_text('previous contents', encoding='utf-8')
+            _,events=self.run_sequence(root,[
+                response("I'll build it now."),
+                response(json.dumps({'path':'index.html','content':'<body>new</body>'})),
+                response('The filename is already in use.')],text='Create an HTML page',rounds=3)
+            self.assertEqual(path.read_text(encoding='utf-8'),'previous contents')
+        self.assertFalse(any(k=='change' for k,v in events))
+        self.assertNotIn(('status','Ready'),events)
+
+    def test_verified_file_cannot_clear_an_unrelated_command_failure(self):
+        page='<html><body><p>A page</p></body></html>'
+        with tempfile.TemporaryDirectory() as root:
+            tools=core.ProjectTools(root,True)
+            execute=tools.execute
+            with patch.object(tools,'execute',side_effect=lambda name,args:
+                    'Exit 1\nBuild failed' if name=='run_command' else execute(name,args)):
+                _,events=self.run_sequence(root,[
+                    response(calls=[call('run_command',command='npm run build')]),
+                    response('I will create the HTML page.'),
+                    response(json.dumps({'path':'output.html','content':page})),
+                    response('The file was written.')],text='Create an HTML page',rounds=4,tools=tools)
+        self.assertNotIn(('status','Ready'),events)
+        self.assertTrue(any(k=='status' and 'Tool failures remain' in v for k,v in events))
+
     def test_output_limit_continues_without_manual_prompt(self):
         with tempfile.TemporaryDirectory() as root:
             payloads,events=self.run_sequence(root,[response('Part one',reason='length'),response('Completed response.')],act=False)

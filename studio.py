@@ -20,7 +20,8 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout, 
     QTextBrowser, QPlainTextEdit, QFileDialog, QMessageBox, QFrame, QInputDialog,
     QSystemTrayIcon, QMenu, QDialog, QLineEdit, QCheckBox, QDialogButtonBox, QScrollArea, QSpinBox)
 from agent_core import AGENT_NAME, ProjectTools, run_agent_zero as run_agent, run_conversation, restore_checkpoint, set_active_remote, set_agent_preferences, set_active_provider
-from agent_focus import FOCUS_CHOICES, needs_project_kind, normalize_focus, resolve_focus
+from agent_focus import (FOCUS_CHOICES, CustomSpecialist, named_specialist_request, needs_project_kind,
+                         normalize_focus, resolve_focus, saved_specialists)
 from routing import choose_route, ensure_local_model, ensure_local_runtime, matching_model
 from model_library import DEFAULT_LOCAL_MODEL, QWEN_LOCAL_MODEL, DownloadCancelled
 from inkling_models import INKLING_PRESETS, prepared_path
@@ -47,12 +48,15 @@ from control_overlay import ControlOverlay, CONTROL_TOOLS, safe_action_label
 from control_cancel import EscapeCancel
 from offline_assistant import recognize_request, run_offline
 from offline_workbench import LocalToolsDialog, format_report
-from attachment_ingest import MAX_FILES, MAX_TOTAL_CHARS, read_attachment, attachment_context
+from attachment_ingest import MAX_FILES, read_attachment, attachment_context
+from document_passages import last_document_refs, load_documents, model_excerpt_budget, save_document
+from document_review import review_documents, whole_review_requested
 from conversation_export import format_conversation, save_conversation
 from project_templates import create_project_template
 from model_storage import clean_stale_partials
 
-from chat_intent import chat_requests_tools, media_request
+from chat_intent import chat_requests_tools, chat_web_query, media_request, request_body
+from chat_web import lookup_chat_web
 
 
 def local_model_name(model):
@@ -210,6 +214,8 @@ class Studio(QMainWindow):
         self.tool_events=[]
         self.pending_prompt=''
         self.attachments=[]
+        self.attachment_read = None
+        self.send_after_read = False
         self.allow_quit=False
         self.tray=None
         self.job_manager=None
@@ -252,6 +258,7 @@ class Studio(QMainWindow):
             pass
         self.preferences_manager=AppPreferenceManager(self.config,self.persist_agent_preferences,
             STATE/'app-preference-audit.jsonl')
+        self.specialists = saved_specialists(self.config.get('custom_specialists'))
         for key,environment in [('gmail_client_id','TALKTOAI_GMAIL_CLIENT_ID')]:
             if self.config.get(key) and not os.environ.get(environment):
                 os.environ[environment]=str(self.config[key])
@@ -432,6 +439,8 @@ class Studio(QMainWindow):
         self.run_card.setStyleSheet('QFrame#runCard {background:#17323d;border:1px solid #476c74;border-radius:9px;}')
         self.run_card.hide();chat.addWidget(self.run_card)
         self.transcript = QTextBrowser(); self.transcript.setOpenExternalLinks(False); self.transcript.document().setDefaultStyleSheet('p {line-height:1.6;} pre {background:#242424; padding:12px;} code {font-family:Consolas;} h2 {font-size:17px;}')
+        self.transcript.setOpenLinks(False)
+        self.transcript.anchorClicked.connect(self.open_chat_link)
         chat.addWidget(self.transcript,1)
         self.media_card=QFrame()
         self.media_card.setObjectName('mediaCard')
@@ -447,7 +456,7 @@ class Studio(QMainWindow):
         greeting.setStyleSheet('font-size:32px; font-weight:600; color:#e8f5f1;')
         welcome.addWidget(greeting)
         ideas=QHBoxLayout();ideas.addStretch()
-        for label,draft in [('Explain something','Explain how '),('Help me write','Help me write '),('Create an image','Create an image of ')]:
+        for label,draft in [('Explain something','Explain how '),('Help me write','Help me write '),('Search the web','Search the web for '),('Create an image','Create an image of ')]:
             self.button(label,lambda checked=False,text=draft:self.fill_chat_draft(text),ideas)
         ideas.addStretch();welcome.addLayout(ideas);welcome.addStretch()
         self.chat_welcome.hide();chat.addWidget(self.chat_welcome,1)
@@ -459,7 +468,7 @@ class Studio(QMainWindow):
         self.prompt = Composer(); self.prompt.setPlaceholderText(f'Ask {AGENT_NAME} to find your game and fix its menu…'); self.prompt.setFixedHeight(104); self.prompt.submitted.connect(self.send); self.prompt.filesDropped.connect(self.attach_files); composer.addWidget(self.prompt)
         attachment_row=QHBoxLayout()
         self.attach_button=self.button('＋ Attach files',self.choose_attachments,attachment_row)
-        self.attach_button.setToolTip('Add up to five local text, code, CSV, JSON, or text PDF files as bounded context for the next message. Extracted text is sent to the selected model route and saved in local chat history. Drag files onto the composer too.')
+        self.attach_button.setToolTip('Attach up to five documents, 32 MB each. Text is indexed on this device. The selected model receives cited passages, or every batch when you ask for a full review.')
         self.voice_record_button=self.button('Record',self.toggle_voice_recording,attachment_row)
         self.voice_record_button.setToolTip('Dictate up to 90 seconds into your message draft using the default microphone.')
         self.voice_cancel_button=self.button('Cancel recording',self.cancel_voice,attachment_row)
@@ -513,11 +522,12 @@ class Studio(QMainWindow):
         self.agent_focus.setObjectName('agent_focus')
         self.agent_focus.setAccessibleName(focus_label.text())
         self.agent_focus.setToolTip('Auto picks a specialty for each message. Agent Zero can use up to three local workers on independent project tasks.')
-        for key, label in FOCUS_CHOICES:
-            self.agent_focus.addItem(label, key)
+        self.refresh_specialists()
         focus_label.setBuddy(self.agent_focus)
         footer.addWidget(focus_label)
         footer.addWidget(self.agent_focus)
+        self.manage_agents = self.button('Agents…', self.specialists_dialog, footer)
+        self.manage_agents.setToolTip('Create, edit or remove your named Agent Zero specialists')
         self.agent_focus.currentIndexChanged.connect(self.save_agent_focus)
         chat.addLayout(footer)
         self.performance_label=QLabel('Auto prefers a verified coding route, then falls back when unavailable.');self.performance_label.setObjectName('muted');chat.addWidget(self.performance_label)
@@ -589,8 +599,114 @@ class Studio(QMainWindow):
 
     def save_agent_focus(self):
         if self.task:
-            self.task['agent_focus'] = normalize_focus(self.agent_focus.currentData())
+            self.task['agent_focus'] = self.saved_focus_key(self.agent_focus.currentData())
             self.autosave_draft()
+
+    @staticmethod
+    def open_chat_link(url):
+        if url.isValid() and url.scheme() in ('https', 'http') and url.host() and not url.userInfo():
+            QDesktopServices.openUrl(url)
+
+    def saved_focus_key(self, value):
+        if isinstance(value, str) and value in self.specialists:
+            return value
+        return normalize_focus(value)
+
+    def refresh_specialists(self, selected='auto'):
+        with QSignalBlocker(self.agent_focus):
+            self.agent_focus.clear()
+            for key, label in FOCUS_CHOICES:
+                self.agent_focus.addItem(label, key)
+            for agent in sorted(self.specialists.values(), key=lambda item: item.name.casefold()):
+                self.agent_focus.addItem(agent.name, agent.key)
+            self.agent_focus.setCurrentIndex(self.agent_focus.findData(self.saved_focus_key(selected)))
+
+    def store_specialist(self, agent, *, remove=False):
+        updated = dict(self.specialists)
+        if remove:
+            updated.pop(agent.key)
+        else:
+            updated[agent.key] = agent
+        with self.config_write_lock:
+            previous = self.config.get('custom_specialists', [])
+            self.config['custom_specialists'] = [vars(item) for item in updated.values()]
+            try:
+                self.write_config()
+            except OSError:
+                self.config['custom_specialists'] = previous
+                raise
+        self.specialists = updated
+        if remove:
+            for task in self.tasks:
+                if task.get('agent_focus') == agent.key:
+                    task['agent_focus'] = 'auto'
+        else:
+            self.task['agent_focus'] = agent.key
+        self.refresh_specialists(self.task.get('agent_focus', 'auto'))
+        self.autosave_draft()
+
+    def specialists_dialog(self, checked=False, *, proposed_name='', specialty='everyday'):
+        if self.busy:
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle('Your Agent Zero specialists')
+        dialog.resize(470, 360)
+        form = QVBoxLayout(dialog)
+        choose = QComboBox()
+        choose.addItem('Create a new agent', None)
+        for agent in sorted(self.specialists.values(), key=lambda item: item.name.casefold()):
+            choose.addItem(agent.name, agent.key)
+        form.addWidget(choose)
+        name = QLineEdit()
+        name.setMaxLength(40)
+        name.setPlaceholderText('Agent name')
+        form.addWidget(QLabel('Name')); form.addWidget(name)
+        base = QComboBox()
+        for key, label in FOCUS_CHOICES:
+            if key != 'auto':
+                base.addItem(label, key)
+        form.addWidget(QLabel('Specialty')); form.addWidget(base)
+        instructions = QPlainTextEdit()
+        instructions.setPlaceholderText('What should this agent help with?')
+        form.addWidget(QLabel('Instructions')); form.addWidget(instructions)
+        status = QLabel(); status.setWordWrap(True); form.addWidget(status)
+        row = QHBoxLayout(); form.addLayout(row)
+
+        def save():
+            try:
+                agent = CustomSpecialist.create(name.text(), instructions.toPlainText(), base.currentData())
+                if choose.currentData() is None and agent.key in self.specialists:
+                    raise ValueError('This name is in use. Select the saved agent above to edit it.')
+                self.store_specialist(agent)
+            except (OSError, ValueError) as exc:
+                status.setText(str(exc)); return
+            self.status.setText('Selected ' + agent.name + ' for this conversation.')
+            dialog.accept()
+
+        def remove():
+            agent = self.specialists[choose.currentData()]
+            if QMessageBox.question(dialog, 'Remove agent', f'Remove {agent.name} from your saved specialists?') != QMessageBox.Yes:
+                return
+            try:
+                self.store_specialist(agent, remove=True)
+            except OSError as exc:
+                status.setText(str(exc)); return
+            self.status.setText('Removed ' + agent.name + ' from your saved specialists.')
+            dialog.accept()
+
+        self.button('Save and use', save, row, True)
+        delete = self.button('Remove', remove, row)
+        self.button('Close', dialog.reject, row)
+        def select():
+            agent = self.specialists.get(choose.currentData())
+            name.setReadOnly(agent is not None)
+            name.setText(agent.name if agent else proposed_name)
+            instructions.setPlainText(agent.instructions if agent else '')
+            base.setCurrentIndex(base.findData(agent.base if agent else specialty))
+            delete.setEnabled(agent is not None); status.clear()
+        choose.currentIndexChanged.connect(select)
+        select()
+        return dialog.exec() == QDialog.Accepted
 
     def autosave_draft(self):
         try:self.persist()
@@ -923,14 +1039,14 @@ class Studio(QMainWindow):
     def select_task(self,row):
         if self.busy or row<0 or row>=self.task_list.count(): return
         if self.task:self.task['draft']=self.prompt.toPlainText()
-        self.attachments=[];self.refresh_attachments()
+        self.attachments=[];self.attachment_read=None;self.send_after_read=False;self.refresh_attachments()
         item=self.task_list.item(row)
         task_id=item.data(Qt.UserRole) if item else None
         self.task=next((task for task in self.tasks if task.get('id')==task_id), None)
         if not self.task:return
         kind=self.task.get('kind','code')
         is_chat=kind=='chat'
-        preference = normalize_focus(self.task.get('agent_focus'))
+        preference = self.saved_focus_key(self.task.get('agent_focus'))
         self.task['agent_focus'] = preference
         with QSignalBlocker(self.agent_focus):
             self.agent_focus.setCurrentIndex(self.agent_focus.findData(preference))
@@ -1380,6 +1496,35 @@ class Studio(QMainWindow):
 
     def natural_control(self,text):
         normalized=text.strip().lower().rstrip('.!')
+        body = request_body(text)
+        if re.fullmatch(r'(?:create|make|add|manage) (?:an? |my )?(?:custom )?(?:agents?|specialists?)[.!]?', body, re.I):
+            if self.specialists_dialog():
+                self.prompt.clear()
+            return True
+        named = named_specialist_request(body)
+        if named:
+            if not named[1]:
+                if self.specialists_dialog(proposed_name=named[0]):
+                    self.prompt.clear()
+                return True
+            try:
+                agent = CustomSpecialist.create(*named)
+                if agent.key in self.specialists:
+                    raise ValueError('This agent already exists. Open Agents… to edit or select it.')
+                self.store_specialist(agent)
+            except (OSError, ValueError) as exc:
+                self.status.setText(str(exc)); return True
+            self.prompt.clear()
+            self.task['messages'].extend([{'role':'user', 'content':text, 'source':'app'},
+                {'role':'assistant', 'source':'app', 'content':f'Created {agent.name} and selected it for this conversation. Your agent is also available in the specialist menu in other chats.'}])
+            self.persist(); self.render()
+            return True
+        kind = re.fullmatch(r'(?:create|make|add) (?:me )?(?:an? )?(researcher|research|shopping|writing|gaming|game|coding) (?:agent|specialist)[.!]?', body, re.I)
+        if kind:
+            key = kind[1].lower()
+            if self.specialists_dialog(specialty={'gaming':'game', 'researcher':'research'}.get(key, key)):
+                self.prompt.clear()
+            return True
         if normalized in ('/tune','tune my local model','tune my model','optimize my local model',
                           'optimise my local model','optimize your local settings','optimise your local settings'):
             self.start_local_tuning(text)
@@ -1478,36 +1623,52 @@ class Studio(QMainWindow):
 
     def choose_attachments(self):
         paths,_=QFileDialog.getOpenFileNames(self,'Attach local documents',str(Path.home()),
-            'Documents (*.txt *.md *.markdown *.csv *.tsv *.json *.yaml *.yml *.xml *.html *.css *.js *.jsx *.ts *.tsx *.py *.rs *.go *.java *.c *.cpp *.h *.hpp *.cs *.sh *.ps1 *.toml *.ini *.cfg *.log *.sql *.tex *.pdf);;All files (*)')
+            'Documents (*.txt *.md *.markdown *.csv *.tsv *.json *.yaml *.yml *.xml *.htm *.html *.xhtml *.css *.js *.jsx *.ts *.tsx *.py *.rs *.go *.java *.c *.cpp *.h *.hpp *.cs *.sh *.ps1 *.toml *.ini *.cfg *.log *.sql *.tex *.pdf);;All files (*)')
         if paths:self.attach_files(paths)
 
     def attach_files(self,paths):
         if not self.task:return
-        errors=[]
-        for path in paths:
-            if len(self.attachments)>=MAX_FILES:
-                errors.append('Up to five files can be attached to one message.');break
-            try:
-                item=read_attachment(path)
-                if any(existing['sha256']==item['sha256'] for existing in self.attachments):
-                    raise ValueError('This file is already attached.')
-                if sum(len(existing['content']) for existing in self.attachments)+len(item['content'])>MAX_TOTAL_CHARS:
-                    raise ValueError('These files exceed the 20,000 character context limit. Remove a file first.')
-                self.attachments.append(item)
-            except (OSError,ValueError) as exc:
-                errors.append(Path(path).name+': '+str(exc))
+        if self.attachment_read:
+            self.status.setText('Indexing the selected documents. You can keep typing.');return
+        digests = {item['sha256'] for item in self.attachments}
+        token = self.attachment_read = uuid.uuid4().hex
+        def collect():
+            results,errors=[],[]
+            for path in paths:
+                if len(digests)>=MAX_FILES:
+                    errors.append('Up to five files can be attached to one message.');break
+                try:
+                    item=read_attachment(path)
+                    if item['sha256'] in digests:raise ValueError('This file is already attached.')
+                    digests.add(item['sha256']);results.append(item)
+                except (OSError,ValueError) as exc:
+                    errors.append(Path(path).name+': '+str(exc))
+            try:self.bus.event.emit('documents_ready',(token,results,errors))
+            except RuntimeError:pass  # The window was closed during extraction.
+        if any(Path(path).suffix.lower()=='.pdf' for path in paths):
+            self.status.setText('Indexing the PDF on this device. You can keep typing.')
+            threading.Thread(target=collect,daemon=True).start()
+        else:collect()
+
+    def documents_ready(self,data):
+        token,results,errors=data
+        if token != self.attachment_read:return
+        self.attachment_read=None
+        self.attachments.extend(results)
         self.refresh_attachments()
         if errors:QMessageBox.warning(self,'Attachment could not be added','\n'.join(errors[:8]))
-        if self.attachments:self.status.setText(f'{len(self.attachments)} file(s) ready as context for the next message. Extracted text will be sent to the selected model route.')
+        if self.attachments:self.status.setText('Documents ready. Relevant passages will be sent to the selected model with source references.')
+        submit,self.send_after_read=self.send_after_read,False
+        if submit and not errors:self.send()
 
     def refresh_attachments(self):
         if not hasattr(self,'attachment_list'):return
         self.attachment_list.clear()
         for item in self.attachments:
-            note=' · truncated excerpt' if item['truncated'] else ''
-            self.attachment_list.addItem(f"{item['name']} · {item['kind']} · {len(item['content']):,} characters{note}")
+            scope = f"{item['text_pages']}/{item['pages']} pages with text" if item.get('pages') else f"{len(item.get('passages', []))} passages"
+            self.attachment_list.addItem(f"{item['name']} · {scope}")
         count=len(self.attachments)
-        self.attachment_label.setText((f'{count}/{MAX_FILES} attached · {sum(len(a["content"]) for a in self.attachments):,}/{MAX_TOTAL_CHARS:,} characters · sent to selected model route' if count else 'No files attached' if self.workspace=='code' else ''))
+        self.attachment_label.setText((f'{count}/{MAX_FILES} attached · searchable in this conversation' if count else 'No files attached' if self.workspace=='code' else ''))
         self.attachment_list.setVisible(bool(count))
         for widget in (self.remove_attachment_button,self.clear_attachments_button):
             widget.setVisible(bool(count) or self.workspace=='code')
@@ -1520,6 +1681,7 @@ class Studio(QMainWindow):
             self.attachments.pop(index);self.refresh_attachments()
 
     def clear_attachments(self):
+        self.attachment_read=None;self.send_after_read=False
         self.attachments.clear();self.refresh_attachments()
 
     def retry_index(self):
@@ -1543,6 +1705,10 @@ class Studio(QMainWindow):
         return None
 
     def send(self,checked=False,*,retry=False):
+        if self.attachment_read:
+            self.send_after_read=True
+            self.status.setText('Your message will send when document indexing finishes.')
+            return
         if self.busy and self.execution_kind in ('conversation','tuning','media'):
             return  # A second Enter during a reply leaves the next draft in place.
         index=self.retry_index() if not self.busy else None
@@ -1576,11 +1742,14 @@ class Studio(QMainWindow):
                 project_kind = asset_engine(self.task['project'])
             except (OSError, ValueError):
                 pass
-        resolved_focus = resolve_focus(focus_preference, text, project_kind=project_kind)
+        resolved_focus = self.specialists.get(focus_preference) or resolve_focus(focus_preference, text, project_kind=project_kind)
         focus_options = {'focus': resolved_focus} if resolved_focus != 'everyday' else {}
         previous=next((item for item in reversed(messages) if item.get('role')=='user' and item.get('source')!='app'),{})
         followup=previous.get('chat_mode')=='tools'
-        conversation=is_chat and (retry or not chat_requests_tools(text,attached=bool(self.attachments),followup=followup,focus=resolved_focus))
+        doc_history = any(m.get('typed_content') or m.get('document_refs') for m in messages if m.get('role') == 'user')
+        web_query = chat_web_query(text, attached=bool(self.attachments or (original and original.get('typed_content'))),
+                                   document_history=doc_history) if is_chat else None
+        conversation=is_chat and (retry or bool(web_query) or not chat_requests_tools(text,attached=bool(self.attachments),followup=followup,focus=resolved_focus))
         if self.route.currentIndex()==4 and not self.active_provider():
             self.status.setText('Add an API key and choose a model in your private vault to begin. Your draft is kept.')
             self.providers_dialog()
@@ -1602,11 +1771,27 @@ class Studio(QMainWindow):
         else:
             user_message={'role':'user','content':text}
             if is_chat:user_message['chat_mode']='conversation' if conversation else 'tools'
-            if self.attachments:
-                context,summaries=attachment_context(self.attachments)
+            documents = self.attachments
+            refs = []
+            missing = []
+            index_folder = STATE / 'document-index'
+            if documents:
+                try:
+                    refs = [save_document(index_folder,item) for item in documents]
+                except OSError as exc:
+                    self.status.setText(f'Could not save the local document index. Your draft is kept. {exc}')
+                    return
+                user_message['document_refs'] = refs
+            elif conversation and not web_query:
+                refs = last_document_refs(messages)
+                documents, missing = load_documents(index_folder, refs)
+            if documents or missing:
+                context,summaries=attachment_context(documents, text, model_excerpt_budget(self.model_performance()['num_ctx'],text))
+                if missing:
+                    context += '\nThe local document index is unavailable for '+', '.join(missing)+'. Ask the user to reattach it before answering document questions.'
                 user_message['content']=text+context
                 user_message['typed_content']=text
-                user_message['display_content']=text+'\n\nAttached: '+', '.join(summaries)
+                user_message['display_content']=text+('\n\nAttached: '+', '.join(summaries) if self.attachments else '')
             self.prompt.clear();self.clear_attachments();messages.append(user_message)
             self.task['draft']=''
         self.task.pop('chat_retry_index',None)
@@ -1618,6 +1803,16 @@ class Studio(QMainWindow):
         preference=MODEL_ROUTES[self.route.currentIndex()]
         self.started_at=time.monotonic();self.route_description=f'{AGENT_NAME} · selecting model';self.status.setText('Checking installed models…')
         project=self.task['project']; history=list(self.task['messages']); act=self.mode.currentText()=='Act';task_id=self.task['id']
+        review_question = text if whole_review_requested(text) else ''
+        if conversation and not web_query and previous.get('document_review') and re.fullmatch(r'(?:please )?(?:resume|continue|retry|carry on)(?: (?:the |my )?(?:document |filing )?review)?[.! ]*',text,re.I):
+            review_question = previous['document_review']
+        review_refs = last_document_refs(history) if conversation and review_question and not web_query else []
+        if review_refs:
+            history[-1]['document_review'] = review_question
+            self.persist()
+        if conversation and history[-1].get('typed_content') and not web_query:
+            # Refresh the latest evidence without filling the model window with stale excerpts.
+            history[:-1] = [dict(m,content=m['typed_content']) if m.get('role')=='user' and m.get('typed_content') else m for m in history[:-1]]
         task_kind=self.task.get('kind','code');rounds=self.step_budget.currentData() if task_kind=='code' else 16
         performance=self.model_performance()
         keep_going=bool(self.keep_going.isChecked()) and task_kind=='code'
@@ -1699,6 +1894,30 @@ class Studio(QMainWindow):
                 self.bus.event.emit('route',selected)
                 if conversation:
                     from agent_core import OllamaCapacityError
+                    if web_query:
+                        self.bus.event.emit('status', 'Checking public web sources…')
+                        try:
+                            evidence = lookup_chat_web(web_query, self.cancel, project,
+                                browser_name=self.config.get('web_browser', 'auto'), search_engine=self.config.get('web_search', 'auto'))
+                        except InterruptedError:
+                            return
+                        if self.cancel.is_set():
+                            return
+                        if not evidence['sources']:
+                            self.bus.event.emit('message', {'role':'assistant', 'content':
+                                'I couldn’t verify a public source for this search. Try again or change Preferred web search in Settings.'})
+                            return
+                        history[-1] = dict(history[-1], _chat_web=evidence)
+                    if review_refs:
+                        from agent_core import stream_chat
+                        review_sources, missing = load_documents(STATE / 'document-index', review_refs)
+                        if missing:
+                            raise ValueError('Reattach the source to review the complete document: '+', '.join(missing))
+                        notes = review_documents(review_sources, review_question, selected['url'], selected['model'],
+                            model_performance, STATE / 'document-reviews', self.cancel,
+                            lambda status:self.bus.event.emit('status',status), stream_chat)
+                        history[-1] = dict(history[-1],content=review_question+'\n\n'+notes)
+                        self.bus.event.emit('status','Writing the answer from the completed document review…')
                     try:
                         run_conversation(selected['url'],selected['model'],history,self.cancel,self.bus.event.emit,
                                          performance=self._local_chat_performance(selected,model_performance), **focus_options)
@@ -1935,7 +2154,7 @@ class Studio(QMainWindow):
         if not busy:self.refresh_route_labels()
         self.refresh_model_setup()
         self.escape_shortcut.setEnabled(busy and not self.global_escape)
-        for w in (self.new_button,self.project_button,self.task_list,self.task_view,self.route,self.agent_focus,self.mode,self.step_budget,self.keep_going,self.work_duration,self.goal_button,self.chat_space,self.code_space,self.skynet_button,self.local_tools_button,self.chat_models):w.setEnabled(not busy)
+        for w in (self.new_button,self.project_button,self.task_list,self.task_view,self.route,self.agent_focus,self.manage_agents,self.mode,self.step_budget,self.keep_going,self.work_duration,self.goal_button,self.chat_space,self.code_space,self.skynet_button,self.local_tools_button,self.chat_models):w.setEnabled(not busy)
         steer=busy and self.execution_kind!='conversation'
         self.prompt.setEnabled(True);self.send_button.setEnabled(not busy or steer);self.send_button.setText('✦  Steer' if steer else '↑  Send')
         self.stop.setVisible(busy or self.workspace=='code')
@@ -1974,6 +2193,9 @@ class Studio(QMainWindow):
             self.control_overlay.show_stopping();self.control_banner.setText('TalkToAi is stopping…\nWaiting for the current action to finish safely.')
 
     def handle_event(self,kind,data):
+        if kind=='documents_ready':
+            self.documents_ready(data)
+            return
         if kind=='app_reply':
             self.task['messages'].append({'role':'assistant','source':'app','content':data})
             self.persist();self.render()
@@ -2623,6 +2845,8 @@ Use `run tests`, `launch game`, `take a screenshot`, `map project`, `show git ch
 
 ## Browser testing and research
 
+In Chat, ask a current public question or type “Search the web for lunar eclipses”. Agent Zero looks up sources even when the selected model cannot call tools. Only the current public query goes to the search service. Add “offline” to skip the lookup.
+
 In Act mode ask `Use Brave to open http://localhost:3000, test the Start button and save a screenshot.` The agent can inspect pages, click controls, fill fields and switch tabs. Managed browsers close after a turn. Screenshots are saved to Evidence.
 
 For a browser you keep open between turns, go to **Settings → Browser control → Connect to a running Chromium browser**. Choose Chrome, Brave or Edge and click **Open connectable browser**, then save the settings. The new window has a dedicated browser profile. Open the tabs you want to work on and ask the agent to use that browser in Act mode. You can also connect to a Chromium profile already listening on the local debugging port you configured.
@@ -2634,6 +2858,8 @@ In **Act** mode with **Desktop / user access** and **PC Pilot** enabled, simply 
 This is an original open-source-based integration, not Codex's proprietary skill. Accessibility-based actions work without a vision model. A configured local or API vision model can additionally inspect the immediately following screenshot; custom game canvases and inaccessible controls may still expose little useful information. Password fields are excluded from the control listing. It cannot bypass Windows permissions, a locked desktop, logins, passwords, security prompts, payments or final external submissions.
 
 ## Subagents for coding and games
+
+To save a specialist, click **Agents…** beside the specialist menu, or type “Create an agent named Atlas to explain scientific papers in plain language”. You can select Atlas in another conversation and edit or remove it in **Agents…**. For independent project reviews, try “Create three agents to review my code, tests and documentation”.
 
 Ask `Use 3 agents to review this project's implementation, tests and documentation.` Agent Zero can also divide a compound project review automatically. Each worker uses the same installed Ollama model, gets a separate conversation, and inspects project files. Workers run one at a time and report their observations in tool activity. The main agent handles edits and test execution. The turn shares one limit of up to three workers, with five model steps per worker. Stop cancels the active review. Workers run on Local and Local large routes.
 

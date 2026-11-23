@@ -2,6 +2,57 @@
 import json
 import math
 import re
+from pathlib import PureWindowsPath
+
+
+NEW_FILE_FORMAT = {
+    'type': 'object', 'additionalProperties': False,
+    'properties': {'path': {'type': 'string'}, 'content': {'type': 'string'}},
+    'required': ['path', 'content'],
+}
+_FILE_PROMISE = re.compile(
+    r"\b(?:let me|let['’]s|i(?:['’]ll| will| can| am going to)|i['’]m going to)\s+"
+    r"(?:now\s+)?(?:make|build|create|write|generate|design|implement|save|put together)\b|"
+    r"\bi(?: have|['’]ve)? (?:created|written|built|saved|generated)\b|"
+    r"^[ \t]*```(?:html|python|javascript|js|css|svg|json)\s*$", re.I | re.M)
+
+
+def promises_project_file(reply):
+    return bool(_FILE_PROMISE.search(reply))
+
+
+def missing_python_probe(command, result):
+    """Only an optional interpreter discovery failure can be superseded by a verified file."""
+    probe = re.fullmatch(r'\s*(?:(?:python(?:3(?:\.\d+)?)?|py(?:\s+-3)?)\s+(?:--version|-V)|'
+                         r'(?:where(?:\.exe)?|which|command\s+-v|Get-Command)\s+(?:py|python3?))\s*', command, re.I)
+    return bool(probe or (not re.search(r'[\n\r&|;<>`$()]', command)
+                          and re.match(r'^\s*(?:py|python3?)\s', command, re.I)
+                          and re.search(r'Python was not found|(?:python3?|py): (?:command )?not found|'
+                                        r"(?:term|command) ['\x22](?:python3?|py)['\x22] is not recognized", result, re.I)))
+
+
+def new_file_call(reply):
+    """Convert only an explicitly requested, complete new-file response to an ordinary checked write."""
+    def unique_fields(pairs):
+        fields = dict(pairs)
+        if len(pairs) != len(fields):
+            raise ValueError('The file response contains a duplicate field.')
+        return fields
+    data = json.loads(reply, object_pairs_hook=unique_fields)
+    if not isinstance(data, dict) or set(data) != {'path', 'content'}:
+        raise ValueError('Return one JSON object with path and content.')
+    path, content = data['path'], data['content']
+    if not isinstance(path, str) or not path or len(path) > 240:
+        raise ValueError('Provide a short project-relative file path.')
+    path = path.replace('\\', '/')
+    parts = path.split('/')
+    if (any(not part or part.startswith('.') or part.endswith((' ', '.')) or PureWindowsPath(part).is_reserved()
+            for part in parts) or re.search(r'[<>:"|?*\x00-\x1f]', path)):
+        raise ValueError('Use a portable project-relative filename with no hidden or parent folders.')
+    if not isinstance(content, str) or not content.strip() or len(content.encode('utf-8')) > 500_000:
+        raise ValueError('Supply the complete nonempty file contents within 500 KB.')
+    return {'function': {'name': 'write_file_checked', 'arguments': {
+        'path': path, 'content': content, 'expected_sha256': '__absent__'}}}
 
 
 def check_evidence(result):
@@ -11,6 +62,8 @@ def check_evidence(result):
         return {'status':'failed','summary':'A detected check reported a failure. Inspect the tool output.'}
     if not codes or 'UNVERIFIED:' in result or 'Ran 0 tests' in result:
         return {'status':'unverified','summary':'No passing check established. Inspect the output for missing checks, zero tests or errors.'}
+    if result.startswith('Exit 0\nStandalone file checks\n'):
+        return {'status':'passed','summary':result.split('\n',2)[2][:800]}
     return {'status':'passed','summary':f'{len(codes)} detected check command(s) exited successfully. This is not complete gameplay or product verification.'}
 
 PLAN_TOOL = {'type':'function','function':{

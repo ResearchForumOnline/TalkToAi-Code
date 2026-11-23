@@ -16,6 +16,8 @@ foreach ($relative in @('project.godot', 'main.gd', 'main.gd.uid', 'main.tscn', 
 }
 python -m PyInstaller --noconfirm --noconsole --name TalkToAiCode --manifest "$studioRoot\store\TalkToAiCode.manifest" --collect-all playwright --collect-submodules pywinauto --exclude-module numpy --exclude-module PySide6.QtWebEngineCore --exclude-module PySide6.QtWebEngineWidgets --distpath $destination --workpath $work --specpath $work @sampleData "$studioRoot\studio.py"
 if ($LASTEXITCODE -ne 0) { throw 'Studio packaging failed.' }
+python "$studioRoot\scripts\package-project-python.py" (Join-Path $destination 'TalkToAiCode')
+if ($LASTEXITCODE -ne 0) { throw 'Project Python packaging failed.' }
 python "$studioRoot\scripts\package-runtime-notices.py" (Join-Path $destination 'TalkToAiCode')
 if ($LASTEXITCODE -ne 0) { throw 'Runtime license notice packaging failed.' }
 $assetArgs = if ($AssetCollection) { @('--source', $AssetCollection) } else { @() }

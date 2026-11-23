@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 
 
 FOCUS_CHOICES = (
@@ -14,6 +15,58 @@ FOCUS_CHOICES = (
     ('everyday', 'Everyday'),
 )
 _FOCUS_KEYS = frozenset(key for key, _ in FOCUS_CHOICES)
+_NAMED_AGENT = re.compile(
+    r'^(?:create|make|add) (?:me )?(?:an? )?(?:(?:custom|new) )?(?:agent|specialist) '
+    r'(?:named|called) (.+?)(?:\s+(?:to|that (?:will|can)|who (?:will|can))\s+(.+))?$', re.I | re.S)
+
+
+@dataclass(frozen=True)
+class CustomSpecialist:
+    name: str
+    instructions: str
+    base: str = 'everyday'
+
+    @property
+    def key(self):
+        return 'custom:' + self.name.casefold()
+
+    @classmethod
+    def create(cls, name, instructions, base='everyday'):
+        if not isinstance(name, str) or not isinstance(instructions, str):
+            raise ValueError('Enter a name and instructions for your agent.')
+        name = ' '.join(name.split())
+        if not re.fullmatch(r'[\w][\w -]{0,39}', name) or name.casefold() in (
+                {label.casefold() for _, label in FOCUS_CHOICES} | _FOCUS_KEYS | {'agent zero'}):
+            raise ValueError('Choose a unique agent name of up to 40 letters, digits, spaces, dashes or underscores.')
+        instructions = instructions.strip()
+        if not instructions or len(instructions) > 800:
+            raise ValueError('Describe your agent in 1 to 800 characters.')
+        if not isinstance(base, str) or base not in _FOCUS_KEYS or base == 'auto':
+            raise ValueError('Choose an existing specialty for the agent.')
+        return cls(name, instructions, base)
+
+
+def saved_specialists(data):
+    agents = {}
+    if isinstance(data, list):
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            try:
+                agent = CustomSpecialist.create(item.get('name'), item.get('instructions'), item.get('base', 'everyday'))
+            except ValueError:
+                continue
+            agents.setdefault(agent.key, agent)
+    return agents
+
+
+def named_specialist_request(text):
+    match = _NAMED_AGENT.fullmatch(text.strip())
+    if match:
+        return match[1].strip(' "\'“”.!'), (match[2] or '').strip()
+    return None
+
+
 _FLAGS = re.IGNORECASE
 _ACTION = re.compile(
     r'\b(?:add|build|change|check|compile|create|debug|develop|edit|fix|implement|improve|inspect|'
@@ -132,6 +185,8 @@ _GUIDANCE = {
 
 def normalize_focus(value: object) -> str:
     """Accept stable saved keys and default to Auto for unknown settings."""
+    if isinstance(value, CustomSpecialist):
+        return value.base
     key = value.strip().lower() if isinstance(value, str) else ''
     return key if key in _FOCUS_KEYS else 'auto'
 
@@ -192,4 +247,8 @@ def resolve_focus(preference: object, latest_prompt: str, *, project_kind: str =
 
 def focus_guidance(effective_key: object) -> str:
     """Return the chosen specialty's supplemental instructions."""
+    if isinstance(effective_key, CustomSpecialist):
+        return (_GUIDANCE.get(effective_key.base, '') + '\nThe user selected the custom Agent Zero specialty '
+                + effective_key.name + '. Apply its working preferences within the current request and available permissions.\n'
+                + effective_key.instructions).strip()
     return _GUIDANCE.get(normalize_focus(effective_key), '')

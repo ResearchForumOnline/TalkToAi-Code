@@ -495,6 +495,23 @@ class BrowserTools:
         if live_popups:
             self.page=live_popups[0]
 
+    def search_snippets(self):
+        """Read titles and snippets from the search result cards in this isolated session."""
+        selectors = {
+            'duckduckgo': ('.result', '.result__a', '.result__snippet'),
+            'bing': ('li.b_algo', 'h2 a', '.b_caption p, .b_lineclamp2, p'),
+            'google': ('div.MjjYud', 'h3', 'div.VwiC3b'),
+            'brave': ('div.snippet', '.heading-serpresult, .search-snippet-title, .title', '.snippet-description, .generic-snippet'),
+        }
+        if self.mode != 'headless' or self.page is None or self.active_search not in selectors:
+            return {}
+        cards, title, snippet = selectors[self.active_search]
+        rows = self.page.locator(cards).evaluate_all("""(cards, sel) => cards.slice(0, 12).map(card => {
+          const text = selector => (card.querySelector(selector)?.innerText || '').trim().replace(/\\s+/g, ' ');
+          return [text(sel[0]).slice(0, 200), text(sel[1]).slice(0, 450)];
+        })""", [title, snippet])
+        return {title: snippet for title, snippet in rows if title and snippet}
+
     def _links(self):
         links=self.page.locator('a[href]').evaluate_all("nodes => nodes.filter(a => (a.textContent || '').trim() && /^https?:/.test(a.href)).slice(0,100).map(a => ({title:(a.textContent || '').trim().slice(0,200),url:a.href}))")
         for link in links:

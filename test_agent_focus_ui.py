@@ -171,6 +171,34 @@ class AgentFocusUITests(unittest.TestCase):
         self.assertEqual(self.agent.call_args.kwargs['focus'], 'shopping')
         self.chat.assert_not_called()
 
+    def test_create_custom_agent_from_chat_restore_use_edit_and_remove(self):
+        w = self.window()
+        self.send(w, 'Please create an agent named Atlas to cite primary sources in short answers.')
+        self.assertEqual(w.agent_focus.currentData(), 'custom:atlas')
+        self.assertIn('Created Atlas', w.transcript.toPlainText())
+        self.chat.assert_not_called()
+        self.agent.assert_not_called()
+        self.send(w, 'Please create an agent named Atlas to replace the earlier instructions.')
+        self.assertIn('already exists', w.status.text())
+        self.assertIn('cite primary sources', w.specialists['custom:atlas'].instructions)
+        restored = self.window()
+        restored.select_task_by_id(w.task['id'])
+        self.assertEqual(restored.agent_focus.currentData(), 'custom:atlas')
+        self.send(restored, 'Hello!')
+        from agent_focus import CustomSpecialist, focus_guidance
+        self.assertIn('cite primary sources', focus_guidance(self.chat.call_args.kwargs['focus']))
+        restored.switch_workspace('code')
+        self.choose(restored, 'custom:atlas')
+        self.send(restored, 'Debug the Python code that builds the index.')
+        self.assertEqual(self.agent.call_args.kwargs['focus'].name, 'Atlas')
+        revised = CustomSpecialist.create('Atlas', 'Check release notes.', 'research')
+        restored.store_specialist(revised)
+        self.assertIn('Work as a researcher', focus_guidance(restored.specialists[revised.key]))
+        restored.store_specialist(revised, remove=True)
+        self.assertEqual(restored.agent_focus.findData(revised.key), -1)
+        self.assertTrue(all(t.get('agent_focus') != revised.key for t in restored.tasks))
+        self.assertNotIn('Atlas', (self.root/'config.json').read_text(encoding='utf-8'))
+
     def test_auto_uses_existing_game_markers_only_for_an_ambiguous_project_task(self):
         w = self.window()
         with patch('asset_library.asset_engine') as probe:

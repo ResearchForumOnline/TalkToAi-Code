@@ -15,6 +15,7 @@ import uuid
 import signal
 from pathlib import Path
 from platform_paths import state_dir
+from project_python import project_shell
 from ethics_policy import assert_mutable_path
 
 
@@ -72,9 +73,9 @@ class DesktopTools:
             workdir = workdir.parent
         flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
         with tempfile.TemporaryFile() as output:
-            invocation=(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", str(command)]
-                        if os.name=="nt" else ["/bin/sh", "-lc", str(command)])
-            process = subprocess.Popen(invocation, cwd=workdir, stdout=output, stderr=subprocess.STDOUT,
+            invocation, environment = project_shell(str(command), workdir)
+            process = subprocess.Popen(invocation, cwd=workdir, env=environment, stdin=subprocess.DEVNULL,
+                                       stdout=output, stderr=subprocess.STDOUT,
                                        creationflags=flags, start_new_session=os.name!="nt")
             deadline = time.monotonic() + 180
             while process.poll() is None:

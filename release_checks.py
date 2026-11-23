@@ -36,6 +36,63 @@ def _check_store_model_upgrade(folder, port):
         return len(str(display_path(legacy))) > 260 and not legacy.exists() and verified.read_bytes() == _MODEL_FIXTURE
 
 
+def _project_python_smoke(folder):
+    """Create art through the real shell, including an offline dependency on packaged Windows."""
+    import base64
+    import hashlib
+    import sys
+    import zipfile
+    from unittest.mock import patch
+    from agent_core import ProjectTools
+    from project_python import bundled_python
+
+    with tempfile.TemporaryDirectory(dir=folder, prefix='project Python ') as temp:
+        root = Path(temp).resolve()
+        tools = ProjectTools(root, act=True, project_only=True)
+
+        def command(text):
+            result = tools.execute('run_command', {'command': text})
+            if not result.startswith('Exit 0\n'):
+                raise RuntimeError('Project Python smoke failed. ' + result[-2000:])
+            return result
+
+        offline = os.name == 'nt' and getattr(sys, 'frozen', False)
+        with patch('project_python._path_executables', return_value=()):
+            if offline:
+                package = 'talktoai_fixture_palette'
+                version = '1.0'
+                dist = f'{package}-{version}.dist-info'
+                wheel = f'{package}-{version}-py3-none-any.whl'
+                files = {
+                    package + '.py': b"COLOR = '#2468AC'\n",
+                    dist + '/METADATA': b'Metadata-Version: 2.1\nName: talktoai-fixture-palette\nVersion: 1.0\n',
+                    dist + '/WHEEL': b'Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n',
+                }
+                records = []
+                with zipfile.ZipFile(root / wheel, 'w') as archive:
+                    for name, data in files.items():
+                        digest = base64.urlsafe_b64encode(hashlib.sha256(data).digest()).decode().rstrip('=')
+                        records.append(f'{name},sha256={digest},{len(data)}')
+                        archive.writestr(name, data)
+                    records.append(dist + '/RECORD,,')
+                    archive.writestr(dist + '/RECORD', '\n'.join(records) + '\n')
+                command(f'python -m pip install --no-index --no-deps --no-cache-dir {wheel}')
+            else:
+                (root / 'talktoai_fixture_palette.py').write_text("COLOR = '#2468AC'\n", encoding='utf-8')
+            tools.execute('write_file', {'path': 'make art.py', 'content':
+                "import json, sys\nfrom pathlib import Path\nimport talktoai_fixture_palette as palette\n"
+                "Path('gallery.html').write_text('<svg fill=' + palette.COLOR + '></svg>', encoding='utf-8')\n"
+                "print(json.dumps({'python': sys.executable, 'palette': palette.__file__}))\n"})
+            receipt = json.loads(command("python 'make art.py'").split('\n', 1)[1])
+            if offline:
+                if not Path(receipt['python']).samefile(bundled_python()):
+                    return False
+                packages = root / '.talktoai-code' / 'python-packages'
+                if not Path(receipt['palette']).resolve().is_relative_to(packages):
+                    return False
+            return (root / 'gallery.html').read_text(encoding='utf-8') == '<svg fill=#2468AC></svg>'
+
+
 def smoke(destination):
     from model_library import DEFAULT_LOCAL_MODEL
     from runtime_diagnostics import REPLY_CHECK_PROMPT, last_reply_check, measure_local_reply
@@ -211,6 +268,16 @@ def smoke(destination):
             result['windows_voice_plugins'] = (bool({'sapi', 'winrt'}.intersection(QTextToSpeech.availableEngines()))
                                                and callable(QAudioSource) and audio_format.isValid())
         with tempfile.TemporaryDirectory(prefix='talktoai-release-') as folder:
+            result['project_python'] = _project_python_smoke(folder)
+            from attachment_ingest import read_attachment, attachment_context
+            from document_passages import save_document, load_documents
+            note = Path(folder)/'sample-filing.txt'
+            note.write_text('Revenue and other sample data.\n'*1250+'The final certification code is MINT-726.',encoding='utf-8')
+            indexed = read_attachment(note)
+            saved = save_document(Path(folder)/'filing-index', indexed)
+            reopened, missing = load_documents(Path(folder)/'filing-index',[saved])
+            evidence, _ = attachment_context(reopened,'What is the final certification code?',3500)
+            result['filing_tail_retrieval'] = not missing and 'MINT-726' in evidence and 'passage ' in evidence
             check_directory = Path(folder, 'model-checks')
             check = measure_local_reply(DEFAULT_LOCAL_MODEL, threading.Event(), lambda *_: None,
                                         port=server.server_port, history_dir=check_directory)
@@ -361,7 +428,7 @@ def smoke(destination):
         result['passed'] = result['passed'] and all(result[key] for key in
             ('conversation_round_trip', 'installed_model_reply_check', 'openzero_template_prefix_clean',
              'local_model_retention','reversible_local_tuning','local_project_reviewers','browser_live_reference',
-             'automatic_chat_tools','local_media_entrypoints','local_voice_entrypoints','agent_specialties','inkling_support',
+             'project_python','filing_tail_retrieval','automatic_chat_tools','local_media_entrypoints','local_voice_entrypoints','agent_specialties','inkling_support',
              'inkling_gpu_status','inkling_physical_offload','inkling_acceleration_settings'))
         if os.name == 'nt':
             result['passed'] = result['passed'] and result['windows_voice_plugins']

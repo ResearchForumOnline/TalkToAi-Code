@@ -33,7 +33,7 @@ _GENERAL_ROLES = ('reviewer', 'investigator', 'test_planner', 'documenter')
 _WORKER = r'(?:local\s+|read-only\s+)?(?:sub[- ]?agents?|agents?|workers?|reviewers?)\b'
 _COUNT = {'a': 1, 'an': 1, 'one': 1, 'two': 2, 'three': 3}
 _NUMBER = r'\d{1,3}|one|two|three|a|an'
-_REQUEST = re.compile(r'\b(?:use|using|with|spawn|assign|delegate(?:\s+to)?|ask|start|launch|get)\s+'
+_REQUEST = re.compile(r'\b(?:use|using|with|create|spawn|assign|delegate(?:\s+to)?|ask|start|launch|get)\s+'
                       r'(?:up\s+to\s+)?(?:(' + _NUMBER + r')(?:\s*(?:to|or|[-–/])\s*(' + _NUMBER + r'))?\s+)?' + _WORKER, re.I)
 _OPT_OUT = re.compile(r"\b(?:without|no|avoid|skip|(?:do not|don.t|never)\s+(?:use|spawn|delegate to|assign|start))\s+(?:any\s+)?"
                       + _WORKER + r"|\b(?:work|do (?:this|it)) (?:alone|solo|yourself)\b", re.I)

@@ -18,7 +18,7 @@ class AttachmentIngestTests(unittest.TestCase):
             context, names = attachment_context([item])
             self.assertIn('first', context)
             self.assertIn('untrusted reference material', context)
-            self.assertIn('notes.md (excerpt truncated)', names)
+            self.assertIn('passages selected', names[0])
             self.assertNotIn(str(path), context)
 
     def test_rejects_key_names_binary_and_oversized_input(self):
@@ -33,8 +33,9 @@ class AttachmentIngestTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'not supported'):
                 read_attachment(image)
             huge = root / 'large.txt'
-            huge.write_bytes(b'x' * (MAX_FILE_BYTES + 1))
-            with self.assertRaisesRegex(ValueError, '2 MB'):
+            with huge.open('wb') as stream:
+                stream.truncate(MAX_FILE_BYTES + 1)
+            with self.assertRaisesRegex(ValueError, '32 MB'):
                 read_attachment(huge)
 
     def test_pdf_without_selectable_text_reports_the_missing_capability(self):

@@ -2,7 +2,7 @@
 
 import unittest
 
-from chat_intent import chat_requests_tools, media_request, wants_browser_lookup, wants_screen_action
+from chat_intent import chat_requests_tools, chat_web_query, media_request, requests_project_creation, wants_browser_lookup, wants_screen_action
 
 
 class ChatIntentTests(unittest.TestCase):
@@ -39,6 +39,9 @@ class ChatIntentTests(unittest.TestCase):
         self.assertTrue(chat_requests_tools('Now open the next one', followup=True))
         self.assertFalse(chat_requests_tools('Now open the next one'))
         self.assertFalse(chat_requests_tools('How do I open the next one?', followup=True))
+        for text in ('Try again', 'Carry on.', 'hmm oh dear seems you cannot do anything you have full access to this computer do whatever you need etc install come on sir try harder'):
+            self.assertTrue(chat_requests_tools(text, followup=True))
+            self.assertFalse(chat_requests_tools(text))
 
     def test_media_requires_creation_intent(self):
         self.assertEqual(media_request('Please create an image of a lighthouse.'), ('image','create an image of a lighthouse.'))
@@ -49,6 +52,34 @@ class ChatIntentTests(unittest.TestCase):
                        'Draw my conclusion.', 'Create an icon in SVG for my game.', 'Create an image'):
             with self.subTest(prompt=prompt):
                 self.assertIsNone(media_request(prompt))
+
+    def test_creative_requests_go_to_project_tools_but_text_and_media_keep_their_routes(self):
+        for text in ('create soemthing of your choosing to impress me', 'Create something impressive.',
+                     'Please make me a little HTML art project.', 'Build a playable game in the browser.',
+                     'Create a video game about a frog.', 'Create a small game.'):
+            with self.subTest(text=text):
+                self.assertTrue(requests_project_creation(text))
+                self.assertTrue(chat_requests_tools(text))
+        for text in ('How do I create a webpage?', 'Create a poem about HTML', 'Write a story about a browser game.',
+                     'Create a video of an interactive game', 'Create an agent named Atlas for HTML',
+                     'Make me an HTML project outline', 'Create a script but do not write files.'):
+            with self.subTest(text=text):
+                self.assertFalse(requests_project_creation(text))
+        self.assertIsNone(media_request('Create a video game about a frog.'))
+
+    def test_public_web_query_respects_private_context_and_handles_current_questions(self):
+        self.assertEqual(chat_web_query('What is the latest Godot release?'), 'site:godotengine.org Godot Engine latest release')
+        self.assertEqual(chat_web_query('Please search the web for lunar eclipses.'), 'lunar eclipses')
+        self.assertIsNotNone(chat_web_query('What changed in AI research this week?'))
+        self.assertIsNone(chat_web_query('What is the latest stable version?', document_history=True))
+        self.assertEqual(chat_web_query('Search the web for lunar eclipses', document_history=True), 'lunar eclipses')
+        self.assertIsNone(chat_web_query('Search the web for eclipses', attached=True))
+        self.assertFalse(chat_requests_tools('Search the web for Python releases but do not use the internet.'))
+        for text in ('Today I want to write a story.', 'What is my current bill?', 'What is the latest release? Offline.',
+                     'Look up our confidential repository', 'What is the latest version installed on my PC?',
+                     'Search online for C:\\Users\\Alex\\project', 'Search the web for jellyfish then save it to a file'):
+            with self.subTest(text=text):
+                self.assertIsNone(chat_web_query(text))
 
 
 if __name__ == '__main__':

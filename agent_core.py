@@ -19,7 +19,8 @@ import base64
 import io
 import re
 from urllib.parse import urlsplit
-from agent_workflow import ToolCatalog, PLAN_TOOL, normalize_plan, previous_plan, validate_calls, check_evidence
+from agent_workflow import (ToolCatalog, PLAN_TOOL, normalize_plan, previous_plan, validate_calls, check_evidence,
+                            NEW_FILE_FORMAT, new_file_call, promises_project_file, missing_python_probe)
 from process_jobs import ProcessJobs
 from workspace_outputs import read_batch, register_output
 from progress_guard import DiscoveryProgressGuard
@@ -35,7 +36,8 @@ from task_navigation import research_query, canonical_source, desktop_projects, 
 from work_packet import build_work_packet, complete_direct_read_request
 import project_workers
 from agent_focus import focus_guidance
-from chat_intent import wants_browser_lookup, wants_screen_action, wants_shopping_lookup
+from chat_intent import (requests_project_creation, requests_tool_continuation, wants_browser_lookup,
+                         wants_screen_action, wants_shopping_lookup)
 
 AGENT_NAME = 'Agent Zero'
 OLLAMA_REQUEST_SECONDS = 600
@@ -121,7 +123,7 @@ TOOLS = [
     schema('write_file', 'Create or replace a project text file. Original bytes are checkpointed.', {'path': 'Relative file path', 'content': 'Complete new contents'}),
     schema('file_fingerprint', 'Report whether a project file exists, its byte size and SHA-256. Read the relevant file first; use this immediately before write_file_checked.', {'path':'Relative file path'}),
     schema('write_file_checked', 'Create or replace a project text file only if its current SHA-256 exactly matches expected_sha256. Set expected_sha256 to __absent__ only when creating a file that must not already exist. Original bytes are checkpointed.', {'path':'Relative file path','content':'Complete new contents','expected_sha256':'SHA-256 returned by file_fingerprint, or __absent__'}),
-    schema('run_command', 'Run in Windows PowerShell (powershell.exe; no && or cmd dir /s syntax) or sh on Linux/macOS. Already in project directory. Quote paths with spaces. Prefer list_files/search_code for discovery. Current user permissions, no OS sandbox.', {'command': 'Command for the current operating system'}),
+    schema('run_command', 'Run in project PowerShell on Windows (no && or Unix heredocs) or sh on macOS/Linux. Save Python with write_file then run python script.py. Project, installed or bundled Python is selected automatically. Use python -m pip for needed packages. Quote paths with spaces. Use list_files/search_code for discovery. Current user permissions.', {'command': 'Command for the current operating system'}),
 ]
 TOOLS += [
     schema('read_project_files', 'Read 1-8 UTF-8 project files with SHA-256. Prefer one file and limit 600 for small model contexts. Use next_offset and expected_sha256 for subsequent pages; errors are per file.', {'requests':'JSON array: [{"path":"src/main.py","offset":0,"limit":600}]. Optional limit bounds characters. Optional expected_sha256 verifies a continued page.'}),
@@ -911,9 +913,12 @@ class ProjectTools:
                     return f'Unity Editor started. Process {p.pid}.'
                 return self._engine_command('Unity',unity,['-batchmode','-nographics','-quit','-projectPath',str(self.root),'-logFile','-'],600)
             elif name=='run_checks':
-                from project_checks import detect_checks
+                from project_checks import detect_checks, check_edited_files
                 checks=detect_checks(self.root)
-                if not checks['commands']:raise ValueError(checks['note'])
+                if not checks['commands']:
+                    standalone=check_edited_files(self.path(change['path']) for change in self.changes)
+                    if standalone:return standalone
+                    raise ValueError(checks['note'])
                 results=[]
                 for check in checks['commands']:
                     command=("$env:CI='true'; "+check+'; exit $LASTEXITCODE') if os.name=='nt' else 'CI=true '+check
@@ -926,21 +931,26 @@ class ProjectTools:
             raise ValueError('Select a Godot or Unity project to open it in its engine.')
         if name in ('write_file','write_file_checked'):
             p=self.path(args['path'])
+            if name=='write_file_checked' and args['expected_sha256']=='__absent__':
+                if p.exists():
+                    raise ValueError('File changed or does not match expected SHA-256. Read/fingerprint it again before writing; no write occurred.')
+                return self._write_file(args['path'],args['content'],None,only_if_absent=True)
             old=p.read_bytes() if p.exists() else None
             if name=='write_file_checked':
                 expected=args['expected_sha256']
                 current=hashlib.sha256(old).hexdigest() if old is not None else None
-                if (expected=='__absent__' and old is not None) or (expected!='__absent__' and current!=expected):
+                if current!=expected:
                     raise ValueError('File changed or does not match expected SHA-256. Read/fingerprint it again before writing; no write occurred.')
             return self._write_file(args['path'],args['content'],old)
         if name == 'run_command':
             flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
             import tempfile, time
+            from project_python import project_shell
             with tempfile.TemporaryFile() as output:
-                invocation=(['powershell.exe','-NoProfile','-NonInteractive','-Command',args['command']]
-                            if os.name=='nt' else ['/bin/sh','-lc',args['command']])
+                invocation, environment = project_shell(args['command'], self.root)
                 process = subprocess.Popen(invocation,
-                    cwd=self.root, stdout=output, stderr=subprocess.STDOUT, creationflags=flags,
+                    cwd=self.root, env=environment, stdin=subprocess.DEVNULL, stdout=output,
+                    stderr=subprocess.STDOUT, creationflags=flags,
                     start_new_session=os.name!='nt')
                 deadline = time.monotonic() + 180
                 while process.poll() is None:
@@ -953,6 +963,8 @@ class ProjectTools:
                 size = output.tell()
                 output.seek(max(0, size - 20000))
                 result=f'Exit {process.returncode}\n'+output.read().decode('utf-8',errors='replace')
+                if process.returncode and re.search(r'permission denied|access (?:is )?denied|operation requires elevation|administrator privileges',result,re.I):
+                    result+='\n[Project access] Try the selected writable project, its Python environment, or the tool’s per-user install option. If the requested change specifically needs administrator approval, identify that operation and surface the operating system prompt to the user.'
                 shell_diagnostic=re.search(
                     r'^\s*\+\s*(?:CategoryInfo|FullyQualifiedErrorId)\s*:.*(?:ParserError|CommandNotFoundException|ParameterBindingException|InvalidEndOfLine|PositionalParameterNotFound|NamedParameterNotFound|AmbiguousParameter)',
                     result,re.M)
@@ -964,7 +976,7 @@ class ProjectTools:
                 return result
         raise ValueError(f'Unknown tool: {name}')
 
-    def _write_file(self,path,content,old):
+    def _write_file(self,path,content,old,*,only_if_absent=False):
             assert_mutable_path(self.path(path))
             p = self.path(path)
             if len(content.encode('utf-8')) > 500000:
@@ -977,7 +989,16 @@ class ProjectTools:
             record = {'path': str(p), 'existed': old is not None, 'new_content': content}
             (checkpoint / 'record.json').write_text(json.dumps(record), encoding='utf-8')
             p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_bytes(content.encode('utf-8'))
+            if only_if_absent:
+                try:
+                    with p.open('xb') as target:
+                        target.write(content.encode('utf-8'))
+                except FileExistsError:
+                    (checkpoint/'record.json').unlink()
+                    checkpoint.rmdir()
+                    raise ValueError('File appeared before the write; choose a new filename or inspect it first.') from None
+            else:
+                p.write_bytes(content.encode('utf-8'))
             diff = ''.join(difflib.unified_diff(before.splitlines(True), content.splitlines(True), fromfile=path, tofile=path))
             self.changes.append({'path': path, 'diff': diff, 'checkpoint': str(checkpoint)})
             return f'Saved {path}. Checkpoint: {checkpoint.name}\n{diff[:18000]}'
@@ -1132,6 +1153,8 @@ _GENERIC_CONTINUATIONS={
     'continue','please continue','keep going','please keep going','resume',
     'please resume','carry on','go on','continue working','continue this task',
     'continue the task','resume this task','resume the task',
+    'try again','please try again','try harder','please try harder','give it another try',
+    'please carry on','continue unfinished work',
 }
 _MAIL_INTENT=re.compile(r'\b(?:gmail|zmail|mailbox|inbox|e-?mails?|correspondence|mail)\b')
 _BROWSER_APP=re.compile(r'\b(chrome|brave|chromium|firefox|microsoft\s+edge)\b')
@@ -1508,6 +1531,24 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
     actionable_code_request=(act and task_kind=='code' and
         not re.match(r'^\s*(?:how|what|why|when|where|is|are|does)\b',latest) and
         bool(_ACTIONABLE_CODE.search(latest)))
+    file_request = request_text
+    if (requests_tool_continuation(last_user) and not requests_project_creation(file_request)
+            and not re.search(r"\b(?:instead|only|do not|don['’]t|never|stop|cancel|delete|remove|"
+                              r"explain|send|post|search|read|rename)\b",last_user,re.I)):
+        # Keep an earlier deliverable for encouragement after an interrupted
+        # task. The actual new instruction stays in the model conversation.
+        earlier = [m for m in history if m.get('role')=='user' and not m.get('_automation_nudge')][:-1]
+        file_request = _capability_request(earlier, preserve_case=True)
+    file_creation = act and not worker_mode and not improvement_mode and requests_project_creation(file_request)
+    # A new-file recovery can only deliver to the selected project. Keep an
+    # explicitly named external destination on its usual desktop/provider route.
+    file_creation = file_creation and not re.search(
+        r'(?:[a-z]:[\\/]|(?:^|\s)(?:~/|/\w+)|\b(?:on|in|to|under) (?:my |the )?'
+        r'(?:desktop|downloads|documents|google drive|onedrive|dropbox)\b)',file_request+' '+request_text,re.I)
+    request_file_draft = False
+    file_draft_attempts = 0
+    optional_python_failure = False
+    file_delivery_observed = False
     task_tool_attempted=False
     no_action_review_requested=False
     failure_recovery_seen=set()
@@ -1547,6 +1588,24 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
     progress_seen=set();pass_progress=0;pass_errors=False;pass_recovered_errors=False
     goal_validation_error=False
     protocol_error=False
+    def needs_new_file():
+        return file_creation and not file_delivery_observed and not tools.changes and not (
+            workspace_report and workspace_report['count'])
+
+    def request_new_file(reply,step):
+        nonlocal request_file_draft
+        if not (needs_new_file() and file_draft_attempts < 2 and step+1 < max_steps and promises_project_file(reply)):
+            return False
+        messages.append({'role':'user','_automation_nudge':True,'content':
+            'The user asked you to create a project deliverable. Provide its actual contents now. '
+            'Return only one JSON object with two string fields: path (a new, project-relative filename) '
+            'and content (the complete file). The app will save and check it. Use the requested format and '
+            'filename when specified. For an open-ended creative request a self-contained HTML file works offline. '
+            'No tool call, Markdown fence, promise, or installation instructions. Preserve existing files.'})
+        request_file_draft = True
+        emit('status','Creating the requested file from the model’s design…')
+        return True
+
     def goal_checkpoint(state,steps,blockers=None):
         if keep_going and not worker_mode and not improvement_mode:
             emit('goal_checkpoint',{'pass':max(1,min(total_passes,(max(1,steps)-1)//rounds+1)),
@@ -1563,7 +1622,8 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
         if not workspace_evidence:return
         previous=workspace_report
         workspace_report=workspace_evidence.observe(reason)
-        if not workspace_report['complete'] and reason not in ('run_start','before_completion','run_checks'):
+        if not workspace_report['complete'] and reason not in (
+                'run_start','before_completion','run_checks','write_file','write_file_checked','edit_file','python_probe'):
             # An incomplete inventory cannot rule out a shell or managed job
             # change outside the observed subset. Require a fresh check.
             workspace_unknown_dirty=True
@@ -1642,7 +1702,7 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
             goal_checkpoint('paused',step,['Selected work session time reached; progress is saved'])
             emit('status','Work session time reached; progress is saved. Send Continue to resume.')
             return
-        if step and step%rounds==0:
+        if step and step%rounds==0 and not request_file_draft:
             if not pass_progress or pass_errors or unresolved_tool_failures or goal_validation_error or protocol_error or discovery_guard.paused:
                 reasons=[]
                 if not pass_progress:reasons.append('No new tool evidence in the last pass')
@@ -1661,7 +1721,14 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
             pass_progress=0;pass_errors=bool(unresolved_tool_failures);pass_recovered_errors=False
         emit('status', f'Working - step {step + 1}')
         num_ctx=performance.get('num_ctx',8192)
-        try:window=context_window(messages,context_budget(num_ctx,messages[0],active_tools,output_tokens))
+        drafting_file = request_file_draft
+        request_file_draft = False
+        turn_tools = [] if drafting_file else active_tools
+        if drafting_file and ACTIVE_PROVIDER is None and output_tokens < 3072:
+            try:context_budget(num_ctx,messages[0],turn_tools,3072)
+            except ValueError:pass
+            else:output_tokens=3072
+        try:window=context_window(messages,context_budget(num_ctx,messages[0],turn_tools,output_tokens))
         except (ValueError,TypeError):
             goal_checkpoint('paused',step)
             raise
@@ -1670,10 +1737,16 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
             emit('status','Continuing with a compact checkpoint; full conversation and tool results remain saved.')
             last_compacted_count=len(messages)
         show_thinking=bool(performance.get('show_thinking',False))
-        payload = {'model': model, 'messages': window, 'tools': list(active_tools),
+        payload = {'model': model, 'messages': window, 'tools': list(turn_tools),
                    'stream': True, 'think':show_thinking,
                    'keep_alive': keep_alive_for(url, performance.get('ollama_keep_alive')),
                    'options': {'num_ctx': num_ctx, 'num_predict': output_tokens, 'temperature': .1}}
+        if drafting_file:
+            file_draft_attempts += 1
+            payload.pop('tools')
+            payload['options']['temperature'] = 0
+            if ACTIVE_PROVIDER is None:
+                payload['format'] = NEW_FILE_FORMAT
         content, calls = '', []
         visible_stream=VisibleTextStream()
         reasoning=ReasoningActivity(include_excerpt=show_thinking)
@@ -1722,7 +1795,7 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
                     if first is None:first=time.monotonic()-started
                     content += delta
                     visible_delta=visible_stream.feed(delta)
-                    if visible_delta:emit('delta',visible_delta)
+                    if visible_delta and not drafting_file:emit('delta',visible_delta)
                 calls.extend(message.get('tool_calls', []))
                 if data.get('done'):stats=data
         except InterruptedError:
@@ -1743,12 +1816,12 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
         if not stats:raise RuntimeError('Model stream ended before completion; no tool calls were executed.')
         emit('metrics',model_metrics(stats,started,first,step+1))
         visible_tail=visible_stream.finish()
-        if visible_tail:emit('delta',visible_tail)
+        if visible_tail and not drafting_file:emit('delta',visible_tail)
         truncated=stats.get('done_reason')=='length'
         if truncated and not worker_mode and ACTIVE_PROVIDER is None and output_tokens<4096 and step+1<max_steps:
             candidate=min(4096,output_tokens*2)
             try:
-                context_budget(num_ctx,messages[0],active_tools,candidate)
+                context_budget(num_ctx,messages[0],turn_tools,candidate)
             except ValueError:
                 emit('status','Model output was cut off; increase Model context in Settings to allow a longer response.')
             else:
@@ -1756,6 +1829,21 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
                 emit('status',f'Model output was cut off; allowing up to {output_tokens} tokens on the next response.')
         elif not truncated and output_tokens>1536:
             output_tokens=1536
+        if drafting_file:
+            try:
+                if truncated or calls:
+                    raise ValueError('The file response was incomplete or included tool calls.')
+                calls = [new_file_call(content)]
+            except (TypeError, ValueError) as exc:
+                if file_draft_attempts < 2 and step+1 < max_steps:
+                    messages.append({'role':'user','_automation_nudge':True,'content':
+                        'No file was written. Return a shorter complete JSON object with path and content. ' + str(exc)[:180]})
+                    request_file_draft = True
+                    continue
+                goal_checkpoint('paused', step+1, ['The model did not supply a complete new file'])
+                emit('status','Response finished - task unfinished: the model did not supply a complete new file')
+                return
+            content = ''
         if truncated and calls:
             # Incomplete action batches cannot be executed safely or reliably.
             calls=[]
@@ -1768,6 +1856,8 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
                 emit('status','Recovered complete Qwen tool response')
             except (ValueError,TypeError) as exc:
                 protocol_error=True
+                if not truncated and request_new_file(content,step):
+                    continue
                 malformed_retries+=1
                 if malformed_retries>2:
                     raise RuntimeError('Model repeatedly returned incomplete or invalid tool output. No actions from those responses were executed.') from exc
@@ -1791,21 +1881,27 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
         assistant = {'role': 'assistant', 'content': content}
         if calls:
             assistant['tool_calls'] = calls
-        replay=stats.get('_openai_response')
+        replay=stats.get('_openai_response') if not drafting_file else None
         messages.append(dict(assistant,_openai_response=replay) if replay else assistant)
         emit('message', assistant)
         if not calls:
-            if actionable_code_request and not task_tool_attempted:
+            needs_file = needs_new_file()
+            if not truncated and request_new_file(content,step):
+                continue
+            if (actionable_code_request and not task_tool_attempted) or needs_file:
                 if not no_action_review_requested and step+1<max_steps:
                     no_action_review_requested=True
                     messages.append({'role':'user','_automation_nudge':True,'content':
                         'The user asked for project action, but no task tool action has been observed this turn. '
                         'Use the available tools to inspect and carry out the authorized request. '
+                        'For a new file call write_file_checked with path, content and expected_sha256 set to __absent__. '
                         'If it cannot be done, report the precise blocker and remaining work; do not claim completion.'})
                     emit('status','Checking requested project action before finishing')
                     continue
-                goal_checkpoint('paused',step+1,['No task tool action was observed for the requested Code work'])
-                emit('status','Response finished - task unfinished: no task tool action was observed')
+                reason = ('No requested file was observed' if needs_file else
+                          'No task tool action was observed for the requested Code work')
+                goal_checkpoint('paused',step+1,[reason])
+                emit('status','Response finished - task unfinished: '+reason[0].lower()+reason[1:])
                 return
             refresh_workspace('before_completion')
             if tools.jobs and tools.jobs.running() and not job_review_requested and step+1<max_steps:
@@ -1895,6 +1991,7 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
             emit('tool', {'name': name, 'args': args})
             count = len(tools.changes)
             signature=json.dumps([name,args],sort_keys=True)
+            python_probe_failed = False
             try:
                 if name not in {t['function']['name'] for t in active_tools}:
                     raise PermissionError('This tool is not enabled for this turn.')
@@ -1948,11 +2045,16 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
                 prior_pass_errors=pass_errors
                 if command_failed or (name=='run_checks' and check_evidence(result)['status']!='passed'):
                     pass_errors=True
+                    if name == 'run_command':
+                        python_probe_failed = missing_python_probe(args.get('command',''), result)
+                        optional_python_failure = (python_probe_failed and
+                            ('run_command' not in unresolved_tool_failures or optional_python_failure))
                     failure_code=re.search(r'^Exit (-?\d+)\s*$',result,re.M)
                     last_tool_error=(name+(': '+chain_status if name=='invoke_chain' else ': exit '+failure_code.group(1) if failure_code else ': check did not pass'))[:120]
                     unresolved_tool_failures[name]=last_tool_error
                 elif guard_result is None and name not in ('enable_tools','update_plan','record_experiment','update_task_goal'):
                     recovered=unresolved_tool_failures.pop(name,None)
+                    if name == 'run_command':optional_python_failure = False
                     if recovered and not unresolved_tool_failures:
                         pass_errors=False
                         last_tool_error=''
@@ -1972,15 +2074,18 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
                 last_tool_error=(name+': '+type(exc).__name__)[:120]
                 if not (name=='update_task_goal' and isinstance(exc,(ValueError,TypeError))):
                     unresolved_tool_failures[name]=last_tool_error
+                if name=='run_command':optional_python_failure=False
                 result = f'{type(exc).__name__}: {exc}'
                 retries=failed_calls.get(signature,0)+1;failed_calls.clear();failed_calls[signature]=retries
             if workspace_evidence and name in ('run_command','run_checks','start_process','poll_process','cancel_process',
                                                 'write_file','write_file_checked','edit_file','desktop_run_command',
                                                 'desktop_write_file','run_blender_script','launch_game','computer'):
-                refresh_workspace(name)
+                refresh_workspace('python_probe' if python_probe_failed else name)
             verify_release_policy()
             if name=='run_checks':
                 verification=check_evidence(result);emit('verification',verification)
+                if verification['status']!='passed' and tools.changes:
+                    checked_changes=min(checked_changes,len(tools.changes)-1)
                 if verification['status']=='failed':
                     failure_key=hashlib.sha256(result.encode('utf-8')).hexdigest()
                     if failure_key not in failure_recovery_seen:
@@ -2004,6 +2109,33 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
                 if pass_recovered_errors:pass_errors=True
                 emit('change', tools.changes[-1])
                 verification={'status':'stale','summary':'Files changed after the last check; run relevant checks again.'}
+                if file_creation and name in ('write_file_checked','write_file'):
+                    from project_checks import check_edited_files, detect_checks
+                    try:
+                        path=tools.path(args['path'])
+                        artifact=json.loads(register_output(tools,args['path']))
+                        if artifact['sha256'] != hashlib.sha256(args['content'].encode('utf-8')).hexdigest():
+                            raise ValueError('The file changed before verification. Inspect its current contents.')
+                        emit('artifact',artifact)
+                        static_check=check_edited_files([path])
+                        if static_check:
+                            result+='\n'+static_check
+                            paths={Path(change['path']).as_posix() for change in tools.changes}
+                            observed=set((workspace_report or {}).get('paths',[]))
+                            if (len(paths)==1 and not observed-paths and not workspace_unknown_dirty
+                                    and detect_checks(tools.root)['engine']=='General'):
+                                verification=check_evidence(static_check)
+                                if verification['status']=='passed':
+                                    checked_changes=len(tools.changes)
+                                    checked_workspace_revision=workspace_report['revision'] if workspace_report else None
+                                    if optional_python_failure and path.suffix.lower() in ('.html','.htm','.svg') and not re.search(
+                                            r'\b(?:python|interpreter)\b',file_request,re.I):
+                                        unresolved_tool_failures.pop('run_command',None)
+                                        optional_python_failure=False
+                                        pass_errors=bool(unresolved_tool_failures)
+                                        last_tool_error=next(reversed(unresolved_tool_failures.values()),'')
+                    except (OSError,ValueError) as exc:
+                        result+='\nOutput verification: '+str(exc)[:300]
                 emit('verification',verification)
             tool_message = {'role': 'tool', 'tool_name': name, 'content': result[:24000]}
             if call.get('id'):tool_message['tool_call_id']=call['id']
@@ -2011,6 +2143,8 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
             if name in ('capture_screenshot','browser','computer','register_output'):
                 try:artifact=json.loads(result)
                 except (ValueError,TypeError):pass
+            if name=='register_output' and isinstance(artifact,dict) and artifact.get('artifact'):
+                file_delivery_observed=True
             if vision_enabled and isinstance(artifact,dict) and artifact.get('type')=='image' and artifact.get('artifact'):
                 try:
                     tool_message['images']=[image_for_model(artifact['artifact'])]

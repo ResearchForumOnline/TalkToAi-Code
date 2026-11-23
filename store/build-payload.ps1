@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param([string]$BuildName = '9.0.7', [string]$OutputDirectory = '', [string]$AssetCollection = '')
+param([string]$BuildName = '9.0.8', [string]$OutputDirectory = '', [string]$AssetCollection = '')
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 if ($BuildName -notmatch '^\d+\.\d+\.\d+(?:-[a-zA-Z0-9]+)?$') { throw 'BuildName must identify the source release.' }
@@ -16,6 +16,8 @@ foreach ($relative in @('project.godot','main.gd','main.gd.uid','main.tscn','tes
 }
 python -m PyInstaller --noconfirm --noconsole --name TalkToAiCode --manifest (Join-Path $root 'store\TalkToAiCode.manifest') --collect-all playwright --collect-submodules pywinauto --hidden-import api_router --hidden-import attachment_ingest --exclude-module numpy --exclude-module PySide6.QtWebEngineCore --exclude-module PySide6.QtWebEngineWidgets --distpath $destination --workpath $work --specpath $work @samples (Join-Path $root 'studio.py')
 if ($LASTEXITCODE -ne 0) { throw 'Store executable build failed.' }
+python (Join-Path $root 'scripts\package-project-python.py') $payload
+if ($LASTEXITCODE -ne 0) { throw 'Project Python packaging failed.' }
 python (Join-Path $root 'scripts\package-runtime-notices.py') $payload
 if ($LASTEXITCODE -ne 0) { throw 'Store dependency notice packaging failed.' }
 $assetArgs = if ($AssetCollection) { @('--source', $AssetCollection) } else { @() }
