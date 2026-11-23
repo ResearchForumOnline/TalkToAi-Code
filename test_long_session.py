@@ -101,7 +101,7 @@ class LongSessionTests(unittest.TestCase):
         self.assertEqual([v['content'] for k, v in events if k == 'message' and v.get('role') == 'assistant'],
                          ['I can help with that.'])
 
-    def test_extended_session_remains_finite_and_tracks_passes(self):
+    def test_extended_session_tracks_passes_until_its_deadline(self):
         events = []
         calls = 0
 
@@ -114,21 +114,24 @@ class LongSessionTests(unittest.TestCase):
                    'done': True, 'eval_count': 3, 'eval_duration': 1000000000}
 
         with tempfile.TemporaryDirectory() as folder:
-            for index in range(12):
+            for index in range(15):
                 Path(folder, f'{index}.txt').write_text(f'Independent observation {index}', encoding='utf-8')
             with patch.object(core, 'stream_chat', side_effect=stream), \
                  patch.object(core, 'AUTO_CONTEXT', False), \
-                 patch.object(core, 'model_supports_vision', return_value=False):
+                 patch.object(core, 'model_supports_vision', return_value=False), \
+                 patch.object(core, 'time', wraps=core.time) as clock:
+                clock.monotonic.side_effect = lambda: 100 + calls * 1000
                 core.run_agent('fixture', 'fixture', [{'role': 'user', 'content': 'Inspect these sources.'}],
                                folder, True, threading.Event(),
                                lambda kind, value: events.append((kind, value)),
                                rounds=1, keep_going=True,
                                performance={'work_session_minutes': 240})
 
-        self.assertEqual(calls, 12)
+        self.assertEqual(calls, 15)
         checkpoints = [value for kind, value in events if kind == 'goal_checkpoint']
         self.assertEqual(checkpoints[-1]['state'], 'paused')
-        self.assertEqual(checkpoints[-1]['total_passes'], 12)
+        self.assertIsNone(checkpoints[-1]['total_passes'])
+        self.assertIn('Selected work session time reached', checkpoints[-1]['blockers'][0])
         self.assertEqual(checkpoints[-1]['session_minutes'], 240)
         self.assertTrue(any(value['state'] == 'continuing' for value in checkpoints))
 

@@ -993,7 +993,7 @@
   },
   {
     "path": "test_long_session.py",
-    "sha256": "3b3407cced259dacac5f7d7f104b42f74bb6236519656f54987891c2795e9b11"
+    "sha256": "a1a68d9b9c94c664ab799c2de6c952df6fcd9a50c8fb12ef2c5a810e0f2e5729"
   },
   {
     "path": "test_mail_connectors.py",
