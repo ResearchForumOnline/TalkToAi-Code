@@ -271,6 +271,16 @@ def smoke(destination):
                                                and callable(QAudioSource) and audio_format.isValid())
         with tempfile.TemporaryDirectory(prefix='talktoai-release-') as folder:
             result['project_python'] = _project_python_smoke(folder)
+            from engine_discovery import find_blender
+            from agent_core import ProjectTools
+            blender = find_blender()
+            if blender:
+                scene_folder = Path(folder, 'test-scene')
+                scene_folder.mkdir()
+                scene = ProjectTools(scene_folder, True).build_blender_scene(
+                    blender, 'import bpy\nbpy.ops.mesh.primitive_uv_sphere_add()')
+                with scene.open('rb') as saved:
+                    result['blender_scene_reopened'] = saved.read(7) == b'BLENDER'
             from attachment_ingest import read_attachment, attachment_context
             from document_passages import save_document, load_documents
             note = Path(folder)/'sample-filing.txt'
@@ -448,6 +458,8 @@ def smoke(destination):
              'inkling_gpu_status','inkling_physical_offload','inkling_acceleration_settings'))
         if os.name == 'nt':
             result['passed'] = result['passed'] and result['windows_voice_plugins']
+        if 'blender_scene_reopened' in result:
+            result['passed'] = result['passed'] and result['blender_scene_reopened']
         if desktop_worker_check:result['passed']=result['passed'] and result.get('desktop_worker',False)
         if getattr(__import__('sys'),'frozen',False):result['passed']=result['passed'] and result.get('bundled_game_assets',False)
         if os.name=='nt' and getattr(__import__('sys'),'frozen',False):result['passed']=result['passed'] and result.get('per_monitor_v2',False)

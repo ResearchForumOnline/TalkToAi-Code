@@ -71,6 +71,8 @@ _MEDIA = re.compile(
 _TEXT_FORMAT = re.compile(r"\b(?:in|as)\s+(?:an?\s+)?(?:svg|ascii|mermaid)\b", re.I)
 _WRITING_DRAW = re.compile(r"^(?:up\s+|(?:me\s+)?(?:(?:a|my|your)\s+)?(?:conclusion|plan|ascii)\b)", re.I)
 _CREATE = re.compile(r"^(?:build|make|create|generate|design|write|code)\s+", re.I)
+_SCENE = re.compile(r"\b3d[ -]+(?:[a-z]+[ -]+){0,3}(?:artwork|design|model|scene|sculpture)\b|"
+                    r"\bblender[ -]+(?:model|scene)\b|\b[\w.-]+\.blend\b", re.I)
 _PROJECT_ARTIFACT = re.compile(
     r"\b(?:html|javascript|web ?page|website|web app|browser game|playable game|"
     r"video game|interactive (?:art|demo|game|animation|visuali[sz]ation)|(?:python|shell) script|"
@@ -131,7 +133,18 @@ def requests_project_creation(text):
             or (_MEDIA.match(body) and not _VIDEO_GAME.match(body)) or requests_remote_work(body)
             or re.match(r"^(?:create|build|make)\s+(?:me\s+)?(?:an?\s+)?(?:account|agent|specialist)\b", body, re.I)):
         return False
-    return bool(_CREATIVE_CHOICE.match(body) or _MAKE_GAME.match(body) or _PROJECT_ARTIFACT.search(body))
+    return bool(_CREATIVE_CHOICE.match(body) or _MAKE_GAME.match(body) or _PROJECT_ARTIFACT.search(body)
+                or _SCENE.search(body))
+
+
+def requests_new_blender_scene(text):
+    """Use the scene builder for direct local authoring with Blender or no named format."""
+    body = request_body(text)
+    return bool(requests_project_creation(body) and _SCENE.search(body)
+                and not re.search(r"\b(?:using|with) (?:three\.js|unity|godot|maya|unreal)\b|"
+                                  r"\b(?:export|import|from|upload|script|game|website|animation|render)\b|"
+                                  r"\b(?:obj|stl|glb|gltf|fbx|usdz|usd|three\.js)\b|"
+                                  r"\.[a-z0-9]{1,8}\b", body, re.I))
 
 
 def requests_tool_continuation(text):

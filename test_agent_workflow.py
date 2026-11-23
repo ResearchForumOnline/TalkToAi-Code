@@ -258,6 +258,35 @@ class AgentAutomationTests(unittest.TestCase):
         self.assertEqual(statuses[-1], 'passed')
         self.assertEqual([v['state'] for k, v in events if k == 'goal_checkpoint'][-1], 'completed')
 
+    def test_direct_3d_request_recovers_from_a_promise_and_registers_the_scene(self):
+        design = "import bpy\nbpy.ops.mesh.primitive_uv_sphere_add()"
+        with tempfile.TemporaryDirectory() as root:
+            tools = core.ProjectTools(root, True)
+            scene = Path(root, 'winter.blend')
+
+            def build_scene(blender, source):
+                self.assertEqual(blender, 'blender-fixture')
+                self.assertEqual(source, design)
+                scene.write_bytes(b'BLENDER fixture')
+                return scene
+
+            with (patch('engine_discovery.find_blender', return_value='blender-fixture'),
+                  patch.object(tools, 'build_blender_scene', side_effect=build_scene)):
+                payloads, events = self.run_sequence(root, [
+                    response("I'll create a winter scene using Blender."),
+                    response(json.dumps({'path': 'scene.py', 'content': design}))],
+                    text='create an artistic design 3d model winter scene', tools=tools, keep_going=True)
+        self.assertNotIn('tools', payloads[0])
+        self.assertIn('bpy', payloads[0]['messages'][-1]['content'])
+        self.assertTrue(any(k == 'artifact' and v['title'] == 'winter.blend' for k, v in events))
+        self.assertEqual([v['state'] for k, v in events if k == 'goal_checkpoint'][-1], 'completed')
+
+    def test_direct_3d_request_reports_missing_blender_without_prompting_the_model(self):
+        with tempfile.TemporaryDirectory() as root, patch('engine_discovery.find_blender', return_value=None):
+            payloads, events = self.run_sequence(root, [], text='Create a 3D winter scene')
+        self.assertFalse(payloads)
+        self.assertIn(('status', 'Blender setup needed'), events)
+
     def test_prose_only_creation_recovers_without_running_generated_python(self):
         contents = "raise RuntimeError('must not execute the submitted code')\n"
         with tempfile.TemporaryDirectory() as root:

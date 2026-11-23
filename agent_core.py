@@ -11,6 +11,7 @@ import urllib.request
 import uuid
 import time
 import shutil
+import tempfile
 import http.client
 import socket
 import queue
@@ -36,7 +37,7 @@ from task_navigation import research_query, canonical_source, desktop_projects, 
 from work_packet import build_work_packet, complete_direct_read_request
 import project_workers
 from agent_focus import focus_guidance
-from chat_intent import (requests_project_creation, requests_tool_continuation, wants_browser_lookup,
+from chat_intent import (requests_new_blender_scene, requests_project_creation, requests_tool_continuation, wants_browser_lookup,
                          wants_screen_action, wants_shopping_lookup)
 
 AGENT_NAME = 'Agent Zero'
@@ -679,6 +680,50 @@ class ProjectTools:
             return f"Exit {job['exit_code']}\n"+output
         finally:
             jobs.close()
+
+    def build_blender_scene(self, blender, source):
+        """Create and reopen a new scene before making it available in the project."""
+        if not self.act or self.cancel.is_set():
+            raise InterruptedError('Task stopped.')
+        compile(source, '<Blender scene>', 'exec', dont_inherit=True)
+        stem = 'blender-scene-' + uuid.uuid4().hex[:10]
+        script = self.path(stem + '.py')
+        scene = assert_mutable_path(self.path(stem + '.blend'))
+        self.execute('write_file_checked', {'path': script.name, 'content': source, 'expected_sha256': '__absent__'})
+        with tempfile.TemporaryDirectory(prefix='talktoai-blender-') as folder:
+            candidate = Path(folder, 'verified.blend')
+            driver = Path(folder, 'build.py')
+            driver.write_text(
+                'import bpy, runpy\n'
+                'bpy.ops.wm.read_factory_settings(use_empty=True)\n'
+                f'runpy.run_path({str(script)!r}, run_name="__main__")\n'
+                'def check_geometry():\n'
+                '    if not any(obj.type in {"MESH", "CURVE", "SURFACE", "FONT", "META", "VOLUME", "CURVES"}\n'
+                '               for obj in bpy.context.scene.objects):\n'
+                '        raise RuntimeError("The scene has no visible geometry.")\n'
+                'check_geometry()\n'
+                f'bpy.ops.wm.save_as_mainfile(filepath={str(candidate)!r}, compress=False)\n'
+                f'bpy.ops.wm.open_mainfile(filepath={str(candidate)!r}, use_scripts=False)\n'
+                'check_geometry()\n',
+                encoding='utf-8')
+            result = self._engine_command('Blender', blender, ['--background', '--factory-startup',
+                                          '--disable-autoexec', '--python-exit-code', '1', '--python', str(driver)], 180)
+            if not result.startswith('Exit 0\n') or not candidate.is_file():
+                raise ValueError('Blender could not save and reopen the scene. ' + result[-1200:])
+            with candidate.open('rb') as saved:
+                if saved.read(7) != b'BLENDER':
+                    raise ValueError('Blender did not produce a readable scene file.')
+                saved.seek(0)
+                if self.cancel.is_set():
+                    raise InterruptedError('Task stopped.')
+                with scene.open('xb') as target:
+                    try:
+                        shutil.copyfileobj(saved, target)
+                    except OSError:
+                        target.close()
+                        scene.unlink(missing_ok=True)
+                        raise
+        return scene
 
     def execute(self, name, args):
         if self.cancel.is_set():
@@ -1553,6 +1598,26 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
         r'(?:[a-z]:[\\/]|(?:^|\s)(?:~/|/\w+)|\b(?:on|in|to|under) (?:my |the )?'
         r'(?:desktop|downloads|documents|google drive|onedrive|dropbox)\b)',file_request+' '+request_text,re.I)
     request_file_draft = False
+    blender_scene = None
+    if file_creation and requests_new_blender_scene(file_request):
+        from engine_discovery import find_blender
+        try:
+            blender_scene = find_blender()
+        except ValueError as exc:
+            emit('message', {'role': 'assistant', 'content': str(exc)})
+            emit('status', 'Blender setup needed')
+            return
+        if not blender_scene:
+            emit('message', {'role': 'assistant', 'content':
+                 'Blender is needed to create the 3D scene. Install it or select its executable in Settings, then send your request again.'})
+            emit('status', 'Blender setup needed')
+            return
+        request_file_draft = True
+        messages.append({'role':'user','_automation_nudge':True,'content':
+            'Create the actual requested 3D scene in Blender now. Return only JSON with path set to scene.py '
+            'and content set to a complete Python script using bpy. The app runs it in an empty scene, '
+            'then saves and reopens the .blend automatically. Create geometry, materials, lighting and a camera. '
+            'Keep the script compact, single-file and procedural. Do not save, render, use external assets or make other system changes.'})
     file_draft_attempts = 0
     optional_python_failure = False
     file_delivery_observed = False
@@ -1846,12 +1911,36 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
                 if truncated or calls:
                     raise ValueError('The file response was incomplete or included tool calls.')
                 calls = [new_file_call(content)]
-            except (TypeError, ValueError) as exc:
+                if blender_scene:
+                    draft = calls[0]['function']['arguments']
+                    if draft['path'] != 'scene.py':
+                        raise ValueError('For this Blender scene use scene.py as the path.')
+                    emit('status','Building and checking the Blender scene…')
+                    scene = tools.build_blender_scene(blender_scene, draft['content'])
+                    artifact = json.loads(register_output(tools, scene.name))
+                    emit('artifact', artifact)
+                    refresh_workspace('before_completion')
+                    verification = {'status':'passed','summary':'Blender saved and reopened the scene and checked that it contains geometry.'}
+                    emit('verification', verification)
+                    goal_checkpoint('completed', step+1)
+                    emit('message', {'role':'assistant','content':
+                         f'Created **{scene.name}** in your project. Blender reopened it and verified the geometry. Open the file from Evidence to view or edit the scene.'})
+                    emit('status','Ready')
+                    return
+            except InterruptedError:
+                goal_checkpoint('paused', step+1)
+                emit('status','Stopped')
+                return
+            except (TypeError, ValueError, SyntaxError, OSError, RuntimeError) as exc:
+                reason = str(exc)[-500:]
                 if file_draft_attempts < 2 and step+1 < max_steps:
                     messages.append({'role':'user','_automation_nudge':True,'content':
-                        'No file was written. Return a shorter complete JSON object with path and content. ' + str(exc)[:180]})
+                        ('The scene was not verified. Return a corrected complete scene.py in the same JSON format. '
+                         if blender_scene else 'No file was written. Return a shorter complete JSON object with path and content. ') + reason})
                     request_file_draft = True
                     continue
+                if blender_scene:
+                    emit('message', {'role':'assistant','content':'Blender could not complete the scene. ' + reason})
                 goal_checkpoint('paused', step+1, ['The model did not supply a complete new file'])
                 emit('status','Response finished - task unfinished: the model did not supply a complete new file')
                 return
