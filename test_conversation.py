@@ -312,5 +312,96 @@ class ConversationTests(unittest.TestCase):
         self.assertFalse(any(event.get('message', {}).get('tool_calls') for event in events))
 
 
+
+class CarryOnTests(unittest.TestCase):
+    """A reply cut off by the length limit is carried on, and stays in view for the next message."""
+
+    def reply(self, replies, history, performance):
+        payloads, events = [], []
+
+        def stream(url, payload, cancel):
+            payloads.append(payload)
+            yield from replies.pop(0)
+
+        from conversation import conversational_reply
+        conversational_reply('http://127.0.0.1:11434', 'fixture', history, threading.Event(),
+                             lambda kind, value: events.append((kind, value)), performance, stream)
+        return payloads, events
+
+    @staticmethod
+    def part(text, reason):
+        return [{'message': {'content': text}}, {'done': True, 'done_reason': reason, 'eval_count': 3, 'eval_duration': 1e9}]
+
+    def test_cut_off_reply_is_carried_on_at_high_effort_and_arrives_as_one_message(self):
+        history = [{'role': 'user', 'content': 'Explain it fully.'}]
+        payloads, events = self.reply([self.part('First part.', 'length'), self.part('Second part', 'length'),
+                                       self.part(' and the end.', 'stop')], history, {'effort': 'high'})
+        self.assertEqual(len(payloads), 3)
+        self.assertEqual(payloads[1]['messages'][-2:], [{'role': 'assistant', 'content': 'First part.'},
+                                                        {'role': 'user', 'content': payloads[1]['messages'][-1]['content']}])
+        self.assertIn('exactly where it stopped', payloads[1]['messages'][-1]['content'])
+        self.assertEqual(payloads[2]['messages'][-2]['content'], 'First part. Second part')
+        self.assertEqual([value for kind, value in events if kind == 'message'],
+                         [{'role': 'assistant', 'content': 'First part. Second part and the end.'}])
+        self.assertEqual(''.join(value for kind, value in events if kind == 'delta'), 'First part. Second part and the end.')
+        self.assertEqual(payloads[0]['options']['num_predict'], 3072)
+        self.assertEqual(history, [{'role': 'user', 'content': 'Explain it fully.'}])
+
+    def test_the_number_of_automatic_continuations_is_bounded_by_the_effort_level(self):
+        low = [self.part('a', 'length'), self.part('b', 'length'), self.part('c', 'length')]
+        payloads, events = self.reply(low, [{'role': 'user', 'content': 'Go'}], {'effort': 'low'})
+        self.assertEqual(len(payloads), 2)
+        self.assertEqual([value for kind, value in events if kind == 'message'][-1],
+                         {'role': 'assistant', 'content': 'ab', 'finish_reason': 'length'})
+        standard, _ = self.reply([self.part('a', 'length')], [{'role': 'user', 'content': 'Go'}], {})
+        self.assertEqual(len(standard), 1)
+        self.assertEqual(standard[0]['options']['num_predict'], 1536)
+
+    def test_code_is_joined_without_inserted_spaces(self):
+        _, events = self.reply([self.part('```python\nfoo.', 'length'), self.part('bar()\n```', 'stop')],
+                               [{'role': 'user', 'content': 'Code'}], {'effort': 'high'})
+        self.assertEqual([value for kind, value in events if kind == 'message'][-1]['content'], '```python\nfoo.bar()\n```')
+
+    def test_a_reply_that_spent_its_limit_on_reasoning_is_retried_once_with_less(self):
+        silent = [{'done': True, 'done_reason': 'length', 'eval_count': 0, 'eval_duration': 1}]
+        payloads, events = self.reply([list(silent), self.part('Answer.', 'stop')], [{'role': 'user', 'content': 'Hi'}],
+                                      {'effort': 'high', 'show_thinking': True})
+        self.assertEqual(payloads[1]['options']['reasoning_ceiling'], 'low')
+        self.assertFalse(payloads[1]['think'])
+        self.assertEqual([value for kind, value in events if kind == 'message'][-1]['content'], 'Answer.')
+        with self.assertRaisesRegex(RuntimeError, 'output limit before writing a reply'):
+            self.reply([list(silent), list(silent)], [{'role': 'user', 'content': 'Hi'}], {'effort': 'high'})
+
+    def test_the_end_of_a_long_reply_stays_in_view_for_continue(self):
+        long_reply = ''.join(f'Paragraph {number} of the long answer.\n' for number in range(1500))
+        history = [{'role': 'user', 'content': 'Write the long answer.'},
+                   {'role': 'assistant', 'content': long_reply, 'finish_reason': 'length'},
+                   {'role': 'user', 'content': 'continue'}]
+        payload = _conversation_payload('model', history, {})
+        kept = payload['messages'][1:]
+        self.assertEqual([message['role'] for message in kept], ['user', 'assistant', 'user'])
+        self.assertEqual(kept[0]['content'], 'Write the long answer.')
+        self.assertTrue(kept[1]['content'].startswith('[The earlier part of this reply is not shown here.]\nParagraph '))
+        self.assertTrue(kept[1]['content'].endswith('Paragraph 1499 of the long answer.\n'))
+        self.assertLess(len(kept[1]['content']), 20000)
+        self.assertEqual(kept[2]['content'], 'continue')
+
+    def test_effort_and_local_tuning_reach_only_the_right_kind_of_model(self):
+        performance = {'effort': 'low', 'ollama_options': {'top_k': 20, 'stop': ['x'], 'num_ctx': 1}}
+        local = _conversation_payload('model', [{'role': 'user', 'content': 'Hi'}], performance, url='http://127.0.0.1:11434')
+        self.assertEqual(local['options']['top_k'], 20)
+        self.assertNotIn('stop', local['options'])
+        self.assertNotEqual(local['options']['num_ctx'], 1)
+        remote = _conversation_payload('model', [{'role': 'user', 'content': 'Hi'}], performance, url='https://api.openai.com/v1')
+        self.assertNotIn('top_k', remote['options'])
+        self.assertEqual(remote['options']['reasoning_effort'], 'low')
+        captured = []
+        with patch.object(core, '_http_stream', side_effect=lambda url, payload, cancel: captured.append(payload) or iter(())), \
+                patch.object(core, 'ACTIVE_PROVIDER', None):
+            list(core.stream_chat('http://127.0.0.1:11434', local, threading.Event()))
+        self.assertNotIn('reasoning_effort', captured[0]['options'])
+        self.assertEqual(captured[0]['options']['top_k'], 20)
+
+
 if __name__ == '__main__':
     unittest.main()

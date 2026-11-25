@@ -3,7 +3,7 @@ import threading
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QListWidget,
     QListWidgetItem, QComboBox, QLineEdit, QSpinBox, QCheckBox, QPushButton, QWidget, QScrollArea)
-from providers import RESPONSES_URLS, ProviderProfile, save_profiles, store_api_key, forget_api_key, list_models, vault_status, validate_cost_policy
+from providers import ANTHROPIC_URL, EFFORT_URLS, RESPONSES_URLS, ProviderProfile, save_profiles, store_api_key, forget_api_key, list_models, vault_status, validate_cost_policy
 
 
 class ProviderDialog(QDialog):
@@ -18,7 +18,7 @@ class ProviderDialog(QDialog):
         intro.setWordWrap(True);layout.addWidget(intro)
         links=QLabel('Keys and limits: <a href="https://console.groq.com/docs/rate-limits">Groq</a>  |  <a href="https://ai.google.dev/gemini-api/docs/rate-limits">Gemini</a>  |  <a href="https://openrouter.ai/docs/api-reference/limits">OpenRouter</a>  |  <a href="https://inference-docs.cerebras.ai/support/rate-limits">Cerebras</a>');links.setOpenExternalLinks(True);links.setWordWrap(True);layout.addWidget(links)
         meta_link=QLabel('Meta Model API: <a href="https://dev.meta.ai/docs/sdks">setup and compatibility</a>');meta_link.setOpenExternalLinks(True);layout.addWidget(meta_link)
-        self.preset=QComboBox();self.preset.addItems(['Choose a provider preset…','OpenAI API','Groq API','Local compatible server (LM Studio)','Custom compatible API','OpenRouter free models','Gemini compatible API','Cerebras API','Meta Model API','DeepSeek API','Mistral API','xAI API'])
+        self.preset=QComboBox();self.preset.addItems(['Choose a provider preset…','OpenAI API','Groq API','Local compatible server (LM Studio)','Custom compatible API','OpenRouter free models','Gemini compatible API','Cerebras API','Meta Model API (Muse Spark)','DeepSeek API','Mistral API','xAI API','Claude API (Anthropic)'])
         self.preset.currentIndexChanged.connect(self.apply_preset);layout.addWidget(self.preset)
         row=QHBoxLayout();left=QVBoxLayout();left.addWidget(QLabel('Saved profiles'));self.listing=QListWidget();left.addWidget(self.listing);row.addLayout(left,1)
         scroll=QScrollArea();scroll.setWidgetResizable(True);form_widget=QWidget();form=QVBoxLayout(form_widget);scroll.setWidget(form_widget);row.addWidget(scroll,2);layout.addLayout(row,1)
@@ -31,7 +31,7 @@ class ProviderDialog(QDialog):
         for title, value in (('Automatic','auto'),('Responses','responses'),('Chat Completions','chat_completions')):
             self.protocol.addItem(title,value)
         self.effort=QComboBox()
-        for title, value in (('Model default',''),('Low','low'),('Medium','medium'),('High','high'),('Extra high','xhigh')):
+        for title, value in (('Model default',''),('Low','low'),('Medium','medium'),('High','high'),('Extra high','xhigh'),('Max (Claude API)','max')):
             self.effort.addItem(title,value)
         for title,widget in [('Profile name',self.label),('Base URL',self.url),('Model (type a model ID or fetch the list)',self.model),('API key environment variable (optional)',self.env),('API key (never shown again)',self.key),('Output-token limit per model response',self.tokens)]:
             form.addWidget(QLabel(title));form.addWidget(widget)
@@ -41,6 +41,8 @@ class ProviderDialog(QDialog):
         self.cost_tier=QComboBox();self.cost_tier.addItems(['unknown','free','self_hosted','paid']);form.addWidget(QLabel('My account/model cost tier (verify in provider console)'));form.addWidget(self.cost_tier)
         self.vision=QCheckBox('This selected model accepts screenshots / vision inputs');form.addWidget(self.vision)
         form.addWidget(QLabel('API protocol (OpenAI and xAI)'));form.addWidget(self.protocol)
+        effort_hint=QLabel('Model default follows the Effort setting in the main window. A level chosen here always applies to this profile.')
+        effort_hint.setWordWrap(True);effort_hint.setObjectName('muted');form.addWidget(effort_hint)
         form.addWidget(QLabel('Reasoning effort (model-dependent)'));form.addWidget(self.effort)
         self.url.textChanged.connect(self.refresh_protocol_controls)
         self.refresh_protocol_controls()
@@ -67,18 +69,19 @@ class ProviderDialog(QDialog):
         self.tokens.setValue(2048);self.protocol.setCurrentIndex(0);self.effort.setCurrentIndex(0)
 
     def refresh_protocol_controls(self):
-        enabled = not self.probing and self.url.text().strip().rstrip('/') in RESPONSES_URLS
-        self.protocol.setEnabled(enabled)
-        self.effort.setEnabled(enabled)
+        url = self.url.text().strip().rstrip('/')
+        self.protocol.setEnabled(not self.probing and url in RESPONSES_URLS)
+        self.effort.setEnabled(not self.probing and url in EFFORT_URLS)
 
     def apply_preset(self,index):
         if index==0 or self.probing:return
         self.new_profile()
         if index==1:
             self.label.setText('OpenAI');self.url.setText('https://api.openai.com/v1');self.env.setText('OPENAI_API_KEY')
-            self.model.setEditText('gpt-6.2-sol');self.tokens.setValue(8192);self.vision.setChecked(True)
+            self.model.addItems(['gpt-6.2-sol','gpt-6.2-astra'])
+            self.model.setEditText('gpt-6.2-sol');self.tokens.setValue(16384);self.vision.setChecked(True)
             self.cost_tier.setCurrentText('paid')
-            self.status.setText('Use your OpenAI API key and fetch models to check access. Automatic mode uses Responses for current GPT and reasoning models. Saving makes no generation request.')
+            self.status.setText('GPT-6.2 Sol is the default; GPT-6.2 Astra is in the list. Use your OpenAI API key and fetch models to check access. Automatic mode uses Responses for current GPT and reasoning models. Saving makes no generation request.')
         elif index==2:
             self.label.setText('Groq');self.url.setText('https://api.groq.com/openai/v1');self.env.setText('GROQ_API_KEY');self.model.setEditText('llama-3.3-70b-versatile')
             self.status.setText('Use your own Groq API key from console.groq.com/keys. The suggested model supports tools; Fetch models refreshes your account’s available IDs. Save, then Use selected API to run Chat and Code tasks here. Saving and fetching models make no generation request.')
@@ -104,6 +107,12 @@ class ProviderDialog(QDialog):
             self.label.setText('xAI');self.url.setText('https://api.x.ai/v1');self.env.setText('XAI_API_KEY')
             self.model.setEditText('grok-4.7');self.tokens.setValue(8192);self.vision.setChecked(True)
             self.status.setText('Use your xAI key and fetch models to check access. Automatic mode uses Responses for function tools and screenshots.')
+        elif index==12:
+            self.label.setText('Claude');self.url.setText(ANTHROPIC_URL);self.env.setText('ANTHROPIC_API_KEY')
+            self.model.addItems(['claude-opus-5-5','claude-sonnet-5-5','claude-haiku-5-5','claude-fable-5-2'])
+            self.model.setEditText('claude-opus-5-5');self.tokens.setValue(16384);self.vision.setChecked(True)
+            self.cost_tier.setCurrentText('paid')
+            self.status.setText('Use your own Claude API key from the Claude Console and fetch models to check access. The app uses the Messages API with adaptive thinking; Effort sets how much the model thinks. Saving makes no generation request.')
         else:self.status.setText('Enter your Chat Completions endpoint and a text model. For computer and coding actions, select a model with function calling.')
 
     def load_selected(self,row):
@@ -115,7 +124,8 @@ class ProviderDialog(QDialog):
         self.fallback.setChecked(profile.fallback_enabled);self.cost_tier.setCurrentText(profile.cost_tier);self.priority.setValue(profile.priority);self.vision.setChecked(profile.supports_vision)
         self.free_only.setChecked(profile.free_only)
         self.protocol.setCurrentIndex(self.protocol.findData(profile.api_mode));self.effort.setCurrentIndex(self.effort.findData(profile.reasoning_effort))
-        self.status.setText('Saved profile. '+vault_status(profile)+'. Keys are not displayed.')
+        newer=' GPT-6.2 Sol (gpt-6.2-sol) is the current default OpenAI model; change the model above to use it.' if profile.model.startswith('gpt-6.1') else ''
+        self.status.setText('Saved profile. '+vault_status(profile)+'. Keys are not displayed.'+newer)
 
     def profile(self,listing=False):
         return ProviderProfile(self.label.text(),self.url.text(),self.model.currentText() or ('__model_listing__' if listing else ''),self.env.text(),max_output_tokens=self.tokens.value(),fallback_enabled=self.fallback.isChecked(),cost_tier=self.cost_tier.currentText(),priority=self.priority.value(),supports_vision=self.vision.isChecked(),free_only=self.free_only.isChecked(),api_mode=self.protocol.currentData() if self.protocol.isEnabled() else 'auto',reasoning_effort=self.effort.currentData() if self.effort.isEnabled() else '')

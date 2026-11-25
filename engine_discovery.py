@@ -92,6 +92,11 @@ def find_blender():
     explicit = configured_engine('blender')
     if explicit:
         return explicit
+    return discover_blender()
+
+
+def discover_blender():
+    """Find an installed Blender without consulting the configured path."""
     on_path = shutil.which('blender')
     if on_path:
         return on_path
@@ -111,5 +116,8 @@ def find_blender():
         candidates = [Path('/Applications/Blender.app/Contents/MacOS/Blender'),
                       Path.home() / 'Applications/Blender.app/Contents/MacOS/Blender']
     else:
-        candidates = [Path('/snap/bin/blender'), Path('/opt/blender/blender')]
+        candidates = [Path('/snap/bin/blender'), Path('/opt/blender/blender'),
+                      Path('/var/lib/flatpak/exports/bin/org.blender.Blender'),
+                      Path.home() / '.local/share/flatpak/exports/bin/org.blender.Blender',
+                      Path.home() / '.local/bin/blender']
     return next((str(path) for path in candidates if path.is_file()), None)

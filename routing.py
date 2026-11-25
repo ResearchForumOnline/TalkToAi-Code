@@ -138,6 +138,12 @@ def _check_cancel(cancel):
         raise DownloadCancelled('Model operation stopped.')
 
 
+# Set once hardware is known (see auto_tune.server_environment). Applies only when this app
+# starts Ollama; a server that is already running keeps its own settings.
+SERVER_ENVIRONMENT = {}
+_TUNABLE_ENVIRONMENT = ('OLLAMA_FLASH_ATTENTION', 'OLLAMA_KV_CACHE_TYPE')
+
+
 def require_local_runtime(cancel=None, notify=None, *, timeout=35):
     """Find or start Ollama on this computer and wait for a valid version response."""
     cancel = cancel if cancel is not None else threading.Event()
@@ -156,7 +162,10 @@ def require_local_runtime(cancel=None, notify=None, *, timeout=35):
                 raise OllamaMissingError('Ollama was not found on this computer. Install Ollama, then retry the local model.')
             if notify:
                 notify('Starting Ollama on this computer', 0, 0)
-            env = {**os.environ, 'OLLAMA_HOST': f'127.0.0.1:{LOCAL_PORT}', 'OLLAMA_MODELS': str(ollama_store())}
+            # Tuning for a server this app starts. The user's own environment always wins.
+            tuned = {name: value for name, value in SERVER_ENVIRONMENT.items()
+                     if name in _TUNABLE_ENVIRONMENT and not os.environ.get(name)}
+            env = {**os.environ, **tuned, 'OLLAMA_HOST': f'127.0.0.1:{LOCAL_PORT}', 'OLLAMA_MODELS': str(ollama_store())}
             try:
                 process = subprocess.Popen(
                     [ollama, 'serve'], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,

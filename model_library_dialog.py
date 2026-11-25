@@ -89,6 +89,12 @@ class ModelLibraryDialog(QDialog):
                      DEFAULT_LOCAL_MODEL, 'local')
         self._preset(recommended, 'Install Qwen3.6 35B A3B', 'About 23 GB Q4 for Local large. 3B active per token.',
                      QWEN_LOCAL_MODEL, 'local_large')
+        from auto_tune import GIB, LOCAL_MODELS
+        for item in LOCAL_MODELS:
+            large = item['bytes'] > 12 * GIB
+            self._preset(recommended, 'Install ' + item['title'],
+                         f"About {item['bytes'] / GIB:.1f} GB for {'Local large' if large else 'Local'}. {item['description']}",
+                         item['id'], 'local_large' if large else 'local')
         self.inkling_buttons = []
         self.inkling_status = None
         if self.inkling is not None:
@@ -285,7 +291,7 @@ class ModelLibraryDialog(QDialog):
         row = QHBoxLayout()
         button = QPushButton(title)
         button.setObjectName('accent')
-        button.clicked.connect(lambda: self._install_preset(model, route))
+        button.clicked.connect(lambda: self._install_preset(model, route, title.removeprefix('Install ')))
         row.addWidget(button)
         row.addWidget(self._text(description), 1)
         layout.addLayout(row)
@@ -569,12 +575,12 @@ class ModelLibraryDialog(QDialog):
         if action in ('installed', 'removed', 'released', 'reply_check'):
             QTimer.singleShot(0, self._poll_installed)
 
-    def _install_preset(self, model, route):
+    def _install_preset(self, model, route, name=None):
         def work(cancel, notify):
             require_model_runtime(cancel, notify)
             return 'installed', install_model(model, cancel, notify), route
 
-        name = 'Qwen3.6 35B A3B' if route == 'local_large' else 'OpenZero 1.7B'
+        name = name or ('Qwen3.6 35B A3B' if route == 'local_large' else 'OpenZero 1.7B')
         self._start(f'Preparing {name} · checking Ollama…', work)
 
     def _save_preset(self, repo, commit, file):

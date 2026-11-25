@@ -21,10 +21,16 @@ PROVIDER_KEY_HOSTS = {
     'DEEPSEEK_API_KEY': 'api.deepseek.com',
     'MISTRAL_API_KEY': 'api.mistral.ai',
     'XAI_API_KEY': 'api.x.ai',
+    'ANTHROPIC_API_KEY': 'api.anthropic.com',
 }
 RESPONSES_URLS = {'https://api.openai.com/v1', 'https://api.x.ai/v1'}
+ANTHROPIC_URL = 'https://api.anthropic.com/v1'
+# The Messages API version the app speaks. Sampling parameters are not sent with it.
+ANTHROPIC_VERSION = '2026-10-21'
+EFFORT_URLS = RESPONSES_URLS | {ANTHROPIC_URL}
 API_MODES = ('auto', 'responses', 'chat_completions')
-REASONING_EFFORTS = ('', 'low', 'medium', 'high', 'xhigh')
+REASONING_EFFORTS = ('', 'low', 'medium', 'high', 'xhigh', 'max')
+_EFFORT_ORDER = ('low', 'medium', 'high', 'xhigh', 'max')
 
 
 class ProviderProfile:
@@ -62,10 +68,16 @@ class ProviderProfile:
             raise ValueError('Use https://api.meta.ai/v1 for the direct Meta Model API.')
         if parsed.hostname=='openrouter.ai' and self.base_url!='https://openrouter.ai/api/v1':
             raise ValueError('Use https://openrouter.ai/api/v1 for the OpenRouter API.')
+        if parsed.hostname=='api.anthropic.com' and self.base_url!=ANTHROPIC_URL:
+            raise ValueError('Use https://api.anthropic.com/v1 for the Claude API.')
         if api_mode not in API_MODES or reasoning_effort not in REASONING_EFFORTS:
             raise ValueError('Unknown API protocol or reasoning effort.')
-        if self.base_url not in RESPONSES_URLS and (api_mode == 'responses' or reasoning_effort):
+        if self.base_url not in RESPONSES_URLS and api_mode == 'responses':
             raise ValueError('Responses and configurable reasoning effort are available for direct OpenAI and xAI endpoints.')
+        if self.base_url not in EFFORT_URLS and reasoning_effort:
+            raise ValueError('Responses and configurable reasoning effort are available for direct OpenAI and xAI endpoints, and effort for the Claude API.')
+        if reasoning_effort == 'max' and self.base_url != ANTHROPIC_URL:
+            raise ValueError('Max effort is a Claude API setting. Choose Extra high or lower for this provider.')
         self.api_mode = api_mode
         self.reasoning_effort = reasoning_effort
 
@@ -80,6 +92,9 @@ class ProviderProfile:
 
     @property
     def is_meta(self):return self.base_url=='https://api.meta.ai/v1'
+
+    @property
+    def is_anthropic(self):return self.kind=='compatible' and self.base_url==ANTHROPIC_URL
 
     @property
     def uses_responses(self):
@@ -213,6 +228,8 @@ def api_key(profile):
         raise ValueError('Groq API key is missing. Enter one in API providers or set GROQ_API_KEY, then restart the app.')
     if profile.is_meta and not key:
         raise ValueError('Meta Model API key is missing. Enter one in API providers or set MODEL_API_KEY, then restart the app.')
+    if profile.is_anthropic and not key:
+        raise ValueError('Claude API key is missing. Enter one in API providers or set ANTHROPIC_API_KEY, then restart the app.')
     if profile.is_openrouter and not key:
         raise ValueError('OpenRouter API key is missing. Enter one in API providers or set OPENROUTER_API_KEY, then restart the app.')
     if not key and urlsplit(profile.base_url).hostname in PROVIDER_KEY_HOSTS.values():
@@ -263,7 +280,11 @@ def list_models(profile):
     base = profile.base_url.removesuffix('/chat/completions')
     if base == 'https://api.mistral.ai/openai/v1':
         base = 'https://api.mistral.ai/v1'
-    request=urllib.request.Request(base+'/models',headers=headers)
+    listing = base+'/models'
+    if profile.is_anthropic:
+        headers={'x-api-key':key,'anthropic-version':ANTHROPIC_VERSION}
+        listing += '?limit=1000'
+    request=urllib.request.Request(listing,headers=headers)
     try:
         with urllib.request.build_opener(NoRedirect).open(request,timeout=12) as response:
             raw=response.read(2_000_001)
@@ -280,6 +301,26 @@ def list_models(profile):
     except urllib.error.HTTPError as exc:raise RuntimeError(http_error(exc.code)) from None
 
 
+def request_effort(profile, options=None):
+    """The reasoning effort for one request, or '' to leave the provider's default.
+
+    A setting saved on the profile wins over the app's Effort level. The one
+    exception is a ceiling the app sets after a reply ran out of output while
+    reasoning: that request may only use less effort, never more.
+    """
+    if profile.base_url not in EFFORT_URLS:
+        return ''
+    options = options if isinstance(options, dict) else {}
+    hint = options.get('reasoning_effort')
+    ceiling = options.get('reasoning_ceiling')
+    effort = profile.reasoning_effort or (hint if hint in _EFFORT_ORDER else '')
+    if ceiling in _EFFORT_ORDER and (not effort or _EFFORT_ORDER.index(effort) > _EFFORT_ORDER.index(ceiling)):
+        effort = ceiling
+    if effort == 'max' and not profile.is_anthropic:
+        effort = 'xhigh'
+    return effort
+
+
 def configure_request(profile, request, options):
     """Keep compatible endpoints unchanged; use current first-party parameters."""
     validate_cost_policy(profile)
@@ -293,8 +334,9 @@ def configure_request(profile, request, options):
         request['max_completion_tokens']=profile.max_output_tokens
         request['store']=False
         request['stream_options']={'include_usage':True}
-        if profile.reasoning_effort:
-            request['reasoning_effort'] = profile.reasoning_effort
+        effort = request_effort(profile, options)
+        if effort:
+            request['reasoning_effort'] = effort
         # Leave sampling defaults alone: some reasoning models reject temperature.
     elif profile.is_groq:
         request['max_completion_tokens']=profile.max_output_tokens
@@ -302,8 +344,8 @@ def configure_request(profile, request, options):
     else:
         request['max_tokens']=profile.max_output_tokens
         request['temperature']=options.get('temperature',.1)
-        if profile.base_url == 'https://api.x.ai/v1' and profile.reasoning_effort:
-            request['reasoning_effort'] = profile.reasoning_effort
+        if profile.base_url == 'https://api.x.ai/v1' and request_effort(profile, options):
+            request['reasoning_effort'] = request_effort(profile, options)
         if urlsplit(profile.base_url).hostname == 'api.deepseek.com' and profile.model.startswith(('deepseek-flash','deepseek-v4-','deepseek-chat')):
             request['thinking'] = {'type': 'disabled'}
     return request

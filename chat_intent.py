@@ -11,7 +11,10 @@ from task_navigation import public_current_query, public_freshness_request, publ
 _PREFIX = re.compile(
     r"^(?:(?:hi|hello|hey|sir|talktoai|agent zero|please)[ ,!:.]+|"
     r"(?:can|could|would|will) you\s+|i (?:want|need|would like) you to\s+|"
-    r"i(?:'|’)d like you to\s+|(?:first|then|now|next)[ ,]+)+",
+    r"i(?:'|’)d like you to\s+|(?:first|then|now|next)[ ,]+|"
+    # "try search the web for ..." asks for the search. "try again" and "try it" are left alone.
+    r"try(?:\s+(?:to|and))?\s+(?=(?:search|searching|look|looking|browse|browsing|google|find|check|open|run|use|"
+    r"read|fix|install|download|build|make|create)\b))+",
     re.I,
 )
 _ADVICE = re.compile(
@@ -48,8 +51,9 @@ _SCREEN_ACTION = re.compile(
     re.I,
 )
 _WEB_LOOKUP = re.compile(
-    r"^(?:look up\s+\S|(?:search|browse)\s+(?:the\s+)?(?:web|internet)\b|"
-    r"(?:find|check|search)\b.{0,200}\b(?:online|github)\b)",
+    r"^(?:look(?:ing)? up\s+\S|(?:search(?:ing)?|brows(?:e|ing))\s+(?:the\s+)?(?:web|internet)\b|"
+    r"google\s+(?!(?:sheets?|docs?|drive|maps?|chrome|cloud|play|photos|calendar|meet|slides|earth|translate|pixel|workspace|accounts?|analytics|ads|gemini|home|assistant|search|forms?|keep|pay|wallet|tv|classroom|scholar|lens|one|colab|voice|chat|ai|studio)\b)\S|look(?:ing)?\s+(?:online|on the (?:web|internet))\b|"
+    r"(?:find|check|search(?:ing)?)\b.{0,200}\b(?:online|github)\b)",
     re.I,
 )
 _FOLLOWUP = re.compile(
@@ -82,8 +86,9 @@ _CREATIVE_CHOICE = re.compile(
     r"^(?:build|make|create|code)\s+(?:me\s+)?(?:something|soemthing)\s+"
     r"(?:impressive|of your (?:own )?cho(?:ice|osing)|to impress me|cool|interactive)\b", re.I)
 _PUBLIC_SEARCH = re.compile(
-    r'^(?:look up\s+|(?:search|browse)\s+(?:the )?(?:web|internet|online)\s+(?:(?:for|about)\s+)?|'
-    r'(?:search|check) online for\s+|search for\s+|fact[- ]check\s+|'
+    r'^(?:look(?:ing)? up\s+|(?:search(?:ing)?|brows(?:e|ing))\s+(?:the )?(?:web|internet|online)\s+(?:(?:for|about)\s+)?|'
+    r'(?:search|check) online for\s+|search(?:ing)? for\s+|fact[- ]check\s+|google\s+(?!(?:sheets?|docs?|drive|maps?|chrome|cloud|play|photos|calendar|meet|slides|earth|translate|pixel|workspace|accounts?|analytics|ads|gemini|home|assistant|search|forms?|keep|pay|wallet|tv|classroom|scholar|lens|one|colab|voice|chat|ai|studio)\b)(?:for\s+)?|'
+    r'look(?:ing)?\s+(?:online|on the (?:web|internet))\s+(?:for|at)\s+|'
     r'(?:find|cite) (?:some |official |primary )?sources (?:for|on|about)\s+)(.+?)\s*[?!.]?$', re.I)
 _PUBLIC_QUESTION = re.compile(r"^(?:what(?:['’]s|\s+(?:is|are|was|were|changed|happened|will))|"
                               r"who|when|which|where|how (?:much|many)|is|are|has|have|did)\b", re.I)

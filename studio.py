@@ -56,6 +56,8 @@ from project_templates import create_project_template
 from model_storage import clean_stale_partials
 
 from chat_intent import chat_requests_tools, chat_web_query, media_request, request_body
+from activity_bar import create_activity_bar
+from effort import LEVELS as EFFORT_LEVELS, PROFILES as EFFORT_PROFILES, DEFAULT_EFFORT, normalize_effort
 from chat_web import lookup_chat_web
 
 
@@ -245,6 +247,11 @@ class Studio(QMainWindow):
             'ollama_keep_alive': DEFAULT_KEEP_ALIVE,
             'access_mode': 'full_user',
             'pc_pilot': True,
+            'effort': DEFAULT_EFFORT,
+            'auto_install_tools': True,
+            'question_policy': 'continue',
+            'auto_tune': True,
+            'auto_open_results': True,
         }
         self.config_write_lock=threading.RLock()
         try:
@@ -464,6 +471,7 @@ class Studio(QMainWindow):
         self.control_banner=QLabel();self.control_banner.setTextFormat(Qt.PlainText);self.control_banner.setWordWrap(True)
         self.control_banner.setStyleSheet('background:#173a35;color:#d9fff1;border:1px solid #65bea5;border-radius:7px;padding:8px;')
         self.control_banner.hide();chat.addWidget(self.control_banner)
+        self.activity=create_activity_bar(self);chat.addWidget(self.activity)
         box = QFrame(); box.setObjectName('composer'); composer = QVBoxLayout(box)
         self.prompt = Composer(); self.prompt.setPlaceholderText(f'Ask {AGENT_NAME} to find your game and fix its menu…'); self.prompt.setFixedHeight(104); self.prompt.submitted.connect(self.send); self.prompt.filesDropped.connect(self.attach_files); composer.addWidget(self.prompt)
         attachment_row=QHBoxLayout()
@@ -496,6 +504,11 @@ class Studio(QMainWindow):
         self.step_budget=QComboBox()
         for steps in (16,32,64):self.step_budget.addItem(f'{steps} steps',steps)
         self.step_budget.setCurrentIndex(1);self.step_budget.setToolTip('Maximum model/tool cycles per code request. Stop or steer at any time. Larger budgets can use more time and provider tokens.');options.addWidget(self.step_budget)
+        self.effort_choice=QComboBox();self.effort_choice.setObjectName('effort');self.effort_choice.setAccessibleName('Effort')
+        for level in EFFORT_LEVELS:self.effort_choice.addItem('Effort: '+EFFORT_PROFILES[level].label,level)
+        self.effort_choice.setCurrentIndex(max(0,self.effort_choice.findData(normalize_effort(self.config.get('effort')) or DEFAULT_EFFORT)))
+        self.effort_choice.setToolTip('\n'.join(f'{EFFORT_PROFILES[level].label}: {EFFORT_PROFILES[level].summary}' for level in EFFORT_LEVELS))
+        self.effort_choice.currentIndexChanged.connect(self.save_effort);options.addWidget(self.effort_choice)
         self.keep_going=QCheckBox('Keep going');self.keep_going.setToolTip('Continue bounded coding passes until done or paused. Stop or steer at any time. More time uses more inference.');self.keep_going.toggled.connect(self.save_keep_going);options.addWidget(self.keep_going)
         self.work_duration=QComboBox();self.work_duration.setToolTip('Maximum elapsed time when Keep going is on; the agent also has step and pass limits.')
         for title,value in [('1 hour',60),('2 hours',120),('4 hours',240)]:self.work_duration.addItem(title,value)
@@ -1372,6 +1385,16 @@ class Studio(QMainWindow):
             except Exception as exc:self.bus.event.emit('result','Job cancellation failed: '+str(exc))
         threading.Thread(target=cancel,daemon=True).start()
 
+    def open_result(self,record):
+        """Open a finished result, such as a 3D viewer page, without a click. Only files inside the task project."""
+        try:
+            path=Path(record['artifact']).resolve(strict=True)
+            project=Path(self.task.get('project') or '').resolve(strict=True)
+        except (KeyError,TypeError,OSError,RuntimeError):
+            return
+        if path.is_file() and path.is_relative_to(project) and path.suffix.lower() in ('.html','.htm','.png','.jpg','.jpeg','.webp','.glb','.gltf'):
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+
     def open_artifact(self,item):
         record=item.data(Qt.UserRole+1) or {}
         if record.get('type')=='file':
@@ -1850,18 +1873,30 @@ class Studio(QMainWindow):
             inkling_profile = None
             model_performance = performance
             try:
+                if self.config.get('auto_tune',True) and preference not in ('provider','inkling'):
+                    import routing
+                    from auto_tune import server_environment
+                    try:routing.SERVER_ENVIRONMENT.update(server_environment(self._hardware(),os.environ))
+                    except (OSError,ValueError):pass
                 try:benchmarks=json.loads((HOME/'benchmark-results.json').read_text(encoding='utf-8'))
                 except (OSError,ValueError):benchmarks={}
                 if preference=='inkling':
                     weights = self._inkling_weights()
                     if weights is None:
                         raise ValueError('Inkling weights could not be found. Open Models and setup and choose Inkling again.')
+                    try:
+                        from auto_tune import memory_check
+                        warning=memory_check(Path(weights).stat().st_size,self._hardware(),label='Inkling 2 Mini')
+                    except (OSError,ValueError,TypeError):
+                        warning=''
+                    if warning:
+                        self.bus.event.emit('status',warning+' Trying anyway…')
                     url, key = self.inkling_runtime.start(weights, self.cancel,
                         lambda message, *_: self.bus.event.emit('status', message),
                         acceleration=self.inkling_acceleration())
                     hardware = self.inkling_runtime.status()
                     inkling_profile = ProviderProfile('Inkling 2 Mini', url, INKLING_MODEL, engine='llama.cpp',
-                        api_mode='chat_completions', cost_tier='self_hosted', max_output_tokens=1024)
+                        api_mode='chat_completions', cost_tier='self_hosted', max_output_tokens=3072)
                     store_api_key(inkling_profile, key)
                     set_active_provider(inkling_profile)
                     selected = {'route':'inkling', 'url':url, 'model':INKLING_MODEL,
@@ -1903,6 +1938,7 @@ class Studio(QMainWindow):
                         selected=choose_route(self.config,'local',benchmarks)
                 if self.cancel.is_set():return
                 self.bus.event.emit('route',selected)
+                model_performance=self._tuned_performance(selected,model_performance)
                 if conversation:
                     from agent_core import OllamaCapacityError
                     if web_query:
@@ -1969,6 +2005,10 @@ class Studio(QMainWindow):
     def save_keep_going(self,enabled):
         if self.task and not self.busy:
             self.task['keep_going']=bool(enabled);self.persist()
+
+    def save_effort(self):
+        self.config['effort']=self.effort_choice.currentData() or DEFAULT_EFFORT
+        self.write_config()
 
     def save_work_duration(self):
         if not self.busy:
@@ -2157,9 +2197,12 @@ class Studio(QMainWindow):
             def escape():
                 explicit_stop.set();cancel.set();self.bus.event.emit('control_cancel',token)
             self.global_escape=self.execution_kind!='conversation' and self.escape_cancel.arm(escape)
+            if getattr(self,'activity',None) is not None:self.activity.begin('Starting…')
         if not busy:
             self.control_cancel_token=None;self.escape_cancel.disarm();self.global_escape=False
             self.end_control_session()
+            if self.busy and getattr(self,'activity',None) is not None:
+                self.activity.finish('Stopped' if getattr(self,'cancel',None) is not None and self.cancel.is_set() else '')
             self.run_card.hide()
         self.busy=busy
         if not busy:self.refresh_route_labels()
@@ -2204,6 +2247,8 @@ class Studio(QMainWindow):
             self.control_overlay.show_stopping();self.control_banner.setText('TalkToAi is stopping…\nWaiting for the current action to finish safely.')
 
     def handle_event(self,kind,data):
+        if kind in ('tool','status','result') and self.busy and getattr(self,'activity',None) is not None:
+            self.activity.event_received(kind,data)
         if kind=='documents_ready':
             self.documents_ready(data)
             return
@@ -2269,6 +2314,10 @@ class Studio(QMainWindow):
         elif kind=='question_pending':
             self.task['pending_question'] = data['question']
             self.persist()
+        elif kind=='question_open':
+            # The agent asked and carried on. Any reply steers it; nothing waits for an answer.
+            self.status.setText('The agent noted a question and is carrying on with its best judgement. Reply any time to steer it.')
+            self.activity.event_received('status','Noted a question; carrying on')
         elif kind=='goal_checkpoint':
             run_summary=self.task.get('run_summary') or {}
             if data.get('state')=='paused' and run_summary.get('steps')==data.get('steps'):
@@ -2334,6 +2383,8 @@ class Studio(QMainWindow):
                 if existing is not None:existing.update(data)
                 else:artifacts.append(data)
                 self.refresh_artifacts();self.refresh_media_card();self.persist()
+                if data.get('auto_open') is True and existing is None and self.config.get('auto_open_results',True):
+                    self.open_result(data)
         elif kind=='skynet_report':
             self.task['skynet_report_path']=data['report_path']
             try:
@@ -2573,6 +2624,43 @@ class Studio(QMainWindow):
                 self.config['openzero_installed_once']=True
                 try:self.write_config()
                 except OSError:pass  # Still avoid a repeat download for this session.
+
+    def _hardware(self):
+        import hardware_probe
+        return hardware_probe.cached(STATE)
+
+    def _tuned_performance(self, selected, performance):
+        """Fit the context size and options to this computer, or to a hosted API's larger window."""
+        from auto_tune import api_context, plan
+        performance=dict(performance)
+        effort=performance.get('effort',DEFAULT_EFFORT)
+        if selected.get('route')=='provider':
+            profile=self.active_provider()
+            if profile is not None:
+                performance['num_ctx']=api_context(profile.base_url,performance.get('num_ctx',8192),effort=effort,
+                                                   self_hosted=profile.cost_tier=='self_hosted')
+            return performance
+        if (selected.get('route') not in ('local','local_large') or local_port(selected.get('url','')) is None
+                or not self.config.get('auto_tune',True)):
+            return performance
+        try:
+            from routing import installed_model_records
+            hardware=self._hardware()
+            record=next((item for item in installed_model_records(local_port(selected['url']))
+                         if matching_model([item['name']],selected['model'])),{})
+            size=record.get('size') if type(record.get('size')) is int else 0
+        except (ConnectionError,OSError,ValueError):
+            return performance
+        tuned=plan(hardware,model=selected['model'],model_bytes=size,configured_ctx=performance.get('num_ctx',8192),effort=effort)
+        options=dict(tuned.options)
+        if tuned.placement in ('cpu','split') and hardware.get('cpu_physical'):
+            options['num_thread']=hardware['cpu_physical']
+        performance['ollama_options']=options
+        if tuned.placement!='unknown':
+            if tuned.num_ctx!=performance.get('num_ctx'):
+                self.bus.event.emit('status',f'Auto-tune: {tuned.num_ctx//1024}K context for this computer. '+tuned.notes[-1])
+            performance['num_ctx']=tuned.num_ctx
+        return performance
 
     def _local_chat_performance(self, selected, performance):
         from runtime_diagnostics import resident_model, running_probe
@@ -2967,7 +3055,10 @@ Use an available local or server model, stop a task, or steer it into a smaller 
                 'ollama_keep_alive':normalize_keep_alive(self.config.get('ollama_keep_alive')),
                 'local_worker_limit':worker_limit(self.config.get('local_worker_limit')),
                 'show_thinking':bool(self.config.get('show_model_activity',False)),
-                'work_session_minutes':self.work_duration.currentData() or 120}
+                'work_session_minutes':self.work_duration.currentData() or 120,
+                'effort':normalize_effort(self.config.get('effort')) or DEFAULT_EFFORT,
+                'auto_install':self.config.get('auto_install_tools',True) is True,
+                'questions':'wait' if self.config.get('question_policy')=='wait' else 'continue'}
 
     def inkling_acceleration(self):
         mode = self.config.get('inkling_acceleration')
@@ -2993,6 +3084,21 @@ Use an available local or server model, stop a task, or steer it into a smaller 
         auto_model.setObjectName('auto_install_openzero')
         auto_model.setChecked(bool(self.config.get('auto_install_openzero',True)))
         form.addWidget(auto_model)
+        auto_tools=QCheckBox('Install missing tools automatically (Blender, C/C++ compiler, CMake, Git, Node.js, Python, FFmpeg…)')
+        auto_tools.setObjectName('auto_install_tools');auto_tools.setChecked(self.config.get('auto_install_tools',True) is True)
+        auto_tools.setToolTip('Uses winget on Windows, Homebrew on macOS and Flatpak, Snap or Homebrew on Linux, with fixed package names from a built-in list. Each install is shown in the activity bar and logged.')
+        form.addWidget(auto_tools)
+        carry_on=QCheckBox('Keep working when the agent has a question (it notes the question and uses its best judgement)')
+        carry_on.setObjectName('question_policy');carry_on.setChecked(self.config.get('question_policy','continue')!='wait')
+        carry_on.setToolTip('Reply at any time to steer the work, or press Stop. Turn this off to make the agent wait for each answer.')
+        form.addWidget(carry_on)
+        auto_tune=QCheckBox('Auto-tune local models for this computer (context size, processor threads, sampling)')
+        auto_tune.setObjectName('auto_tune');auto_tune.setChecked(self.config.get('auto_tune',True) is True)
+        auto_tune.setToolTip('Reads graphics memory, memory and processor cores once, then fits each local model. Applies to new requests. /tune shows the details.')
+        form.addWidget(auto_tune)
+        open_results=QCheckBox('Open finished results, such as a 3D scene viewer, automatically')
+        open_results.setObjectName('auto_open_results');open_results.setChecked(self.config.get('auto_open_results',True) is True)
+        form.addWidget(open_results)
         context_choice=QComboBox();context_choice.setObjectName('model_context_window')
         for title,value in [('8K tokens · default',8192),('16K tokens',16384),('32K tokens',32768)]:context_choice.addItem(title,value)
         context_choice.setCurrentIndex(context_choice.findData(self.model_performance()['num_ctx']))
@@ -3049,7 +3155,7 @@ Use an available local or server model, stop a task, or steer it into a smaller 
         policy=QComboBox();policy.addItem('Remote agent commands off','ask_remote');policy.addItem('Allow agent remote commands','auto_remote');policy.addItem('Plan / read-only default','plan')
         policy.setCurrentIndex(max(0,policy.findData(self.config.get('approval_policy','ask_remote'))))
         form.addWidget(QLabel('Permission default'));form.addWidget(policy)
-        access=QComboBox();access.addItem('Project files only','project');access.addItem('Desktop / signed-in user tools','full_user')
+        access=QComboBox();access.addItem('Project files only','project');access.addItem('Full access · desktop, files and tools as this user (default)','full_user')
         access.setCurrentIndex(max(0,access.findData(self.config.get('access_mode','full_user'))))
         access.setToolTip('Desktop mode allows the agent to list/read/write user-profile files and run PowerShell as this Windows account. Credential files remain excluded from file tools.')
         form.addWidget(QLabel('Workspace access'));form.addWidget(access)
@@ -3147,6 +3253,10 @@ Use an available local or server model, stop a task, or steer it into a smaller 
             self.config['local_worker_limit']=worker_choice.currentData()
             self.config['ollama_keep_alive']=keep_alive.currentData()
             self.config['auto_install_openzero']=auto_model.isChecked()
+            self.config['auto_install_tools']=auto_tools.isChecked()
+            self.config['question_policy']='continue' if carry_on.isChecked() else 'wait'
+            self.config['auto_tune']=auto_tune.isChecked()
+            self.config['auto_open_results']=open_results.isChecked()
             self.config['godot_executable']=godot_value
             self.config['unity_executable']=unity_value
             self.config['blender_executable']=blender_value
@@ -3284,6 +3394,10 @@ Use an available local or server model, stop a task, or steer it into a smaller 
 
         def work():
             try:
+                try:
+                    self.bus.event.emit('app_reply',self._tuning_report(route,config))
+                except (OSError,ValueError) as exc:
+                    self.bus.event.emit('status','Could not read this computer’s hardware: '+str(exc))
                 trial=measure_retention(config,route,cancel,
                                         lambda _,text:self.bus.event.emit('status',text))
                 trial,result=apply_retention(trial,self.preferences_manager,cancel)
@@ -3298,6 +3412,29 @@ Use an available local or server model, stop a task, or steer it into a smaller 
             finally:
                 self.bus.event.emit('finished',None)
         threading.Thread(target=work,daemon=True).start()
+
+    def _tuning_report(self,route,config):
+        """What auto-tune sees on this computer and what it chooses for the selected local model."""
+        from auto_tune import plan, suggest_models
+        from hardware_probe import describe
+        hardware=self._hardware()
+        lines=['This computer: '+describe(hardware)+'.']
+        model=config.get('local_large_model' if route=='local_large' else 'local_model','')
+        try:
+            from routing import installed_model_records
+            record=next((item for item in installed_model_records() if matching_model([item['name']],model)),{})
+        except (ConnectionError,OSError,ValueError):
+            record={}
+        size=record.get('size') if type(record.get('size')) is int else 0
+        if size:
+            performance=self.model_performance()
+            tuned=plan(hardware,model=model,model_bytes=size,configured_ctx=performance['num_ctx'],effort=performance['effort'])
+            lines.append(local_model_name(model)+': '+tuned.summary()
+                         +('' if self.config.get('auto_tune',True) else ' Auto-tune is off in Settings, so this is not applied.'))
+        fitting=[item['title'] for item in suggest_models(hardware)]
+        if fitting:
+            lines.append('Models from Models and setup that suit this computer: '+', '.join(fitting)+'.')
+        return '\n\n'.join(lines)
 
     def undo_local_tuning(self):
         if self.busy:return

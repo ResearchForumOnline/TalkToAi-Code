@@ -49,12 +49,20 @@ class _PageStructure(HTMLParser):
 
 def check_edited_files(paths):
     """Fallback for a small standalone deliverable with no project test command."""
+    from cpp_tools import ALL_SUFFIXES, syntax_check
     paths = list(dict.fromkeys(paths))
-    supported = {'.html', '.htm', '.py', '.svg', '.json'}
+    supported = {'.html', '.htm', '.py', '.svg', '.json'} | ALL_SUFFIXES
     if not paths or len(paths) > 16 or any(path.suffix.lower() not in supported for path in paths):
         return None
     results = []
     for path in paths:
+        if path.suffix.lower() in ALL_SUFFIXES:
+            # Compiled with -fsyntax-only by the installed compiler; nothing is built or run.
+            state, text = syntax_check(path)
+            if state == 'failed':
+                return 'Exit 1\nStandalone file check failed for ' + text
+            results.append(text if state == 'passed' else 'UNVERIFIED: ' + text)
+            continue
         try:
             with path.open('rb') as stream:
                 data = stream.read(500_001)
@@ -103,6 +111,12 @@ def detect_checks(root):
         return {'engine':'Rust','commands':['cargo test --offline'],'note':'Uses cached dependencies only.'}
     if list(root.glob('*.sln')) or list(root.glob('*.csproj')):
         return {'engine':'.NET','commands':['dotnet test --no-restore'],'note':'Uses already restored dependencies.'}
+    from cpp_tools import detect_native_checks
+    native=detect_native_checks(root)
+    python_tests=bool(list(root.glob('test*.py')) or ((root/'tests').is_dir() and list((root/'tests').glob('*.py'))))
+    # A build file names the project's own build. A tests folder alone does not make it a Python project.
+    if native and (native['engine'] in ('C / C++ (CMake)','C / C++ (Meson)') or not python_tests):
+        return native
     config=''
     for name in ('pyproject.toml','pytest.ini','setup.cfg'):
         path=root/name
@@ -112,4 +126,6 @@ def detect_checks(root):
     if list(root.glob('test*.py')) or (root/'tests').is_dir():
         folder='tests' if (root/'tests').is_dir() else '.'
         return {'engine':'Python / unittest','commands':[f'python -m unittest discover -s {folder} -v'],'note':'Zero discovered tests are reported as unverified.'}
+    if native:
+        return native
     return {'engine':'General','commands':[],'note':'No supported checks detected; inspect project documentation for the correct command.'}

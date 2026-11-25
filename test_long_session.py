@@ -28,7 +28,8 @@ class LongSessionTests(unittest.TestCase):
         # Production Ollama can produce no HTTP frame until all arguments are generated.
         for port,payload,expected in (
             (11434,{'tools':[{'type':'function'}],'options':{'num_predict':1536}},2904),
-            (11434,{'format':'json','options':{'num_predict':3072}},3600),
+            (11434,{'format':'json','options':{'num_predict':3072}},5208),
+            (11434,{'format':'json','options':{'num_predict':16384}},21600),
             (11435,{'tools':[{}]},600),
             (11434,{'options':{'num_predict':3072}},600)):
             with self.subTest(port=port,payload=payload):
@@ -39,6 +40,26 @@ class LongSessionTests(unittest.TestCase):
                 with patch.object(core.http.client,'HTTPConnection',return_value=connection):
                     self.assertEqual(list(core._http_stream(f'http://127.0.0.1:{port}',payload,threading.Event())),[{'done':True}])
                 connection.sock.settimeout.assert_called_once_with(expected)
+
+    def test_wait_for_a_buffered_reply_follows_the_measured_speed_of_that_model(self):
+        url = 'http://127.0.0.1:11434'
+        payload = {'model': 'slow-fixture', 'format': 'json', 'options': {'num_predict': 8192}}
+        with patch.dict(core.MODEL_SPEED, {(url, 'slow-fixture'): 4.0}, clear=True):
+            # Four tokens a second: 8,192 tokens take 34 minutes; allow twice that plus the cold start.
+            self.assertEqual(core.buffered_wait_seconds(url, payload), 600 + 4096)
+            self.assertEqual(core.buffered_wait_seconds(url, dict(payload, model='unmeasured')), 600 + int(1.5 * 8192))
+        with patch.dict(core.MODEL_SPEED, {(url, 'slow-fixture'): 80.0}, clear=True):
+            self.assertEqual(core.buffered_wait_seconds(url, payload), 600 + int(8192 * 0.025))
+
+    def test_local_speed_is_recorded_from_the_final_frame(self):
+        connection = Mock()
+        connection.getresponse.return_value.status = 200
+        frame = json.dumps({'done': True, 'eval_count': 100, 'eval_duration': 20_000_000_000}).encode() + b'\n'
+        connection.getresponse.return_value.readline.side_effect = [frame, b'']
+        with patch.object(core.http.client, 'HTTPConnection', return_value=connection), \
+                patch.dict(core.MODEL_SPEED, {}, clear=True):
+            list(core._http_stream('http://127.0.0.1:11434', {'model': 'm'}, threading.Event()))
+            self.assertEqual(core.MODEL_SPEED[('http://127.0.0.1:11434', 'm')], 5.0)
 
     def test_unsupported_ollama_thinking_retries_without_it(self):
         received = []

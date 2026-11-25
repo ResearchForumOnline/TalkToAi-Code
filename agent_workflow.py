@@ -2,7 +2,11 @@
 import json
 import math
 import re
+import ntpath
 from pathlib import PureWindowsPath
+
+# pathlib's is_reserved() is removed in Python 3.15; ntpath.isreserved() exists from 3.13.
+_reserved_name = getattr(ntpath, 'isreserved', None) or (lambda part: PureWindowsPath(part).is_reserved())
 
 
 NEW_FILE_FORMAT = {
@@ -41,12 +45,16 @@ def new_file_call(reply):
     data = json.loads(reply, object_pairs_hook=unique_fields)
     if not isinstance(data, dict) or set(data) != {'path', 'content'}:
         raise ValueError('Return one JSON object with path and content.')
-    path, content = data['path'], data['content']
+    return checked_file_call(data['path'], data['content'])
+
+
+def checked_file_call(path, content):
+    """Validate a new project file and express it as an ordinary checked write."""
     if not isinstance(path, str) or not path or len(path) > 240:
         raise ValueError('Provide a short project-relative file path.')
     path = path.replace('\\', '/')
     parts = path.split('/')
-    if (any(not part or part.startswith('.') or part.endswith((' ', '.')) or PureWindowsPath(part).is_reserved()
+    if (any(not part or part.startswith('.') or part.endswith((' ', '.')) or _reserved_name(part)
             for part in parts) or re.search(r'[<>:"|?*\x00-\x1f]', path)):
         raise ValueError('Use a portable project-relative filename with no hidden or parent folders.')
     if not isinstance(content, str) or not content.strip() or len(content.encode('utf-8')) > 500_000:

@@ -281,11 +281,18 @@ class AgentAutomationTests(unittest.TestCase):
         self.assertTrue(any(k == 'artifact' and v['title'] == 'winter.blend' for k, v in events))
         self.assertEqual([v['state'] for k, v in events if k == 'goal_checkpoint'][-1], 'completed')
 
-    def test_direct_3d_request_reports_missing_blender_without_prompting_the_model(self):
-        with tempfile.TemporaryDirectory() as root, patch('engine_discovery.find_blender', return_value=None):
+    def test_direct_3d_request_without_blender_still_delivers_a_scene(self):
+        # Before 9.1.0 this request ended with "Blender setup needed" and no result.
+        with tempfile.TemporaryDirectory() as root, patch('engine_discovery.find_blender', return_value=None), \
+                patch('engine_discovery.discover_blender', return_value=None):
             payloads, events = self.run_sequence(root, [], text='Create a 3D winter scene')
+            produced = sorted(path.suffix for path in Path(root).iterdir() if path.is_file())
         self.assertFalse(payloads)
-        self.assertIn(('status', 'Blender setup needed'), events)
+        self.assertEqual(produced, ['.glb', '.html', '.png'])
+        self.assertIn(('status', 'Ready'), events)
+        reply = [v['content'] for k, v in events if k == 'message'][-1]
+        self.assertIn('Blender was not found on this computer', reply)
+        self.assertIn('no model call', reply)
 
     def test_prose_only_creation_recovers_without_running_generated_python(self):
         contents = "raise RuntimeError('must not execute the submitted code')\n"

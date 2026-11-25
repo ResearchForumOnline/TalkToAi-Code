@@ -82,5 +82,30 @@ class ChatIntentTests(unittest.TestCase):
                 self.assertIsNone(chat_web_query(text))
 
 
+
+class TrySearchTests(unittest.TestCase):
+    """"try search the web for nvidia info" once fell through to a reply that said it had no web access."""
+
+    def test_try_before_an_action_is_a_request_for_the_action(self):
+        from chat_intent import chat_requests_tools, chat_web_query, request_body, requests_tool_continuation
+        for text in ('try search the web for nvidia info', 'try to search the web for nvidia info',
+                     'can you try search the web for nvidia info', 'try searching the web for nvidia info'):
+            with self.subTest(text=text):
+                self.assertTrue(chat_requests_tools(text))
+                self.assertEqual(chat_web_query(text), 'nvidia info')
+        self.assertEqual(request_body('please try and look up nvidia news'), 'look up nvidia news')
+        self.assertEqual(chat_web_query('google nvidia info'), 'nvidia info')
+        self.assertEqual(chat_web_query('look online for nvidia earnings'), 'nvidia earnings')
+        for text in ('try again', 'try harder', 'sir try again'):
+            with self.subTest(text=text):
+                self.assertTrue(requests_tool_continuation(text))
+                self.assertFalse(chat_requests_tools(text))
+        for text in ('try it', 'try this recipe idea', 'try to explain recursion', 'google sheets formula help',
+                     'how do i google something'):
+            with self.subTest(text=text):
+                self.assertFalse(chat_requests_tools(text))
+                self.assertIsNone(chat_web_query(text))
+
+
 if __name__ == '__main__':
     unittest.main()

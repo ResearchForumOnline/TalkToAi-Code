@@ -63,8 +63,9 @@ def _response_request(profile, messages, payload):
     if profile.model.startswith(('gpt-5', 'gpt-6', 'o1', 'o3', 'o4')):
         request['include'] = ['reasoning.encrypted_content']
     reasoning = {}
-    if profile.reasoning_effort:
-        reasoning['effort'] = profile.reasoning_effort
+    effort = providers.request_effort(profile, payload.get('options'))
+    if effort:
+        reasoning['effort'] = effort
     if payload.get('think') and 'include' in request:
         reasoning['summary'] = 'auto'
     if reasoning:
@@ -112,6 +113,7 @@ class StreamResult:
         self.calls = {}
         self.text = []
         self.replay = None
+        self.cut_off = None
 
     def chat_events(self, data, show_reasoning):
         usage = data.get('usage') or (data.get('x_groq') or {}).get('usage')
@@ -188,7 +190,9 @@ class StreamResult:
                 replay.append(item)
             elif kind == 'reasoning' and item.get('encrypted_content'):
                 replay.append(item)
-            elif kind == 'function_call' and self.reason != 'length':
+            elif kind == 'function_call' and self.reason == 'length':
+                self.cut_off = self.cut_off or cut_off_tool(item.get('name'), item.get('arguments'))
+            elif kind == 'function_call':
                 call_id = item.get('call_id')
                 if item.get('status') not in (None, 'completed') or not isinstance(call_id, str) or not call_id or call_id in ids:
                     raise RuntimeError('OpenAI returned an invalid or incomplete function call.')
@@ -214,6 +218,22 @@ class StreamResult:
         if isinstance(usage, dict):
             self.usage = dict(usage, prompt_tokens=usage.get('input_tokens'),
                               completion_tokens=usage.get('output_tokens'))
+
+
+def cut_off_tool(name, arguments):
+    """Name the tool call a model was writing when it ran out of output.
+
+    The agent uses this to ask for the file another way. Only the tool name and
+    the file path are kept; the partial contents are discarded.
+    """
+    if not isinstance(name, str) or not name:
+        return None
+    path = re.search(r'"path"\s*:\s*"((?:[^"\\\n]|\\.){1,240})"', arguments if isinstance(arguments, str) else '')
+    try:
+        path = json.loads('"' + path.group(1) + '"') if path else ''
+    except ValueError:
+        path = ''
+    return {'name': name[:80], 'path': path if isinstance(path, str) else ''}
 
 
 _PARAMETERS = ('temperature', 'stream_options', 'parallel_tool_calls', 'max_tokens', 'max_completion_tokens',
@@ -285,6 +305,10 @@ def stream_provider(profile, payload, cancel, convert_messages):
     if cancel.is_set():
         raise InterruptedError('Task stopped.')
     key = providers.api_key(profile)
+    if profile.is_anthropic:
+        from anthropic_stream import stream_anthropic
+        yield from stream_anthropic(profile, payload, cancel, convert_messages, key)
+        return
     scope = response_scope(profile, key) if profile.uses_responses else None
     messages = convert_messages(payload.get('messages', []), openai_scope=scope)
     if profile.uses_responses:
@@ -335,7 +359,9 @@ def _stream_request(profile, request, show_reasoning, cancel, key, scope):
         conn.connect()
         sock = conn.sock
         managed_llama = profile.engine == 'llama.cpp' and parsed.hostname == '127.0.0.1'
-        sock.settimeout(900 if managed_llama or parsed.hostname == 'api.x.ai' else 300 if profile.is_openai else 180)
+        # Silence limit between events, not a limit on the whole reply. Reasoning
+        # models can think for minutes before the first event arrives.
+        sock.settimeout(900 if managed_llama or parsed.hostname == 'api.x.ai' or profile.is_openai else 300)
 
         def watch():
             while not done.wait(.1):
@@ -394,6 +420,11 @@ def _stream_request(profile, request, show_reasoning, cancel, key, scope):
             final['tool_calls'] = calls
         event = {'message': final, 'done': True, 'done_reason': result.reason, 'eval_count': 0, 'eval_duration': 1,
                  'api_usage': result.usage, 'api_provider': profile.label, 'api_model': profile.model}
+        if result.reason == 'length' and result.calls and not result.cut_off:
+            first = result.calls[min(result.calls)]['function']
+            result.cut_off = cut_off_tool(first['name'], first['arguments'])
+        if result.cut_off:
+            event['_cut_off_tool'] = result.cut_off
         if result.replay:
             event['_openai_response'] = result.replay
         yield event

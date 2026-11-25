@@ -1,0 +1,125 @@
+name: Release apps
+# Builds the Windows installer and Microsoft Store package, the Linux app and the macOS app
+# on their own platforms after the test suite passes. Packages are unsigned: the Store signs
+# MSIX submissions itself; sign the Windows installer and notarize the macOS app with your own
+# certificates before publishing them (see docs/RELEASE-9.1.0.md).
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+permissions:
+  contents: read
+jobs:
+  tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Qt system libraries
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libegl1 libgl1 libxcb-cursor0 libxkbcommon-x11-0 libxcb-xinerama0 libpulse0 build-essential cmake
+      - run: python -m pip install -r requirements-runtime.txt
+      - name: Unit tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: >-
+          python -m unittest
+          test_free_provider_policy test_api_router test_api_integration test_inventory_providers test_attachment_ingest test_conversation_export test_offline_assistant test_offline_ui
+          test_project_templates test_work_packet test_tool_chains test_first_turn_tools test_remote_intent test_task_navigation test_project_context test_context_window
+          test_computer_route test_project_target test_skynet_mode test_candidate_apply test_app_preferences test_app_capabilities test_routing_evaluation test_agent_workflow
+          test_progress_guard test_engine_discovery test_benchmark_models test_keep_going test_long_session test_reasoning_stream test_research_journal test_project_playbooks
+          test_project_workbench test_workspace_change_evidence test_runtime_diagnostics test_task_goals test_tool_protocol test_control_cancel test_workspace_ui test_source_discovery
+          test_ethics_policy test_activity_bar test_anthropic_provider test_auto_tune test_file_draft test_native_tools test_provider_effort test_scene_kit
+          test_scene_pipeline test_conversation test_chat_ui test_model_storage test_agent_zero test_asset_library test_mcp_plugins test_model_library
+          test_model_library_dialog test_model_routing test_runtime_setup test_inkling_models test_inkling_runtime test_inkling_cuda test_inkling_ui test_openai_provider
+          test_document_filing test_project_python test_project_checks test_chat_web test_local_tuning test_project_workers test_subagents test_chat_intent
+          test_agent_focus test_agent_focus_ui test_media_generation test_voice_transcription test_voice_ui
+
+  windows:
+    needs: tests
+    runs-on: windows-2025
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r requirements-runtime.txt pyinstaller
+      - name: Build the Windows payload
+        shell: pwsh
+        run: |
+          $version = python -c "from updates import VERSION; print(VERSION)"
+          ./store/build-payload.ps1 -BuildName $version
+      - name: Build the Microsoft Store package
+        shell: pwsh
+        run: |
+          # Store versions: 9.0.x was 1.9.x.0, so 9.1.0 is 1.10.0.0. Update this for a new major version.
+          $version = python -c "from updates import VERSION; a,b,c=VERSION.split('.'); print(f'1.{9+int(b)}.{c}.0' if a=='9' else '')"
+          if (-not $version) { throw 'Update the Store version mapping for this major version.' }
+          ./store/build-msix.ps1 -Version $version
+      - name: Build the Windows installer
+        shell: pwsh
+        run: |
+          choco install innosetup --no-progress -y
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" TalkToAi-Code.iss
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TalkToAi-Code-Windows
+          path: |
+            dist-store/*.msix
+            dist-installer/*.exe
+          if-no-files-found: error
+
+  linux:
+    needs: tests
+    runs-on: ubuntu-22.04   # the oldest supported glibc runs on the most distributions
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install build libraries and appimagetool
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libegl1 libgl1 libxcb-cursor0 libxkbcommon-x11-0 libxcb-xinerama0 libpulse0 libfuse2 file
+          curl -fsSL -o appimagetool https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool && sudo mv appimagetool /usr/local/bin/appimagetool
+      - run: python -m pip install -r requirements-runtime.txt pyinstaller
+      - run: python scripts/build-desktop-app.py linux dist-desktop
+      - name: Start the built app once
+        env:
+          QT_QPA_PLATFORM: offscreen
+          TALKTOAI_CODE_HOME: ${{ runner.temp }}/app-home
+        run: |
+          mkdir -p "$TALKTOAI_CODE_HOME"
+          tar -xzf dist-desktop/*.tar.gz -C "$RUNNER_TEMP"
+          "$RUNNER_TEMP"/TalkToAi-Code-*-Linux/TalkToAiCode/TalkToAiCode --preview
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TalkToAi-Code-Linux
+          path: |
+            dist-desktop/*.tar.gz
+            dist-desktop/*.AppImage
+          if-no-files-found: error
+
+  macos:
+    needs: tests
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r requirements-runtime.txt pyinstaller
+      - run: python scripts/build-desktop-app.py macos dist-desktop
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TalkToAi-Code-macOS
+          path: dist-desktop/*.dmg
+          if-no-files-found: error
