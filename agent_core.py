@@ -2712,7 +2712,12 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
                     except ValueError:
                         requested={t['function']['name'] for t in catalog.packs.get(group,[])}
                         candidate=[t for t in candidate if t['function']['name'] in essential_tools|requested]
-                        context_budget(num_ctx,messages[0],candidate,output_tokens)
+                        try:
+                            context_budget(num_ctx,messages[0],candidate,output_tokens)
+                        except ValueError:
+                            reduced_output = min(output_tokens, 1536)
+                            context_budget(num_ctx,messages[0],candidate,reduced_output)
+                            output_tokens = base_output = reduced_output
                         result+=' Other optional tool sets were unloaded to preserve model context; enable them again when needed.'
                     active_tools[:]=candidate
                 elif name=='update_task_goal':

@@ -91,7 +91,7 @@ class ClaudeProviderTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
-        self.env = patch.dict(os.environ, {'LOCALAPPDATA': str(self.root)}, clear=True)
+        self.env = patch.dict(os.environ, {'LOCALAPPDATA': str(self.root), 'USERPROFILE': str(self.root)}, clear=True)
         self.env.start()
         self.keys = patch.object(providers, '_SESSION_KEYS', {})
         self.keys.start()

@@ -32,6 +32,7 @@ class AgentFocusUITests(unittest.TestCase):
         for name in ('EscapeCancel', 'ensure_local_runtime', 'ensure_local_model', 'ensure_amd_tunnel'):
             self.stack.enter_context(patch.object(studio, name))
         self.stack.enter_context(patch('runtime_diagnostics.running_probe', return_value={'state':'reachable','models':[]}))
+        self.stack.enter_context(patch.object(studio.Studio, '_hardware', return_value={}))
         self.route = self.stack.enter_context(patch.object(studio, 'choose_route', return_value={
             'route':'local', 'url':'http://127.0.0.1:11434', 'model':'small', 'reason':'fixture'}))
         self.chat = self.stack.enter_context(patch.object(studio, 'run_conversation', side_effect=self.reply))

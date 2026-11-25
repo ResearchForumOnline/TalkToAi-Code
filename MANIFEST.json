@@ -61,7 +61,7 @@
   },
   {
     "path": "agent_core.py",
-    "sha256": "1dc28e97d3e67012e380272a6654a8716d1e9e5f604d100bb3922652e974efb4"
+    "sha256": "1349c78015f8726e14822aa885a86bf889d5a7d1d414b946c5e7d32cc8599212"
   },
   {
     "path": "agent_focus.py",
@@ -917,7 +917,7 @@
   },
   {
     "path": "test_agent_focus_ui.py",
-    "sha256": "9933dc1a16a2d7c2e40410262631308df47fd5ef69566495a3d8b2a066344210"
+    "sha256": "ed53d8c86d5fa57fcc8d3f4d009fe0405430df2fa03896a78bc2f67eae1c3b5f"
   },
   {
     "path": "test_agent_workflow.py",
@@ -929,7 +929,7 @@
   },
   {
     "path": "test_anthropic_provider.py",
-    "sha256": "cb0afac0a04ed3da53a996d7d13798487a011cf059a8eb57e136b10bf1173a56"
+    "sha256": "762ad14d1c390a1c5757e8698b07abc1d6d502218d875c9441e39361c2dddefc"
   },
   {
     "path": "test_api_integration.py",
@@ -1097,7 +1097,7 @@
   },
   {
     "path": "test_native_tools.py",
-    "sha256": "e875ba8768ac5e102539377928f06025036e47ecb5dc7fd8a42bb9c4798ff6f3"
+    "sha256": "968565377a8c89edb3ef3a5584c98fe97e7ff87e3c32ebe6ef067e73d2ba277f"
   },
   {
     "path": "test_offline_assistant.py",

@@ -78,7 +78,8 @@ class NativeToolTests(unittest.TestCase):
             self.assertTrue(Path(root, 'build', 'hello').is_file() or Path(root, 'build', 'hello.exe').is_file())
             failed = tools.execute('build_native', {'path': 'bad.cpp'})
             self.assertIn('Exit 1', failed)
-            self.assertIn("'x' was not declared", failed.replace('‘', "'").replace('’', "'"))
+            self.assertRegex(failed.replace('‘', "'").replace('’', "'"),
+                             r"'x' was not declared|undeclared identifier 'x'")
             with self.assertRaisesRegex(ValueError, r'existing project C or C\+\+ source'):
                 tools.execute('build_native', {'path': 'absent.c'})
             with self.assertRaises(ValueError):
@@ -87,7 +88,8 @@ class NativeToolTests(unittest.TestCase):
     def test_run_script_runs_python_and_shell_then_removes_the_script(self):
         with tempfile.TemporaryDirectory() as root:
             tools = self.tools(root)
-            self.assertEqual(tools.execute('run_script', {'language': 'python', 'code': 'print(6 * 7)'}), 'Exit 0\n42\n')
+            result = tools.execute('run_script', {'language': 'python', 'code': 'print(6 * 7)'})
+            self.assertEqual(result.splitlines(), ['Exit 0', '42'])
             if sys.platform != 'win32':
                 self.assertTrue(tools.execute('run_script', {'language': 'bash', 'code': 'echo $((2 + 3))'}).startswith('Exit 0\n5'))
             self.assertEqual(list(Path(root, '.talktoai-code', 'scripts').iterdir()), [])
