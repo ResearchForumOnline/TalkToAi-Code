@@ -105,6 +105,62 @@ class WorkflowHelperTests(unittest.TestCase):
 
 
 class AgentAutomationTests(unittest.TestCase):
+    @unittest.skipUnless(sys.platform == 'win32', 'Windows job ownership')
+    def test_windows_job_owns_fast_command_before_its_first_instruction(self):
+        import win32event
+        import win32job
+
+        is_owned = win32job.IsProcessInJob
+        with tempfile.TemporaryDirectory(prefix='job with spaces ') as root:
+            marker = Path(root, 'ran.txt')
+            jobs = core.ProcessJobs(root)
+            def check_while_suspended(process, owner):
+                self.assertTrue(is_owned(process, owner))
+                self.assertEqual(win32event.WaitForSingleObject(process, 350), win32event.WAIT_TIMEOUT)
+                self.assertFalse(marker.exists())
+                return True
+            try:
+                with patch.object(win32job, 'IsProcessInJob', side_effect=check_while_suspended) as checked:
+                    script = "from pathlib import Path; import sys; Path('ran.txt').touch(); print(sys.argv[1])"
+                    literal = 'quoted "value" & a space'
+                    result = jobs.start(sys.executable, ['-c', script, literal])
+                checked.assert_called_once()
+                final = jobs.status(result['id'], wait_seconds=5)
+                self.assertEqual((final['state'], final['exit_code']), ('completed', 0))
+                self.assertEqual(final['output'].strip(), literal)
+                self.assertTrue(marker.is_file())
+            finally:
+                jobs.close()
+
+    @unittest.skipUnless(sys.platform == 'win32', 'Windows job ownership')
+    def test_windows_job_rejection_terminates_child_without_running_user_code(self):
+        import win32api
+        import win32con
+        import win32event
+        import win32job
+        import win32process
+
+        with tempfile.TemporaryDirectory() as root:
+            jobs = core.ProcessJobs(root)
+            handles = []
+            def reject(process, owner):
+                current = win32api.GetCurrentProcess()
+                handles.append(win32api.DuplicateHandle(current, process, current, 0, False,
+                                                        win32con.DUPLICATE_SAME_ACCESS))
+                return False
+            try:
+                with patch.object(win32job, 'IsProcessInJob', side_effect=reject), patch.object(win32process, 'ResumeThread') as resume:
+                    with self.assertRaisesRegex(RuntimeError, 'ownership'):
+                        jobs.start(sys.executable, ['-c', "from pathlib import Path; Path('ran.txt').touch()"])
+                resume.assert_not_called()
+                self.assertEqual(win32event.WaitForSingleObject(handles[0], 0), win32event.WAIT_OBJECT_0)
+                self.assertFalse(Path(root, 'ran.txt').exists())
+                self.assertFalse(jobs.jobs)
+            finally:
+                for handle in handles:
+                    handle.Close()
+                jobs.close()
+
     def test_jobs_and_outputs_can_be_discovered_and_executed_without_keywords(self):
         events=[];count=[0]
         def stream(url,payload,cancel):

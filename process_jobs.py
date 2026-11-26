@@ -15,6 +15,122 @@ import uuid
 from project_python import command_environment
 
 
+if os.name == 'nt':
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+    import pywintypes
+    import win32event
+    import win32job
+    import win32process
+
+    class _StartupInfoEx(ctypes.Structure):
+        _fields_ = [
+            ('cb', wintypes.DWORD), ('lpReserved', wintypes.LPWSTR), ('lpDesktop', wintypes.LPWSTR),
+            ('lpTitle', wintypes.LPWSTR), ('dwX', wintypes.DWORD), ('dwY', wintypes.DWORD),
+            ('dwXSize', wintypes.DWORD), ('dwYSize', wintypes.DWORD), ('dwXCountChars', wintypes.DWORD),
+            ('dwYCountChars', wintypes.DWORD), ('dwFillAttribute', wintypes.DWORD), ('dwFlags', wintypes.DWORD),
+            ('wShowWindow', wintypes.WORD), ('cbReserved2', wintypes.WORD), ('lpReserved2', wintypes.LPVOID),
+            ('hStdInput', wintypes.HANDLE), ('hStdOutput', wintypes.HANDLE), ('hStdError', wintypes.HANDLE),
+            ('lpAttributeList', wintypes.LPVOID)]
+
+    class _ProcessInformation(ctypes.Structure):
+        _fields_ = [('hProcess', wintypes.HANDLE), ('hThread', wintypes.HANDLE),
+                    ('dwProcessId', wintypes.DWORD), ('dwThreadId', wintypes.DWORD)]
+
+    _kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    _kernel.InitializeProcThreadAttributeList.argtypes = [
+        wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD, ctypes.POINTER(ctypes.c_size_t)]
+    _kernel.UpdateProcThreadAttribute.argtypes = [
+        wintypes.LPVOID, wintypes.DWORD, ctypes.c_size_t, wintypes.LPVOID, ctypes.c_size_t,
+        wintypes.LPVOID, wintypes.LPVOID]
+    _kernel.DeleteProcThreadAttributeList.argtypes = [wintypes.LPVOID]
+    _kernel.DeleteProcThreadAttributeList.restype = None
+    _kernel.CreateProcessW.argtypes = [
+        wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.LPVOID, wintypes.LPVOID, wintypes.BOOL,
+        wintypes.DWORD, wintypes.LPVOID, wintypes.LPCWSTR,
+        ctypes.POINTER(_StartupInfoEx), ctypes.POINTER(_ProcessInformation)]
+
+    class _WindowsJobProcess:
+        def __init__(self, handle, stdout):
+            self.handle = handle
+            self.stdout = stdout
+            self.returncode = None
+
+        def poll(self):
+            if self.returncode is None and win32event.WaitForSingleObject(self.handle, 0) == win32event.WAIT_OBJECT_0:
+                self.returncode = win32process.GetExitCodeProcess(self.handle)
+            return self.returncode
+
+    def _create_windows_child(argv, cwd, environment, owner, stdin, writer):
+        # STARTUPINFOEX attaches the job during CreateProcessW. Its explicit handle
+        # list prevents concurrent launches from inheriting one another's pipes.
+        size = ctypes.c_size_t()
+        _kernel.InitializeProcThreadAttributeList(None, 2, 0, ctypes.byref(size))
+        if not size.value:
+            raise ctypes.WinError(ctypes.get_last_error())
+        attributes = ctypes.create_string_buffer(size.value)
+        if not _kernel.InitializeProcThreadAttributeList(attributes, 2, 0, ctypes.byref(size)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            os.set_inheritable(stdin.fileno(), True)
+            os.set_inheritable(writer.fileno(), True)
+            handles = (wintypes.HANDLE * 2)(msvcrt.get_osfhandle(stdin.fileno()), msvcrt.get_osfhandle(writer.fileno()))
+            jobs = (wintypes.HANDLE * 1)(int(owner))
+            # PROC_THREAD_ATTRIBUTE_HANDLE_LIST and PROC_THREAD_ATTRIBUTE_JOB_LIST from winbase.h.
+            for attribute, values in ((0x20002, handles), (0x2000D, jobs)):
+                if not _kernel.UpdateProcThreadAttribute(attributes, 0, attribute, values, ctypes.sizeof(values), None, None):
+                    raise ctypes.WinError(ctypes.get_last_error())
+            startup = _StartupInfoEx(cb=ctypes.sizeof(_StartupInfoEx), dwFlags=subprocess.STARTF_USESTDHANDLES,
+                                     hStdInput=handles[0], hStdOutput=handles[1], hStdError=handles[1],
+                                     lpAttributeList=ctypes.addressof(attributes))
+            info = _ProcessInformation()
+            command = ctypes.create_unicode_buffer(subprocess.list2cmdline(argv))
+            entries = sorted(environment.items(), key=lambda item: item[0].upper())
+            env_block = ctypes.create_unicode_buffer('\0'.join(f'{key}={value}' for key, value in entries) + '\0')
+            flags = (subprocess.CREATE_NO_WINDOW | win32process.CREATE_SUSPENDED |
+                     win32process.CREATE_UNICODE_ENVIRONMENT | 0x00080000)  # EXTENDED_STARTUPINFO_PRESENT
+            if not _kernel.CreateProcessW(None, command, None, None, True, flags, env_block,
+                                          str(cwd), ctypes.byref(startup), ctypes.byref(info)):
+                raise ctypes.WinError(ctypes.get_last_error())
+            return pywintypes.HANDLE(info.hProcess), pywintypes.HANDLE(info.hThread)
+        finally:
+            _kernel.DeleteProcThreadAttributeList(attributes)
+
+    def _start_windows_job(argv, cwd, environment):
+        owner = win32job.CreateJobObject(None, '')
+        try:
+            limits = win32job.QueryInformationJobObject(owner, win32job.JobObjectExtendedLimitInformation)
+            limits['BasicLimitInformation']['LimitFlags'] |= win32job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+            win32job.SetInformationJobObject(owner, win32job.JobObjectExtendedLimitInformation, limits)
+            reader_fd, writer_fd = os.pipe()
+            reader = os.fdopen(reader_fd, 'rb')
+            try:
+                with os.fdopen(writer_fd, 'wb') as writer, open(os.devnull, 'rb') as stdin:
+                    process, thread = _create_windows_child(argv, cwd, environment, owner, stdin, writer)
+                try:
+                    if not win32job.IsProcessInJob(process, owner):
+                        raise RuntimeError('Windows could not verify ownership of the suspended process.')
+                    if win32process.ResumeThread(thread) != 1:
+                        raise RuntimeError('Windows could not resume the owned process.')
+                    return _WindowsJobProcess(process, reader), owner
+                except BaseException:
+                    try:
+                        win32process.TerminateProcess(process, 1)
+                        win32event.WaitForSingleObject(process, 10000)
+                    finally:
+                        process.Close()
+                    raise
+                finally:
+                    thread.Close()
+            except BaseException:
+                reader.close()
+                raise
+        except BaseException:
+            owner.Close()
+            raise
+
+
 class ProcessJobs:
     RETAIN = 64000
     OUTPUT_LIMIT = 4 * 1024 * 1024
@@ -52,24 +168,12 @@ class ProcessJobs:
             python_names = ('python', 'python3', 'python.exe', 'python3.exe') if os.name == 'nt' else ('python', 'python3')
             name = executable.casefold() if os.name == 'nt' else executable
             program = str(interpreter) if interpreter and name in python_names else executable
-            process = subprocess.Popen([program, *args], cwd=directory, env=environment, stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0,
-                start_new_session=os.name != 'nt')
-            owner = None
             if os.name == 'nt':
-                import win32job
-                try:
-                    owner = win32job.CreateJobObject(None, '')
-                    limits = win32job.QueryInformationJobObject(owner, win32job.JobObjectExtendedLimitInformation)
-                    limits['BasicLimitInformation']['LimitFlags'] |= win32job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-                    win32job.SetInformationJobObject(owner, win32job.JobObjectExtendedLimitInformation, limits)
-                    win32job.AssignProcessToJobObject(owner, int(process._handle))
-                except Exception:
-                    if owner: owner.Close()
-                    if process.poll() is None: process.kill()
-                    process.wait(timeout=10);process.stdout.close()
-                    raise RuntimeError('Unable to establish ownership of the Windows process tree; job not retained.')
+                process, owner = _start_windows_job([program, *args], directory, environment)
+            else:
+                owner = None
+                process = subprocess.Popen([program, *args], cwd=directory, env=environment,
+                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
             key = uuid.uuid4().hex[:12]
             job = {'id': key, 'process': process, 'command': [executable, *args], 'cwd': str(directory),
                    'started': time.monotonic(), 'timeout': seconds, 'text': '', 'offset': 0,
@@ -206,4 +310,4 @@ class ProcessJobs:
             if os.name == 'nt' and job['process'].returncode is not None:
                 # status() uses the cached exit code. Release the native process
                 # handle so disposable Windows virtual environments can be removed.
-                job['process']._handle.Close()
+                job['process'].handle.Close()

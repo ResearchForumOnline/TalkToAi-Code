@@ -353,7 +353,7 @@
   },
   {
     "path": "docs/DESKTOP-9.1.1.md",
-    "sha256": "e24f6b41ad290579afc0ec47f062b69fbb415195287eafb9cd1631ef52aed80f"
+    "sha256": "c480864d6950138c037940da945c992a5cdd534b52fb7c8056d1f75357900913"
   },
   {
     "path": "docs/DEVSPACE-IDEAS-REVIEW.md",
@@ -713,7 +713,7 @@
   },
   {
     "path": "process_jobs.py",
-    "sha256": "06fd3e54be9a72f7ec8e3ac84e2ab02f8f7c5e398be514f3440c3546f085f5dd"
+    "sha256": "a1221c8b933ae819ec303d74ef65ddd9c3b21fac78dab6ff9d238472c67f3c7f"
   },
   {
     "path": "progress_guard.py",
@@ -937,7 +937,7 @@
   },
   {
     "path": "test_agent_workflow.py",
-    "sha256": "39bcabc134c48e2d805888c441f01365b77bad2d3e57d2d1657afc0e14d1ddfa"
+    "sha256": "e40e7fa4d9b09afe60ada3f970df4690bac6d0a09b26a6d466c427319eeab963"
   },
   {
     "path": "test_agent_zero.py",

@@ -18,4 +18,6 @@ The built-in generator produces stylized artwork. If you asked for photorealism,
 
 After a scene task pauses, **finish the scene** refers back to the original request. The app checks the recorded file hash before reusing the result. If a local Ollama stream ends unexpectedly during agent work, TalkToAi can retry the interrupted step without executing an incomplete tool call. A repeated read after a Python error can show the lines around the actual failure.
 
+On Windows, a project command now starts under the app's job control before its first instruction runs. A command that finishes immediately can return its output, and Stop still controls the processes it launches.
+
 The checklist distinguishes a reported result from an outcome the app can check. This follows the project's published work on verifiable agent outcomes. [Outcome-first local agents](https://github.com/ResearchForumOnline/research/blob/main/papers/outcome-first-local-agents-2026.md) · [Agent release evidence boundaries](https://github.com/ResearchForumOnline/research/blob/main/papers/agent-release-evidence-boundaries-2026.md)
