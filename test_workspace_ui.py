@@ -196,6 +196,10 @@ class WorkspaceUITests(unittest.TestCase):
     def test_keep_going_defaults_on_and_preserves_conversation_choice(self):
         w=self.window;first=w.task['id']
         self.assertTrue(w.keep_going.isChecked())
+        self.assertEqual(w.work_duration.currentText(), 'Until done')
+        self.assertEqual(w.model_performance()['work_session_minutes'], -1)
+        w.work_duration.setCurrentIndex(w.work_duration.findData(60))
+        self.assertEqual(w.config['work_session_minutes'], 60)
         w.keep_going.setChecked(False)
         saved=next(task for task in load_tasks(studio.SESSION)[0] if task['id']==first)
         self.assertFalse(saved['keep_going'])

@@ -12,6 +12,78 @@ import agent_core as core
 
 
 class LongSessionTests(unittest.TestCase):
+    def test_agent_recovers_broken_ollama_step_without_running_partial_or_previous_calls(self):
+        requests = []
+        events = []
+        executed = []
+        def action(command):
+            return {'function': {'name': 'run_command', 'arguments': {'command': command}}}
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *_args):
+                pass
+
+            def do_POST(self):
+                request = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+                requests.append(request)
+                if len(requests) == 1:
+                    body = json.dumps({'message': {'tool_calls': [action('first action')]}, 'done': True}).encode()
+                elif len(requests) == 2:
+                    frame = {'message': {'content': 'unfinished', 'tool_calls': [action('uncommitted')]}, 'done': False}
+                    body = json.dumps(frame).encode() + b'\n{"message":'
+                else:
+                    body = b'{"message":{"content":"The requested check finished."},"done":true}'
+                self.send_response(200)
+                self.send_header('Content-Length', str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        with ThreadingHTTPServer(('127.0.0.1', 0), Handler) as server:
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                with tempfile.TemporaryDirectory() as folder, patch.object(core, 'ACTIVE_PROVIDER', None), \
+                        patch.object(core, 'AUTO_CONTEXT', False), patch.object(core, 'model_supports_vision', return_value=False):
+                    tools = core.ProjectTools(folder, True)
+                    def execute(name, args):
+                        executed.append((name, args))
+                        return 'Exit 0\nChecked once.'
+                    with patch.object(tools, 'execute', side_effect=execute):
+                        core._run_agent(f'http://127.0.0.1:{server.server_port}', 'fixture',
+                                        [{'role': 'user', 'content': 'Check the project.'}], folder, True,
+                                        threading.Event(), lambda k, v: events.append((k, v)), 2, {}, tools)
+            finally:
+                server.shutdown()
+                thread.join()
+        self.assertEqual([r['stream'] for r in requests], [True, True, False])
+        self.assertEqual(requests[1]['messages'], requests[2]['messages'])
+        self.assertEqual(requests[2]['messages'][-1]['content'], 'Exit 0\nChecked once.')
+        self.assertEqual(executed, [('run_command', {'command':'first action'})])
+        self.assertEqual(sum(k == 'discard_partial' for k, _ in events), 1)
+        saved = [v for k,v in events if k == 'message']
+        self.assertNotIn('unfinished', str(saved))
+        self.assertNotIn('uncommitted', str(saved))
+        self.assertEqual(saved[-1]['content'], 'The requested check finished.')
+        self.assertIn(('status', 'Ready'), events)
+
+    def test_inference_retries_bound_empty_local_stream_and_do_not_replay_apis(self):
+        for provider, expected_requests in ((None, 2), (object(), 1)):
+            with self.subTest(local=provider is None), patch.object(core, 'ACTIVE_PROVIDER', provider), \
+                    patch.object(core, 'stream_chat', side_effect=lambda *args, **kwargs: iter(())) as stream:
+                with self.assertRaisesRegex(core._IncompleteAgentReply, 'before finishing this step'):
+                    list(core._agent_reply_stream('fixture', {'stream':True}, threading.Event()))
+                self.assertEqual(stream.call_count, expected_requests)
+
+    def test_stop_between_attempts_suppresses_reconnect(self):
+        cancel = threading.Event()
+        with patch.object(core, 'ACTIVE_PROVIDER', None), patch.object(core, 'stream_chat', return_value=iter(())) as stream:
+            frames = core._agent_reply_stream('fixture', {'stream':True}, cancel)
+            self.assertTrue(next(frames)['_retry_local_inference'])
+            cancel.set()
+            with self.assertRaises(InterruptedError):
+                next(frames)
+            self.assertEqual(stream.call_count, 1)
+
     def test_slow_model_response_has_its_own_timeout_and_owned_socket(self):
         connection = Mock()
         connection.getresponse.return_value.status = 200
@@ -140,8 +212,7 @@ class LongSessionTests(unittest.TestCase):
             with patch.object(core, 'stream_chat', side_effect=stream), \
                  patch.object(core, 'AUTO_CONTEXT', False), \
                  patch.object(core, 'model_supports_vision', return_value=False), \
-                 patch.object(core, 'time', wraps=core.time) as clock:
-                clock.monotonic.side_effect = lambda: 100 + calls * 1000
+                 patch.object(core.time, 'monotonic', side_effect=lambda: 100 + calls * 1000):
                 core.run_agent('fixture', 'fixture', [{'role': 'user', 'content': 'Inspect these sources.'}],
                                folder, True, threading.Event(),
                                lambda kind, value: events.append((kind, value)),
@@ -152,7 +223,8 @@ class LongSessionTests(unittest.TestCase):
         checkpoints = [value for kind, value in events if kind == 'goal_checkpoint']
         self.assertEqual(checkpoints[-1]['state'], 'paused')
         self.assertIsNone(checkpoints[-1]['total_passes'])
-        self.assertIn('Selected work session time reached', checkpoints[-1]['blockers'][0])
+        self.assertIn('Work session time limit reached', checkpoints[-1]['blockers'][0])
+        self.assertEqual(sum(kind == 'tool' for kind, _ in events), 14)
         self.assertEqual(checkpoints[-1]['session_minutes'], 240)
         self.assertTrue(any(value['state'] == 'continuing' for value in checkpoints))
 

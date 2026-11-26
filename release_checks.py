@@ -126,6 +126,60 @@ def _autonomous_question_smoke(folder):
     return (root / 'hello.py').read_text(encoding='utf-8') == "print('Hello Ada')\n" and events[-1] == ('status','Ready')
 
 
+def _offline_scene_checklist_smoke(folder):
+    """Save a real offline scene and let its registered evidence advance the checklist."""
+    import base64
+    import hashlib
+    from agent_core import ProjectTools
+    from chat_intent import scene_creation_brief
+    from scene_browser import prepare_viewer, preview_request, verified_viewer
+    from scene_kit import check_glb
+    from scene_outputs import build_scene_files, local_design, requests_local_generator
+    import task_checklist
+
+    root = Path(folder, 'offline scene')
+    root.mkdir()
+    tools = ProjectTools(root, True, project_only=True)
+    brief = scene_creation_brief('Create a 3D scene of a lunar landscape offline')
+    if not brief or not requests_local_generator(brief):
+        return False
+    task = {'project': str(root), 'messages': [{'role': 'user', 'content': brief}]}
+    plan = task_checklist.begin(task, brief, scene=True)
+    events = []
+    _, verification, _ = build_scene_files(tools, local_design(brief), None,
+                                           lambda kind, data: events.append((kind, data)))
+    artifacts = [data for kind, data in events if kind == 'artifact']
+    primary = verification['primary_output']
+    name, digest = primary['name'], primary['sha256']
+    model_file = root / name
+    model_bytes = model_file.read_bytes()
+    if (verification['status'] != 'passed' or model_file.suffix != '.glb'
+            or hashlib.sha256(model_bytes).hexdigest() != digest):
+        return False
+    registered = {(Path(record['artifact']).name, record['sha256']) for record in artifacts}
+    task_checklist.observe(plan, verification, {(name, '0' * 64), ('unrelated.glb', digest)})
+    if any(item['status'] != 'pending' for item in plan['steps']):
+        return False
+    task_checklist.observe(plan, verification, registered)
+    shown = task_checklist.apply(task, task_checklist.command('Show my to-do list'))
+    if len(shown['steps']) != 2 or not all(
+            item['status'] == 'completed' and item.get('basis') == 'observed' and item.get('evidence') == name
+            for item in shown['steps']):
+        return False
+    choice = preview_request('how do i open file sir with browser?', artifacts)
+    if not choice or choice[1] or choice[0]['sha256'] != digest:
+        return False
+    viewer = prepare_viewer(tools, choice[0], artifacts)
+    page = verified_viewer(tools, viewer).read_text(encoding='utf-8')
+    embedded = re.search(r'^const SCENE=(\{.*\});$', page, re.M)
+    if not embedded or re.search(r'https?://', page):
+        return False
+    batches = json.loads(embedded[1])['batches']
+    # The standalone viewer stores three uint16 vertex indices per triangle.
+    triangles = sum(len(base64.b64decode(batch['i'], validate=True)) for batch in batches) // 6
+    return triangles > 0 and triangles == check_glb(model_bytes)['triangles']
+
+
 def smoke(destination):
     from model_library import DEFAULT_LOCAL_MODEL
     from runtime_diagnostics import REPLY_CHECK_PROMPT, last_reply_check, measure_local_reply
@@ -305,6 +359,7 @@ def smoke(destination):
         with tempfile.TemporaryDirectory(prefix='talktoai-release-') as folder:
             result['project_python'] = _project_python_smoke(folder)
             result['autonomous_question_and_resume'] = _autonomous_question_smoke(folder)
+            result['offline_scene_checklist'] = _offline_scene_checklist_smoke(folder)
             from engine_discovery import find_blender
             from agent_core import ProjectTools
             blender = find_blender()
@@ -488,7 +543,7 @@ def smoke(destination):
         result['passed'] = result['passed'] and all(result[key] for key in
             ('conversation_round_trip', 'installed_model_reply_check', 'openzero_template_prefix_clean',
              'local_model_retention','reversible_local_tuning','local_project_reviewers','browser_live_reference',
-             'project_python','interactive_html_repair','autonomous_question_and_resume','filing_tail_retrieval','automatic_chat_tools','local_media_entrypoints','local_voice_entrypoints','agent_specialties','inkling_support',
+             'project_python','interactive_html_repair','autonomous_question_and_resume','offline_scene_checklist','filing_tail_retrieval','automatic_chat_tools','local_media_entrypoints','local_voice_entrypoints','agent_specialties','inkling_support',
              'inkling_gpu_status','inkling_physical_offload','inkling_acceleration_settings'))
         if os.name == 'nt':
             result['passed'] = result['passed'] and result['windows_voice_plugins']

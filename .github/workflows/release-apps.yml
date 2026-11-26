@@ -91,14 +91,25 @@ jobs:
           chmod +x appimagetool && sudo mv appimagetool /usr/local/bin/appimagetool
       - run: python -m pip install -r requirements-runtime.txt pyinstaller
       - run: python scripts/build-desktop-app.py linux dist-desktop
-      - name: Start the built app once
+      - name: Launch the archive and read-only AppImage with normal user state
         env:
           QT_QPA_PLATFORM: offscreen
-          TALKTOAI_CODE_HOME: ${{ runner.temp }}/app-home
         run: |
-          mkdir -p "$TALKTOAI_CODE_HOME"
           tar -xzf dist-desktop/*.tar.gz -C "$RUNNER_TEMP"
-          "$RUNNER_TEMP"/TalkToAi-Code-*-Linux/TalkToAiCode/TalkToAiCode --preview
+          archive_app=("$RUNNER_TEMP"/TalkToAi-Code-*-Linux/TalkToAiCode)
+          chmod -R a-w "${archive_app[0]}"
+          test ! -w "${archive_app[0]}"
+          env -u TALKTOAI_CODE_HOME XDG_STATE_HOME="$RUNNER_TEMP/archive-state" "${archive_app[0]}/TalkToAiCode" --preview
+          test -s "$RUNNER_TEMP/archive-state/TalkToAiCode/studio-preview.png"
+          image=("$GITHUB_WORKSPACE"/dist-desktop/*.AppImage)
+          mount_dir="$RUNNER_TEMP/talktoai-appimage"
+          mkdir -p "$mount_dir"
+          offset=$("${image[0]}" --appimage-offset)
+          sudo mount -t squashfs -o "loop,ro,offset=$offset" "${image[0]}" "$mount_dir"
+          trap 'sudo umount "$mount_dir"' EXIT
+          test ! -w "$mount_dir/usr/bin"
+          env -u TALKTOAI_CODE_HOME XDG_STATE_HOME="$RUNNER_TEMP/image-state" "$mount_dir/AppRun" --preview
+          test -s "$RUNNER_TEMP/image-state/TalkToAiCode/studio-preview.png"
       - uses: actions/upload-artifact@v4
         with:
           name: TalkToAi-Code-Linux
@@ -118,6 +129,20 @@ jobs:
           python-version: '3.12'
       - run: python -m pip install -r requirements-runtime.txt pyinstaller
       - run: python scripts/build-desktop-app.py macos dist-desktop
+      - name: Mount the disk image and launch the packaged app
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          mount="$RUNNER_TEMP/talktoai-dmg"
+          profile_dir="$RUNNER_TEMP/dmg-user"
+          mkdir -p "$mount" "$profile_dir"
+          hdiutil attach -readonly -nobrowse -mountpoint "$mount" dist-desktop/*.dmg
+          trap 'hdiutil detach "$mount"' EXIT
+          app="$mount/TalkToAi Code.app"
+          codesign --verify --deep --strict "$app"
+          test ! -w "$app/Contents/MacOS"
+          env -u TALKTOAI_CODE_HOME HOME="$profile_dir" "$app/Contents/MacOS/TalkToAiCode" --preview
+          test -s "$profile_dir/Library/Application Support/TalkToAiCode/studio-preview.png"
       - uses: actions/upload-artifact@v4
         with:
           name: TalkToAi-Code-macOS

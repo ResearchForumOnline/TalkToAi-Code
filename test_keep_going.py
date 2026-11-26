@@ -15,7 +15,7 @@ def response(name=None,args=None,text=''):
 
 
 class KeepGoingTests(unittest.TestCase):
-    def fixture(self,sequence,rounds=2,keep=True,cancel_at=None,worker=False,improvement=False,check_results=None,running_jobs=None):
+    def fixture(self,sequence,rounds=2,keep=True,cancel_at=None,worker=False,improvement=False,check_results=None,running_jobs=None,performance=None,request='Inspect the requested source files'):
         events=[];payloads=[];cancel=threading.Event()
         jobs=Mock() if running_jobs is not None else None
         if jobs is not None:jobs.running.return_value=running_jobs
@@ -27,22 +27,70 @@ class KeepGoingTests(unittest.TestCase):
         def stream(_url,payload,_cancel,*,local_only=False):
             self.assertEqual(local_only, worker)
             payloads.append(copy.deepcopy(payload))
+            self.assertLess(len(payloads),55,'An unchanged test fixture was retried indefinitely')
             item=sequence[min(len(payloads)-1,len(sequence)-1)]
             if cancel_at==len(payloads):cancel.set()
+            if isinstance(item,BaseException):raise item
             return iter([item])
         with tempfile.TemporaryDirectory() as folder:
             for i in range(8):Path(folder,f'{i}.txt').write_text(f'Observed source {i}')
             with patch.object(core,'stream_chat',side_effect=stream),patch.object(core,'model_supports_vision',return_value=False),patch.object(core,'AUTO_CONTEXT',False),patch.object(core.ProjectTools,'execute',execute):
                 if worker or improvement:
                     tools=core.ProjectTools(folder,True,cancel)
-                    try:core._run_agent('fixture','fixture',[{'role':'user','content':'Inspect the requested source files'}],folder,True,cancel,
-                                       lambda k,v:events.append((k,v)),rounds,None,tools,worker_mode=worker,improvement_mode=improvement,keep_going=keep)
+                    try:core._run_agent('fixture','fixture',[{'role':'user','content':request}],folder,True,cancel,
+                                       lambda k,v:events.append((k,v)),rounds,performance,tools,worker_mode=worker,improvement_mode=improvement,keep_going=keep)
                     finally:
                         if tools.jobs:tools.jobs.close()
                 else:
-                    core.run_agent('fixture','fixture',[{'role':'user','content':'Inspect the requested source files'}],folder,True,cancel,
-                                   lambda k,v:events.append((k,v)),rounds=rounds,keep_going=keep,jobs=jobs)
+                    core.run_agent('fixture','fixture',[{'role':'user','content':request}],folder,True,cancel,
+                                   lambda k,v:events.append((k,v)),rounds=rounds,keep_going=keep,jobs=jobs,performance=performance)
         return payloads,events
+
+    def test_until_done_continues_past_three_passes_and_respects_stop(self):
+        sequence=[response('read_file',{'path':f'{i}.txt'}) for i in range(7)]+[response(text='All seven files were inspected.')]
+        for cancel_at,expected in ((None,'completed'),(6,'stopped')):
+            with self.subTest(cancel_at=cancel_at):
+                payloads,events=self.fixture(sequence,rounds=1,performance={'work_session_minutes':-1},cancel_at=cancel_at)
+                self.assertEqual(len(payloads),cancel_at or 8)
+                checkpoints=[v for k,v in events if k=='goal_checkpoint']
+                self.assertEqual(checkpoints[-1]['state'],expected)
+                self.assertTrue(all(v['total_passes'] is None and v['session_minutes']==-1 for v in checkpoints))
+
+    def test_until_done_verifies_real_change_before_accepting_report(self):
+        sequence=[response('write_file',{'path':'probe.py','content':'checked = True\n'}),
+                  response(text='Premature unverified report.'),response(text='File and checks finished.')]
+        payloads,events=self.fixture(sequence,rounds=4,performance={'work_session_minutes':-1},check_results=['Exit 0\nSyntax OK'])
+        self.assertEqual([v['name'] for k,v in events if k=='tool'],['write_file','run_checks'])
+        self.assertEqual([v['automatic'] for k,v in events if k=='tool' and v['name']=='run_checks'],[True])
+        self.assertTrue(any(m.get('tool_name')=='run_checks' and 'Syntax OK' in m['content'] for m in payloads[-1]['messages']))
+        self.assertFalse(any(k=='message' and v.get('content')=='Premature unverified report.' for k,v in events))
+        self.assertEqual([v['state'] for k,v in events if k=='goal_checkpoint'][-1],'completed')
+
+    def test_until_done_repeated_read_recovers_then_waits_for_real_input(self):
+        read=response('read_file',{'path':'0.txt'})
+        for replies,last_state in (([read]*4+[response('read_file',{'path':'1.txt'}),response(text='Both sources inspected.')],'completed'),
+                                   ([read],'awaiting answer')):
+            with self.subTest(state=last_state):
+                payloads,events=self.fixture(replies,rounds=32,performance={'work_session_minutes':-1})
+                self.assertLessEqual(len(payloads),6)
+                self.assertEqual([v['state'] for k,v in events if k=='goal_checkpoint'][-1],last_state)
+                self.assertEqual(sum(k=='question_pending' for k,v in events),int(last_state=='awaiting answer'))
+
+    def test_until_done_model_outage_keeps_job_and_does_not_repeat_actions(self):
+        payloads,events=self.fixture([response('read_file',{'path':'0.txt'}),ConnectionError('model offline')],performance={'work_session_minutes':-1})
+        self.assertLessEqual(len(payloads),3)
+        self.assertEqual([v['name'] for k,v in events if k=='tool'],['read_file'])
+        self.assertIn('reconnect',[v['question'] for k,v in events if k=='question_pending'][-1])
+        self.assertEqual([v['state'] for k,v in events if k=='goal_checkpoint'][-1],'awaiting answer')
+
+    def test_until_done_failed_project_check_runs_once_for_unchanged_source(self):
+        sequence=[response('write_file',{'path':'probe.py','content':'checked = True\n'}),response(text='I have finished.')]
+        _,events=self.fixture(sequence,rounds=4,performance={'work_session_minutes':-1},check_results=['Exit 1\nFAIL: probe_case'])
+        self.assertEqual([v['name'] for k,v in events if k=='tool'],['write_file','run_checks'])
+        self.assertIn('verify',[v['question'] for k,v in events if k=='question_pending'][-1])
+        states=[v for k,v in events if k=='goal_checkpoint']
+        self.assertEqual(states[-1]['verification']['status'],'failed')
+        self.assertEqual(states[-1]['state'],'awaiting answer')
 
     def test_progress_continues_same_history_until_third_pass(self):
         sequence=[response('read_file',{'path':f'{i}.txt'}) for i in range(5)]+[response(text='Inspected the five requested files.')]

@@ -6,6 +6,21 @@ from chat_intent import chat_requests_tools, chat_web_query, media_request, requ
 
 
 class ChatIntentTests(unittest.TestCase):
+    def test_scene_resume_stays_with_its_task_and_respects_new_directions(self):
+        from chat_intent import requests_new_blender_scene, scene_creation_brief
+        brief = 'sir make a blender design of the moon'
+        self.assertTrue(requests_new_blender_scene(brief))
+        self.assertTrue(requests_new_blender_scene('Build an observatory in Blender'))
+        self.assertFalse(requests_new_blender_scene('How do I make an observatory in Blender?'))
+        self.assertFalse(requests_new_blender_scene('Write a tutorial for a scene in Blender'))
+        history = [{'role': 'user', 'content': brief}, {'role': 'assistant', 'content': 'Build a tower.'}]
+        resume = 'been waiting 20 mins i think you might be stuck finish sir'
+        self.assertEqual(scene_creation_brief(resume, history), brief)
+        for other in ('Please stop and explain.', 'Write a poem about the sea.',
+                      'Did you save the scene and then delete its script?'):
+            self.assertEqual(scene_creation_brief(resume, history + [{'role': 'user', 'content': other}]), '')
+        self.assertEqual(scene_creation_brief('Do not create more files, sir try harder', history), '')
+
     def test_action_prompts_route_from_everyday_phrasing(self):
         for prompt in (
             'Hi, could you open Brave and show the Downloads page?',

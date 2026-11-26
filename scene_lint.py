@@ -129,6 +129,59 @@ def _dotted(node):
     return ()
 
 
+def _fix_blender_properties(source):
+    """Correct known RNA paths on the scene, preserving the rest of the original script."""
+    tree = ast.parse(source)
+    replacements = []
+
+    def visit_block(statements, aliases):
+        # Only a simple, preceding assignment in the same straight-line block
+        # establishes a type. A conditional, loop or new scope starts fresh.
+        aliases = dict(aliases)
+        for statement in statements:
+            if not isinstance(statement, (ast.Assign, ast.AnnAssign, ast.Expr)):
+                for field, value in ast.iter_fields(statement):
+                    if isinstance(value, list) and value and isinstance(value[0], ast.stmt):
+                        visit_block(value, {})
+                aliases.clear()
+                continue
+            for node in ast.walk(statement):
+                if not isinstance(node, ast.Attribute) or node.attr not in ('image_format', 'file_format'):
+                    continue
+                path = _dotted(node.value)
+                if not path:
+                    continue
+                path = aliases.get(path[0], (path[0],)) + path[1:]
+                if path == ('bpy', 'context', 'scene', 'render'):
+                    replacement = 'image_settings.file_format'
+                elif path == ('bpy', 'context', 'scene', 'render', 'image_settings') and node.attr == 'image_format':
+                    replacement = 'file_format'
+                else:
+                    continue
+                replacements.append((node.end_lineno - 1, node.end_col_offset, node.attr, replacement))
+            if isinstance(statement, ast.Assign):
+                value = _dotted(statement.value)
+                resolved = aliases.get(value[0], (value[0],)) + value[1:] if value else ()
+                for target in statement.targets:
+                    for name in ast.walk(target):
+                        if isinstance(name, ast.Name) and isinstance(name.ctx, ast.Store):
+                            aliases.pop(name.id, None)
+                    if isinstance(target, ast.Name) and resolved[:3] == ('bpy', 'context', 'scene'):
+                        aliases[target.id] = resolved
+            elif isinstance(statement, ast.AnnAssign) and isinstance(statement.target, ast.Name):
+                aliases.pop(statement.target.id, None)
+
+    visit_block(tree.body, {})
+    if not replacements:
+        return source, []
+    # Python's AST column offsets use UTF-8 bytes, including for non-ASCII source.
+    lines = source.encode('utf-8').split(b'\n')
+    for row, end, attr, replacement in sorted(replacements, reverse=True):
+        start = end - len(attr)
+        lines[row] = lines[row][:start] + replacement.encode('ascii') + lines[row][end:]
+    return b'\n'.join(lines).decode('utf-8'), ['corrected the Blender image format property']
+
+
 def lint_blender_script(source):
     """Return (source, notes, problems) for a script that already compiles.
 
@@ -136,7 +189,6 @@ def lint_blender_script(source):
     are things the model should fix; they are returned as plain sentences.
     """
     tree = ast.parse(source)
-    lines = source.split('\n')
     notes, problems = [], []
     imported = set()
     uses_bpy = False
@@ -154,17 +206,23 @@ def lint_blender_script(source):
         name = _dotted(statement.value.func)
         reason = _APP_OWNED.get(name) or ('the app closes Blender after checking the scene' if name in _EXIT_CALLS else None)
         if reason:
-            replace.append((statement.lineno, statement.end_lineno, statement.col_offset, '.'.join(name), reason))
-    for first, last, column, name, reason in sorted(replace, reverse=True):
-        # Only whole-line statements are replaced. Anything else stays for the engine to report.
-        before = lines[first - 1][:column]
-        if before.strip() or first > len(lines) or last > len(lines):
-            continue
-        lines[first - 1:last] = [before + 'pass  # ' + name + '() removed: ' + reason] + [''] * (last - first)
-        notes.append(f'{name}() removed: {reason}')
-    updated = '\n'.join(lines)
-    if replace and not _compiles(updated):
-        updated, notes = source, []
+            replace.append((statement.lineno, statement.col_offset, statement.end_lineno,
+                            statement.end_col_offset, '.'.join(name), reason))
+    updated = source
+    if replace:
+        # Replace exactly the expression, including on a line shared with a mesh operation.
+        data = source.encode('utf-8')
+        starts = [0] + [m.end() for m in re.finditer(b'\n', data)]
+        for first, column, last, end_column, name, reason in sorted(replace, reverse=True):
+            start, end = starts[first - 1] + column, starts[last - 1] + end_column
+            replacement = b'pass'
+            if not data[end:].partition(b'\n')[0].strip():
+                replacement += f'  # {name}() removed: {reason}'.encode('utf-8')
+            data = data[:start] + replacement + data[end:]
+            notes.append(f'{name}() removed: {reason}')
+        updated = data.decode('utf-8')
+        if not _compiles(updated):
+            updated, notes = source, []
     if uses_bpy and 'bpy' not in imported:
         updated = 'import bpy\n' + updated
         notes.append('added the missing "import bpy"')
@@ -173,11 +231,20 @@ def lint_blender_script(source):
     outside = sorted(imported & _OUT_OF_SCOPE)
     if outside:
         problems.append('A scene script should only build the scene. Remove the use of ' + ', '.join(outside) + '.')
-    return updated, notes, problems
+    updated, property_notes = _fix_blender_properties(updated)
+    return updated, notes + property_notes, problems
 
 
 _ERROR_LINE = re.compile(r'[A-Za-z_][\w.]*(?:Error|Exception|Exit|Interrupt|Warning)\b')
 _HINTS = (
+    (r'key ["\']Material Output["\'] not found',
+     'After clearing material nodes, create an output with nodes.new("ShaderNodeOutputMaterial"). '
+     'Connect the surface shader to its Surface input and displacement to its Displacement input.'),
+    (r'key ["\'](?:World BSDF|Principled BSDF)["\'] not found',
+     'Check whether this is a world or material node tree. A world uses a Background shader linked '
+     'to a World Output. A material can use a Principled BSDF linked to a Material Output.'),
+    (r'(?:RenderSettings|ImageFormatSettings).*has no attribute.*(?:image_format|file_format|png)',
+     'Set the file type on scene.render.image_settings.file_format, for example to "PNG".'),
     (r'context is incorrect|poll\(\) failed',
      'Operators such as mode_set or select_all need an active object. Build meshes with '
      'bpy.ops.mesh.primitive_*_add or bpy.data.meshes.new instead of changing modes.'),

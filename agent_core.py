@@ -25,7 +25,7 @@ from agent_workflow import (ToolCatalog, PLAN_TOOL, normalize_plan, previous_pla
                             NEW_FILE_FORMAT, new_file_call, checked_file_call, promises_project_file, missing_python_probe)
 from process_jobs import ProcessJobs
 from workspace_outputs import read_batch, register_output
-from progress_guard import DiscoveryProgressGuard
+from progress_guard import DiscoveryProgressGuard, source_excerpt
 from reasoning_stream import OpenZeroReplyStart, ReasoningActivity
 from model_library import DEFAULT_LOCAL_MODEL
 from ollama_retention import keep_alive_for, local_port
@@ -38,7 +38,7 @@ from task_navigation import research_query, canonical_source, desktop_projects, 
 from work_packet import build_work_packet, complete_direct_read_request
 import project_workers
 from agent_focus import focus_guidance
-from chat_intent import (requests_new_blender_scene, requests_project_creation, requests_tool_continuation, wants_browser_lookup,
+from chat_intent import (requests_new_blender_scene, requests_project_creation, requests_tool_continuation, scene_creation_brief, wants_browser_lookup,
                          wants_screen_action, wants_shopping_lookup)
 from effort import effort_from, command_seconds
 from auto_tune import local_options as checked_local_options
@@ -139,7 +139,7 @@ ASK_USER = schema('ask_user', 'Pause until the user answers one necessary questi
 
 TOOLS = [
     schema('list_files', 'List project-relative files, excluding generated directories. Optional glob pattern filters before the result limit; use *.gd or *.tscn for Godot source instead of shell discovery.', {'pattern':'Optional filename/path glob, e.g. *.gd, *.tscn, src/*.py; empty lists all'}),
-    schema('read_file', 'Read a UTF-8 file inside the selected project.', {'path': 'Relative file path'}),
+    schema('read_file', 'Read project text. For a traceback, give its line to see that line and nearby source.', {'path': 'Relative file path', 'line': 'Optional 1-based line number'}),
     schema('write_file', 'Create or replace a project text file. Original bytes are checkpointed.', {'path': 'Relative file path', 'content': 'Complete new contents'}),
     schema('file_fingerprint', 'Report whether a project file exists, its byte size and SHA-256. Read the relevant file first; use this immediately before write_file_checked.', {'path':'Relative file path'}),
     schema('write_file_checked', 'Create or replace a project text file only if its current SHA-256 exactly matches expected_sha256. Set expected_sha256 to __absent__ only when creating a file that must not already exist. Original bytes are checkpointed.', {'path':'Relative file path','content':'Complete new contents','expected_sha256':'SHA-256 returned by file_fingerprint, or __absent__'}),
@@ -249,6 +249,7 @@ MAIL_TOOLS=[
 # DesktopTools, ProcessJobs and the browser/mail adapters. A missing optional
 # value must not cause a repair turn before the adapter gets its normal default.
 _OPTIONAL_TOOL_ARGS={
+    'read_file': {'line'},
     'start_process': {'arguments','cwd','timeout_seconds'},
     'poll_process': {'cursor','wait_seconds'},
     'register_output': {'title'},
@@ -282,6 +283,7 @@ def repair_tool_history(messages):
         pending.clear()
     for original in messages:
         message=dict(original)
+        message.pop('scene_delivery', None)  # Controller evidence stays local when building an inference request.
         if message.get('role')=='assistant' and not message.get('tool_calls') and has_tool_markup(message.get('content','')):
             # Provider-only repair: saved transcripts are untouched, and old
             # protocol text is never turned into executable actions.
@@ -449,7 +451,12 @@ def _http_stream(url,payload,cancel):
         while not cancel.is_set():
             line=response.readline()
             if not line:break
-            data = json.loads(line)
+            try:
+                data = json.loads(line)
+            except ValueError as exc:
+                if not line.endswith(b'\n'):
+                    raise http.client.IncompleteRead(b'') from exc
+                raise
             message = data.get('message') or {}
             if message.get('content') or message.get('thinking') or message.get('tool_calls'):
                 output_started = True
@@ -518,6 +525,39 @@ def stream_chat(url,payload,cancel,*,local_only=False):
         if kind=='error':raise value
         last_event=time.monotonic()
         yield value
+
+class _IncompleteAgentReply(RuntimeError):
+    """Inference closed without a terminal frame. The agent has not dispatched this batch."""
+
+
+def _agent_reply_stream(url, payload, cancel, *, worker_mode=False):
+    """Retry only the current Ollama inference, retaining prior tool observations."""
+    local = worker_mode or ACTIVE_PROVIDER is None
+    attempts = 2 if local else 1
+    for attempt in range(attempts):
+        if cancel.is_set():
+            raise InterruptedError('Task stopped.')
+        # Pin the retry to the same Ollama endpoint even if an API profile changes.
+        options = {'local_only': True} if worker_mode or attempt else {}
+        try:
+            for frame in stream_chat(url, payload, cancel, **options):
+                if cancel.is_set():
+                    raise InterruptedError('Task stopped.')
+                yield frame
+                if frame.get('done'):
+                    return
+        except (http.client.IncompleteRead, ConnectionResetError, ConnectionAbortedError, BrokenPipeError):
+            if not local:
+                raise
+        if cancel.is_set():
+            raise InterruptedError('Task stopped.')
+        if attempt + 1 == attempts:
+            detail = 'The local model disconnected again' if attempt else 'The model disconnected'
+            raise _IncompleteAgentReply(detail + ' before finishing this step. Earlier tool results are saved.')
+        yield {'_retry_local_inference': True}
+        # A single buffered response avoids consuming an incomplete streamed tool call.
+        payload = dict(payload, stream=False)
+
 
 def _context_size(message):
     """Character proxy, including an image allowance; not a tokenizer receipt."""
@@ -808,7 +848,7 @@ class ProjectTools:
                 raise
         return target
 
-    def build_blender_scene(self, blender, source, *, timeout=180):
+    def build_blender_scene(self, blender, source, *, timeout=180, brief=''):
         """Create and reopen a new scene before making it available in the project.
 
         The script runs from a private folder first. It and the scene reach the
@@ -832,6 +872,7 @@ class ProjectTools:
             scratch.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix='talktoai-blender-', dir=scratch) as folder:
             candidate = Path(folder, 'verified.blend')
+            inventory = Path(folder, 'geometry-names.json')
             draft = Path(folder, 'scene.py')
             draft.write_text(source, encoding='utf-8')
             driver = Path(folder, 'build.py')
@@ -846,7 +887,10 @@ class ProjectTools:
                 'check_geometry()\n'
                 f'bpy.ops.wm.save_as_mainfile(filepath={str(candidate)!r}, compress=False)\n'
                 f'bpy.ops.wm.open_mainfile(filepath={str(candidate)!r}, use_scripts=False)\n'
-                'check_geometry()\n',
+                'check_geometry()\n'
+                + (f'import json\nwith open({str(inventory)!r}, "w", encoding="utf-8") as out:\n'
+                   '    json.dump([o.name for o in bpy.context.scene.objects if o.type in '
+                   '{"MESH", "CURVE", "SURFACE", "FONT", "META", "VOLUME", "CURVES"}], out)\n' if brief else ''),
                 encoding='utf-8')
             try:
                 result = self._engine_command('Blender', blender, ['--background', '--factory-startup',
@@ -858,6 +902,9 @@ class ProjectTools:
                 raise
             if not result.startswith('Exit 0\n') or not candidate.is_file():
                 raise SceneBuildError(scene_lint.describe_blender_failure(result, source, script_file='scene.py'), result)
+            if brief:
+                import scene_kit
+                scene_kit.check_subject_labels(brief, json.loads(inventory.read_text(encoding='utf-8')))
             with candidate.open('rb') as saved:
                 if saved.read(7) != b'BLENDER':
                     raise SceneBuildError('Blender did not produce a readable scene file.', result)
@@ -972,7 +1019,14 @@ class ProjectTools:
             p = self.path(args['path'])
             if p.stat().st_size > 250000:
                 raise ValueError('File exceeds the 250 KB text limit.')
-            return p.read_text(encoding='utf-8')
+            source = p.read_text(encoding='utf-8')
+            if args.get('line') in (None, ''):
+                return source
+            try:
+                number = int(args['line'])
+            except (TypeError, ValueError):
+                raise ValueError('Give the 1-based line number from the traceback.') from None
+            return source_excerpt(source, number)
         if name == 'file_fingerprint':
             p=self.path(args['path'])
             if not p.exists():return json.dumps({'path':args['path'],'exists':False,'sha256':None,'bytes':0})
@@ -1069,8 +1123,13 @@ class ProjectTools:
         if name=='run_blender_script':
             if not self.act:
                 raise PermissionError('Running Blender scripts requires Act mode.')
-            from engine_discovery import find_blender
-            blender=find_blender()
+            from engine_discovery import find_blender, discover_blender
+            try:
+                blender = find_blender()
+            except ValueError:
+                blender = discover_blender()
+                if not blender:
+                    raise
             if not blender:
                 raise ValueError('Blender was not found. Install Blender or select its executable in Settings.')
             script=self.path(args['path'])
@@ -1088,7 +1147,16 @@ class ProjectTools:
                 if self.jobs is None:
                     self.jobs=ProcessJobs(self.root,self.cancel)
                 return json.dumps(self.jobs.start(blender,invocation,timeout_seconds=timeout))
-            return self._engine_command('Blender',blender,invocation,timeout)
+            result = self._engine_command('Blender', blender, invocation, timeout)
+            if 'Traceback (most recent call last):' in result and not result.startswith('Exit 0\n'):
+                try:
+                    source = script.read_text(encoding='utf-8-sig') if script.stat().st_size <= 1024 * 1024 else ''
+                except (OSError, UnicodeError):
+                    source = ''
+                detail = scene_lint.describe_blender_failure(result, source, script_file=script.name,
+                                                              script_name=str(script.relative_to(self.root)))
+                result += '\n\n' + detail
+            return result
         if name in ('run_checks','launch_game'):
             if not self.act:
                 raise PermissionError('Running project checks or opening a game requires Act mode.')
@@ -1477,6 +1545,32 @@ def _capability_request(history, *, preserve_case=False):
     return requests[-1] if requests else ''
 
 
+def verified_scene_delivery(brief, history, tools, *, complete=True):
+    """Recheck only the controller's recorded output for this task and project."""
+    for message in reversed(history):
+        if message.get('role') == 'user':
+            text = message.get('typed_content', message.get('content'))
+            if isinstance(text, str) and requests_new_blender_scene(text):
+                break
+        delivery = message.get('scene_delivery')
+        if (message.get('role') != 'assistant' or not isinstance(delivery, dict)
+                or delivery.get('brief') != brief or delivery.get('project') != str(tools.root)):
+            continue
+        if delivery.get('complete', True) != complete:
+            return None
+        name = delivery.get('name')
+        if not isinstance(name, str) or Path(name).suffix.lower() not in ('.blend', '.glb'):
+            return None
+        try:
+            artifact = json.loads(register_output(tools, name))
+        except InterruptedError:
+            raise
+        except (OSError, ValueError):
+            return None
+        return artifact if artifact['sha256'] == delivery.get('sha256') else None
+    return None
+
+
 def _run_agent(url, model, history, project, act, cancel, emit, rounds, performance, tools, worker_mode=False, task_kind='code', improvement_mode=False, keep_going=False, task_goal=None, focus=None):
     verify_release_policy()
     performance = performance or {}
@@ -1498,6 +1592,23 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
                          and ACTIVE_PROVIDER is None and project_workers.local_route(url))
     last_user = next((m.get('typed_content', m.get('content','')) for m in reversed(history)
                       if m.get('role')=='user' and not m.get('_automation_nudge')), '')
+    scene_brief = scene_creation_brief(last_user, history) if isinstance(last_user, str) else ''
+    if (scene_brief and scene_brief != last_user and act and not worker_mode and not improvement_mode
+            and not cancel.is_set()):
+        previous_scene = verified_scene_delivery(scene_brief, history, tools)
+        if previous_scene:
+            evidence = {'status': 'passed', 'summary': 'The saved scene matches its verified SHA-256.',
+                        'primary_output': {'name': Path(previous_scene['artifact']).name, 'sha256': previous_scene['sha256']}}
+            emit('artifact', previous_scene)
+            emit('verification', evidence)
+            if keep_going:
+                emit('goal_checkpoint', {'state': 'completed', 'pass': 1, 'steps': 0, 'changes': 0,
+                     'verification': evidence, 'blockers': []})
+            emit('message', {'role': 'assistant', 'content':
+                 f"Your scene is already complete. I checked the saved file **{Path(previous_scene['artifact']).name}** "
+                 "against the verified copy. You can open it from Evidence."})
+            emit('status', 'Ready')
+            return
     resuming = isinstance(last_user, str) and last_user.strip().lower().rstrip(' .!') in _GENERIC_CONTINUATIONS
     assignments = project_workers.plan_reviews(request_text, team.limit, focus=focus) if workers_available and not resuming else []
     vision_enabled=not worker_mode and (bool(getattr(ACTIVE_PROVIDER,'supports_vision',False)) if ACTIVE_PROVIDER else model_supports_vision(url,model))
@@ -1860,7 +1971,7 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
     actionable_code_request=(act and task_kind=='code' and
         not re.match(r'^\s*(?:how|what|why|when|where|is|are|does)\b',latest) and
         bool(_ACTIONABLE_CODE.search(latest)))
-    file_request = request_text
+    file_request = scene_brief or request_text
     if (requests_tool_continuation(last_user) and not requests_project_creation(file_request)
             and not re.search(r"\b(?:instead|only|do not|don['’]t|never|stop|cancel|delete|remove|"
                               r"explain|send|post|search|read|rename)\b",last_user,re.I)):
@@ -1878,10 +1989,12 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
     request_file_draft = False
     blender_scene = None
     scene_request = False
+    check_script_subject = False
     scene_notes = []
     draft_stage = 'file'
     scene_ready = None
     if file_creation and requests_new_blender_scene(file_request):
+        import scene_kit
         from engine_discovery import find_blender, discover_blender
         scene_request = True
         try:
@@ -1897,21 +2010,28 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
             if cancel.is_set():
                 emit('status', 'Stopped')
                 return
-        if blender_scene:
+        # Named subjects can be checked against actual parts in a scene description.
+        # This also keeps fragile generated shader scripts out of the lunar effect path.
+        structured_subject = scene_kit.named_scene_subject(file_request) or scene_kit.lunar_impact_request(file_request)
+        brief_context = '\nOriginal scene request (user text):\n' + file_request
+        check_script_subject = bool(structured_subject and scene_kit.scene_quality_limit(file_request, 'template'))
+        if blender_scene and (not structured_subject or check_script_subject):
             request_file_draft = True
             messages.append({'role':'user','_automation_nudge':True,'content':
                 'Create the actual requested 3D scene in Blender now. Return only JSON with path set to scene.py '
                 'and content set to a complete Python script using bpy. The app runs it in an empty scene, '
                 'then saves and reopens the .blend automatically. Create geometry, materials, lighting and a camera. '
-                'Keep the script compact, single-file and procedural. Do not save, render, use external assets or make other system changes.'})
+                'Give the primary geometry descriptive object names that identify the requested subject and its parts. '
+                'Keep the script compact, single-file and procedural. Do not save, render, use external assets or make other system changes.'
+                + brief_context})
         else:
-            scene_notes.append('Blender was not found on this computer, so the scene was built without it.')
-            emit('status', 'Blender is not installed. Building the 3D scene without it…')
-            if profile.spec_attempts:
-                import scene_kit
+            if not blender_scene:
+                scene_notes.append('Blender was not found on this computer, so the scene was built without it.')
+                emit('status', 'Blender is not installed. Building the 3D scene without it…')
+            if profile.spec_attempts or (blender_scene and structured_subject):
                 draft_stage = 'spec'
                 request_file_draft = True
-                messages.append({'role':'user','_automation_nudge':True,'content': scene_kit.SCENE_PROMPT})
+                messages.append({'role':'user','_automation_nudge':True,'content': scene_kit.SCENE_PROMPT + brief_context})
             else:
                 scene_ready = 'template'
     file_draft_attempts = 0
@@ -1942,8 +2062,10 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
     extended_session=keep_going and not worker_mode and not improvement_mode
     try:work_session_minutes=int(performance.get('work_session_minutes') or 0)
     except (TypeError,ValueError):work_session_minutes=0
-    work_session_minutes=max(0,min(240,work_session_minutes))
-    if work_session_minutes and work_session_minutes<15:work_session_minutes=15
+    until_done = extended_session and work_session_minutes == -1
+    if not until_done:
+        work_session_minutes=max(0,min(240,work_session_minutes))
+        if work_session_minutes and work_session_minutes<15:work_session_minutes=15
     automatic_passes = profile.extra_passes if not worker_mode and not improvement_mode else 0
     total_passes = (None if work_session_minutes else 3 + automatic_passes) if extended_session else 1 + automatic_passes
     max_steps = rounds * total_passes if total_passes is not None else float('inf')
@@ -1951,13 +2073,14 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
     tools.auto_install = bool(performance.get('auto_install')) and act and not worker_mode and not improvement_mode
     tools.notify = lambda text: emit('status', text)
     work_started=time.monotonic()
-    work_deadline=work_started+work_session_minutes*60 if extended_session and work_session_minutes else None
+    work_deadline=work_started+work_session_minutes*60 if extended_session and work_session_minutes>0 else None
     inference_cancel=project_workers.WorkerStop(cancel,work_deadline) if work_deadline else cancel
     workspace_evidence=WorkspaceChangeTracker(tools.root) if act and not worker_mode else None
     workspace_report=workspace_evidence.report('run_start') if workspace_evidence else None
     pass_revision = workspace_report['revision'] if workspace_report else None
     checked_workspace_revision=workspace_report['revision'] if workspace_report else None
     workspace_unknown_dirty=False
+    uncertain_changes=0
     if workspace_report:emit('workspace_changes',workspace_report)
     if keep_going and not worker_mode and not improvement_mode:
         messages[0]['content']+=' For multi-step Keep going work, establish a task goal yourself using enable_tools goals and update_task_goal; the user need not fill a form. Preserve unmet criteria until completed or honestly blocked. Only revise the objective or remove criteria when the current user request changes scope, never merely to claim completion.'
@@ -1979,24 +2102,36 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
                               'A larger Model context window in Settings allows longer replies.')
             return True
         return False
+    initial_context_error=None
     if not reply_room():
         # Larger policy/project context can make eagerly loaded optional packs
         # exceed 8K. Keep their catalog entries, then load one pack when needed.
         retained=essential_tools|({'update_task_goal'} if goal else set())
         active_tools=[tool for tool in active_tools if tool['function']['name'] in retained]
         if not reply_room():
-            context_budget(performance.get('num_ctx',8192),messages[0],active_tools,min(output_tokens,1536))
+            try:
+                context_budget(performance.get('num_ctx',8192),messages[0],active_tools,min(output_tokens,1536))
+            except ValueError as exc:
+                if not until_done:raise
+                initial_context_error=str(exc)
         emit('status','Optional tool sets will load on demand to preserve model context.')
     progress_seen=set();pass_progress=0;pass_errors=False;pass_recovered_errors=False
     goal_validation_error=False
     protocol_error=False
+    last_check_state=None
+    last_recovery_state=None
+    recovery_step=-2
+    skip_automatic_checks = bool(re.search(
+        r"\b(?:do not|don['’]t|never|skip|without|avoid|no)\s+(?:run(?:ning)?\s+)?(?:any\s+)?(?:tests?|checks?|builds?)\b",
+        file_request, re.I))
     def needs_new_file():
         return file_creation and not file_delivery_observed and not tools.changes and not (
             workspace_report and workspace_report['count'])
 
-    def request_new_file(reply,step):
+    def request_new_file(reply,step,*,recover=False):
         nonlocal request_file_draft
-        if not (needs_new_file() and file_draft_attempts < profile.draft_attempts and step+1 < max_steps and promises_project_file(reply)):
+        if not (needs_new_file() and file_draft_attempts < profile.draft_attempts and step+1 < max_steps
+                and (recover or promises_project_file(reply))):
             return False
         messages.append({'role':'user','_automation_nudge':True,'content':
             'The user asked you to create a project deliverable. Provide its actual contents now. '
@@ -2020,7 +2155,7 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
                  'last_tool_error':last_tool_error,
                  'blockers':list(blockers or [])})
     def refresh_workspace(reason):
-        nonlocal workspace_report, verification, workspace_unknown_dirty
+        nonlocal workspace_report, verification, workspace_unknown_dirty, uncertain_changes
         if not workspace_evidence:return
         previous=workspace_report
         workspace_report=workspace_evidence.observe(reason)
@@ -2029,74 +2164,158 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
             # An incomplete inventory cannot rule out a shell or managed job
             # change outside the observed subset. Require a fresh check.
             workspace_unknown_dirty=True
+            uncertain_changes+=1
         if (workspace_report['revision'],workspace_report['complete']) != (previous['revision'],previous['complete']):
             emit('workspace_changes',workspace_report)
             if workspace_report['revision']!=previous['revision']:
                 verification={'status':'stale','summary':'Project source changed after the last passed check; run relevant checks again.'}
                 emit('verification',verification)
+
+    def ask_to_resume(steps, reasons, question):
+        """Persist a real dependency in the conversation that owns this job."""
+        if cancel.is_set():
+            goal_checkpoint('stopped',steps)
+            emit('status','Stopped')
+            return
+        emit('message', {'role':'assistant', 'source':'app', 'content':'\n'.join(reasons) + '\n\n' + question})
+        emit('question_pending', {'question':question})
+        goal_checkpoint('awaiting answer',steps,reasons)
+        emit('status','Waiting for your answer')
+
+    def finish_blocked(steps, reasons, status, question):
+        if until_done:
+            ask_to_resume(steps,reasons,question)
+        else:
+            goal_checkpoint('paused',steps,reasons)
+            emit('status',status)
+
+    if initial_context_error:
+        ask_to_resume(0,[initial_context_error],'Can you increase the context window in Settings or select a model with a larger context, then reply here?')
+        return
+
+    def check_state():
+        return len(tools.changes), workspace_report['revision'] if workspace_report else None, uncertain_changes
+
+    def record_check(result, previous_errors):
+        nonlocal verification, checked_changes, checked_workspace_revision, workspace_unknown_dirty
+        nonlocal pass_errors, pass_recovered_errors, last_tool_error, last_check_state
+        last_check_state=check_state()
+        verification=check_evidence(result)
+        emit('verification',verification)
+        if verification['status']=='passed':
+            checked_changes, checked_workspace_revision=last_check_state[:2]
+            workspace_unknown_dirty=False
+            unresolved_tool_failures.pop('run_checks',None)
+            pass_errors=bool(unresolved_tool_failures)
+            last_tool_error=next(reversed(unresolved_tool_failures.values()),'')
+            if not pass_errors:
+                pass_recovered_errors=pass_recovered_errors or previous_errors
+            return False
+        if tools.changes:
+            checked_changes=min(checked_changes,len(tools.changes)-1)
+        if verification['status']=='failed':
+            failure_key=hashlib.sha256(result.encode('utf-8')).hexdigest()
+            if failure_key not in failure_recovery_seen:
+                failure_recovery_seen.add(failure_key)
+                return True
+        return None
+
+    def verify_pending_changes():
+        nonlocal pass_errors, last_tool_error, pass_progress
+        if not until_done or not act or cancel.is_set() or skip_automatic_checks:
+            return False
+        state=check_state()
+        dirty=workspace_unknown_dirty or state[:2] != (checked_changes,checked_workspace_revision)
+        if not dirty or state == last_check_state or not any(t['function']['name']=='run_checks' for t in active_tools):
+            return False
+        verify_release_policy()
+        emit('discard_partial',None)
+        identifier='project_check_'+uuid.uuid4().hex
+        call={'id':identifier, 'type':'function', 'function':{'name':'run_checks','arguments':{}}}
+        assistant={'role':'assistant','content':'','tool_calls':[call]}
+        messages.append(assistant)
+        emit('message',assistant)
+        emit('status','Running the project checks for the current file changes.')
+        emit('tool',{'name':'run_checks','args':{},'automatic':True})
+        before_errors=pass_errors
+        try:
+            result=tools.execute('run_checks',{})
+        except (OSError, ValueError, RuntimeError) as exc:
+            result=f'{type(exc).__name__}: {exc}'
+        refresh_workspace('run_checks')
+        note={'role':'tool','tool_name':'run_checks','tool_call_id':identifier,'content':result[:24000]}
+        messages.append(note)
+        emit('message',note)
+        emit('result',result)
+        record_check(result,before_errors)
+        if verification['status']!='passed':
+            last_tool_error='run_checks: '+verification['status']
+            unresolved_tool_failures['run_checks']=last_tool_error
+            pass_errors=True
+            messages.append({'role':'user','_automation_nudge':True,'content':
+                'Use the observed check result above. Diagnose its specific failure, repair the source if appropriate, '
+                'and verify the repair. If there is no suitable automatic check, identify what would verify this deliverable.'})
+        pass_progress+=1
+        return True
+
+    def recover_stall(step, reasons):
+        """Exhaust a known local next step before asking the user for missing context."""
+        nonlocal last_recovery_state, recovery_step
+        state=(check_state(), len(progress_seen))
+        if recovery_step == step:
+            return True
+        if verify_pending_changes() or request_new_file('', step, recover=True):
+            discovery_guard.paused=False
+            discovery_guard.blocked_repeats=0
+            recovery_step=step
+            return True
+        if last_recovery_state != state:
+            last_recovery_state=state
+            recovery_step=step
+            # Keep the redundant request signatures blocked. Give the model one
+            # chance to use a different action or finish from its saved evidence.
+            discovery_guard.paused=False
+            discovery_guard.blocked_repeats=0
+            messages.append({'role':'user','_automation_nudge':True,'content':
+                'Continue the original job from the existing tool evidence. '+ ' '.join(reasons) +
+                ' Choose a different relevant action, or give the verified result if it already answers the request. '
+                'If a file, permission, or decision is genuinely missing, call ask_user with the specific question.'})
+            emit('status','Using the saved evidence to try a different next step.')
+            return True
+        ask_to_resume(step,reasons,'Which file, expected result, or missing detail should I use to continue this task?')
+        return False
     def deliver_scene(scene, step, source):
         """Build files from a checked scene description and finish the turn. Returns False when stopped."""
         nonlocal verification
         import scene_kit
         counts = scene_kit.statistics(scene)
-        stem = 'scene-' + uuid.uuid4().hex[:8]
-        made = []
-        blender_problem = ''
+        quality_limit = scene_kit.scene_quality_limit(file_request, source)
+        if quality_limit and source == 'template' and scene_brief != last_user:
+            starter = verified_scene_delivery(file_request, history, tools, complete=False)
+            if starter:
+                verification = {'status': 'passed', 'summary': 'The previously saved starting scene still matches its verified SHA-256.',
+                                'primary_output': {'name': Path(starter['artifact']).name, 'sha256': starter['sha256']}}
+                emit('artifact', starter)
+                emit('verification', verification)
+                emit('message', {'role': 'assistant', 'content': f"Your saved starting scene is **{Path(starter['artifact']).name}**. " + quality_limit})
+                finish_blocked(step+1,[quality_limit],'Response finished - task unfinished: starting scene saved; photorealism unfinished',
+                               'Would you like to keep the saved stylized scene or select another model and continue toward photorealism?')
+                return False
+        from scene_outputs import build_scene_files
         try:
-            if blender_scene:
-                emit('status', 'Building the scene in Blender…')
-                try:
-                    blend = tools.build_blender_scene(blender_scene, scene_kit.to_blender_script(scene), timeout=300)
-                    made.append((blend.name, 'file', 'Blender scene'))
-                    made.append((blend.with_suffix('.py').name, 'file', 'Script that rebuilds the scene'))
-                except InterruptedError:
-                    raise
-                except (ValueError, OSError, RuntimeError) as exc:
-                    blender_problem = str(exc)[:600]
-                    emit('status', 'Blender could not build the generated scene. Saving it as a GLB instead…')
-            if not made:
-                data = scene_kit.to_glb(scene)
-                checked = scene_kit.check_glb(data)
-                made.append((tools.write_generated(stem + '.glb', data).name, 'file', '3D scene (GLB)'))
-                note = 'Built by TalkToAi Code. Geometry is embedded in this page; nothing is downloaded.'
-                viewer = tools.write_generated(stem + '-viewer.html', scene_kit.to_viewer_html(scene, note).encode('utf-8'))
-                made.append((viewer.name, 'viewer', 'Interactive 3D viewer'))
-            try:
-                picture = io.BytesIO()
-                scene_kit.render_preview(scene).save(picture, format='PNG', optimize=True)
-                made.append((tools.write_generated(stem + '-preview.png', picture.getvalue()).name, 'image', 'Preview picture'))
-            except (ImportError, OSError, ValueError) as exc:
-                emit('status', 'Preview picture skipped: ' + str(exc)[:120])
+            made, evidence, blender_problem = build_scene_files(tools, scene, blender_scene, emit)
         except InterruptedError:
-            goal_checkpoint('paused', step+1)
+            goal_checkpoint('stopped', step+1)
             emit('status', 'Stopped')
             return False
         except (ValueError, OSError) as exc:
             emit('message', {'role':'assistant','content':'The scene was designed but its files could not be saved in this project: ' + str(exc)[:300]})
-            goal_checkpoint('paused', step+1, ['The scene files could not be saved'])
-            emit('status', 'Response finished - task unfinished: the scene files could not be saved')
+            finish_blocked(step+1,['The scene files could not be saved'],'Response finished - task unfinished: the scene files could not be saved',
+                           'Which writable project folder should I use for the scene files?')
             return False
-        made = [item for item in made if tools.path(item[0]).is_file()]
-        if not made:
-            emit('message', {'role':'assistant','content':'The scene was designed but no file reached the project folder.'})
-            goal_checkpoint('paused', step+1, ['The scene files could not be saved'])
-            emit('status', 'Response finished - task unfinished: the scene files could not be saved')
-            return False
-        for name, kind, title in made:
-            artifact = json.loads(register_output(tools, name, title))
-            artifact['type'] = kind
-            if kind == 'viewer':
-                artifact['auto_open'] = True
-            emit('artifact', artifact)
         refresh_workspace('before_completion')
-        if made[0][0].endswith('.blend'):
-            verification = {'status':'passed','summary':'Blender saved and reopened the scene and checked that it contains geometry.'}
-        else:
-            verification = {'status':'passed','summary':
-                f"The GLB was written and read back: {checked['objects']} objects, {checked['triangles']} triangles, "
-                f"{checked['materials']} materials. Its appearance in an external viewer was not checked."}
+        verification = evidence
         emit('verification', verification)
-        goal_checkpoint('completed', step+1)
         lines = []
         if source == 'template':
             if draft_failures:
@@ -2108,6 +2327,8 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
         else:
             lines.append('Built from the scene design the model wrote.')
         lines.append(f"**{scene['title']}** · {counts['objects']} objects · {counts['triangles']} triangles")
+        if quality_limit:
+            lines.append(quality_limit)
         lines.append('Files in your project:\n' + '\n'.join(f'- **{name}** · {title}' for name, _, title in made))
         if made[0][0].endswith('.blend'):
             lines.append('Blender reopened the scene and verified its geometry. Open the .blend from Evidence to view or edit it.')
@@ -2119,9 +2340,30 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
             lines.append('What went wrong before:\n```text\n' + '\n'.join(
                 f'{number}. {reason}' for number, reason in enumerate(draft_failures[-6:], 1)) + '\n```')
             lines.append('For an original design, try again with Effort set to Max or a larger model.')
-        emit('message', {'role':'assistant','content':'\n\n'.join(lines)})
-        emit('status', 'Ready')
-        return True
+        completion = {'role': 'assistant', 'content': '\n\n'.join(lines)}
+        if evidence.get('primary_output'):
+            completion['scene_delivery'] = {'brief': file_request, 'project': str(tools.root),
+                                            'complete': not quality_limit, **evidence['primary_output']}
+        emit('message', completion)
+        if quality_limit:
+            finish_blocked(step+1,[quality_limit],'Response finished - task unfinished: starting scene saved; photorealism unfinished',
+                           'Would you like to keep the saved stylized scene or select another model and continue toward photorealism?')
+        else:
+            goal_checkpoint('completed',step+1)
+            emit('status','Ready')
+        return not quality_limit
+
+    def build_scene_fallback(step):
+        import scene_kit
+        _, design = scene_kit.template_scene(file_request)
+        if design is not None:
+            return deliver_scene(design, step, 'template')
+        reason = 'The built-in scene library has no matching design for this subject.'
+        emit('message', {'role':'assistant','content': reason + ' Your requested scene is still unfinished.'
+              + (' Last model error: ' + draft_failures[-1] if draft_failures else '')})
+        finish_blocked(step+1,[reason],'Response finished - task unfinished: '+reason,
+                       'Can you select another model to design this subject, or name a different subject you would like me to build?')
+        return False
 
     def delegate(role, task):
         stop = team.reserve(role, task, cancel)
@@ -2185,8 +2427,7 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
             emit('status','Ready')
         return
     if scene_ready == 'template':
-        import scene_kit
-        deliver_scene(scene_kit.template_scene(file_request)[1], 0, 'template')
+        build_scene_fallback(0)
         return
     for step in (itertools.count() if total_passes is None else range(max_steps)):
         if cancel.is_set():
@@ -2206,16 +2447,22 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
                 reasons=[]
                 if not pass_progress:reasons.append('No new tool evidence in the last pass')
                 if pass_errors or unresolved_tool_failures:reasons.append('Unresolved tool errors; inspect the latest tool results')
+                if until_done and last_tool_error:reasons.append(last_tool_error)
                 if goal_validation_error:reasons.append('Task goal metadata remains invalid')
                 if protocol_error:reasons.append('Tool response format remains invalid')
                 if discovery_guard.paused:reasons.append('Repeated unchanged discovery')
-                goal_checkpoint('paused',step,reasons)
-                emit('status',('Keep going paused' if keep_going else 'Paused at the step budget')+': the last pass had no new verified tool observations or had unresolved tool errors. The task remains unfinished.')
-                return
+                if until_done:
+                    if not recover_stall(step,reasons):
+                        return
+                else:
+                    goal_checkpoint('paused',step,reasons)
+                    emit('status',('Keep going paused' if keep_going else 'Paused at the step budget')+': the last pass had no new verified tool observations or had unresolved tool errors. The task remains unfinished.')
+                    return
             goal_checkpoint('continuing',step)
-            messages.append({'role':'user','_automation_nudge':True,'content':
-                'Continue the same authorized task from the saved observations and checklist. Another bounded pass is available because the last pass produced new tool evidence. '+
-                'Do not repeat completed work or expand the scope. Verify remaining outcomes; finish as soon as the requested task is done. Report genuine blockers.'})
+            if recovery_step != step:
+                messages.append({'role':'user','_automation_nudge':True,'content':
+                    'Continue the same authorized task from the saved observations and checklist. '+
+                    'Do not repeat completed work or expand the scope. Verify remaining outcomes; finish as soon as the requested task is done. Report genuine blockers.'})
             emit('status',(f'Keep going: continuing pass {step//rounds+1} with saved progress.' if keep_going else
                            f'Step budget reached with new results; continuing automatically (pass {step//rounds+1}).'))
             pass_revision = revision
@@ -2251,7 +2498,10 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
                     wanted = low
                 turn_output = wanted
         try:window=context_window([turn_system]+messages[1:],context_budget(num_ctx,turn_system,turn_tools,turn_output))
-        except (ValueError,TypeError):
+        except (ValueError,TypeError) as exc:
+            if until_done:
+                ask_to_resume(step,[str(exc)[:300]],'Can you increase the context window in Settings or select a model with a larger context, then reply here?')
+                return
             goal_checkpoint('paused',step)
             raise
         compacted=any(m.get('content','').startswith('Earlier history checkpoint (') for m in window if isinstance(m.get('content'),str))
@@ -2291,8 +2541,18 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
         emit('model_wait',{'step':step+1,'elapsed_seconds':0,'silent_seconds':0,
                            'phase':'waiting_for_first_response'})
         try:
-            stream = stream_chat(url,payload,inference_cancel,local_only=True) if worker_mode else stream_chat(url,payload,inference_cancel)
+            stream = _agent_reply_stream(url, payload, inference_cancel, worker_mode=worker_mode)
             for data in stream:
+                if data.get('_retry_local_inference'):
+                    emit('discard_partial', None)
+                    emit('status', 'Retrying the interrupted local model step with the saved tool results.')
+                    finished = reasoning.finish()
+                    if finished:
+                        emit('reasoning', finished)
+                    content, calls, first = '', [], None
+                    reasoning = ReasoningActivity(include_excerpt=show_thinking)
+                    visible_stream = VisibleTextStream()
+                    continue
                 if data.get('_openai_replay_reset'):
                     messages=[{k:v for k,v in m.items() if k!='_openai_response'} for m in messages]
                     continue
@@ -2350,9 +2610,33 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
                 return
             goal_checkpoint('stopped',step)
             emit('status','Stopped');return
-        except Exception:
+        except _IncompleteAgentReply as exc:
+            emit('discard_partial', None)
+            finished = reasoning.finish()
+            if finished:
+                emit('reasoning', finished)
+            if scene_request and not inference_cancel.is_set():
+                draft_failures.append(str(exc))
+                build_scene_fallback(step)
+                return
+            if until_done:
+                verify_pending_changes()
+                ask_to_resume(step,[str(exc)],'Can you reconnect this model or select an available model, then reply here to resume this job?')
+                return
+            goal_checkpoint('paused', step, [str(exc)])
+            raise
+        except Exception as exc:
             reasoning_finished=reasoning.finish()
             if reasoning_finished:emit('reasoning',reasoning_finished)
+            if until_done and isinstance(exc,(OSError,RuntimeError)):
+                emit('discard_partial',None)
+                if scene_request and not inference_cancel.is_set():
+                    draft_failures.append(str(exc)[:300])
+                    build_scene_fallback(step)
+                    return
+                verify_pending_changes()
+                ask_to_resume(step,[str(exc)[:300]],'Can you reconnect this model or select an available model, then reply here to resume this job?')
+                return
             goal_checkpoint('paused',step)
             raise
         reasoning_finished=reasoning.finish()
@@ -2360,7 +2644,6 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
         # Images are for the immediately following vision turn only. The textual
         # tool result stays in history, without repeatedly shipping screenshot bytes.
         for message in messages:message.pop('images',None)
-        if not stats:raise RuntimeError('Model stream ended before completion; no tool calls were executed.')
         emit('metrics',model_metrics(stats,started,first,step+1))
         visible_tail=visible_stream.finish()
         if visible_tail and not drafting_file:emit('delta',visible_tail)
@@ -2390,7 +2673,9 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
                     import scene_kit
                     if truncated:
                         raise ValueError('The scene description was cut off by the output limit. Use fewer objects.')
-                    raise _SceneDesignReady(scene_kit.normalize_scene(read_json_object(content)))
+                    design = scene_kit.normalize_scene(read_json_object(content))
+                    scene_kit.check_subject_labels(file_request, (obj['name'] for obj in design['objects']))
+                    raise _SceneDesignReady(design)
                 if truncated and not profile.draft_continuations:
                     raise ValueError('The file response was incomplete or included tool calls.')
                 default_path = 'scene.py' if scene_request else (draft_partial[0] if draft_partial else None)
@@ -2437,15 +2722,21 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
                     if notes:
                         emit('status','Adjusted the scene script: ' + '; '.join(notes[:3]) + '.')
                     emit('status','Building and checking the Blender scene…')
-                    scene = tools.build_blender_scene(blender_scene, draft_text)
+                    scene = (tools.build_blender_scene(blender_scene, draft_text, brief=file_request)
+                             if check_script_subject else tools.build_blender_scene(blender_scene, draft_text))
                     artifact = json.loads(register_output(tools, scene.name))
                     emit('artifact', artifact)
                     refresh_workspace('before_completion')
-                    verification = {'status':'passed','summary':'Blender saved and reopened the scene and checked that it contains geometry.'}
+                    verification = {'status':'passed','summary':'Blender saved and reopened the scene and checked that it contains geometry.',
+                                    'primary_output': {'name': scene.name, 'sha256': artifact['sha256']}}
                     emit('verification', verification)
                     goal_checkpoint('completed', step+1)
-                    emit('message', {'role':'assistant','content':
+                    emit('message', {'role':'assistant',
+                         'scene_delivery': {'brief': file_request, 'project': str(tools.root),
+                                            'name': scene.name, 'sha256': artifact['sha256']},
+                         'content':
                          f'Created **{scene.name}** in your project. Blender reopened it and verified the geometry. Open the file from Evidence to view or edit the scene.'
+                         + (' The saved scene contains named geometry for the requested subject. Its realism still needs visual review.' if check_script_subject else '')
                          + (f' The model needed {file_draft_attempts} attempts; the earlier errors were fed back to it.' if file_draft_attempts > 1 else '')})
                     emit('status','Ready')
                     return
@@ -2464,7 +2755,7 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
                 deliver_scene(ready.design, step, 'model')
                 return
             except InterruptedError:
-                goal_checkpoint('paused', step+1)
+                goal_checkpoint('stopped', step+1)
                 emit('status','Stopped')
                 return
             except (TypeError, ValueError, SyntaxError, OSError, RuntimeError) as exc:
@@ -2476,13 +2767,14 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
                 draft_partial = None
                 draft_continuations = 0
                 more = step+1 < max_steps
-                if draft_stage == 'file' and file_draft_attempts < profile.draft_attempts and more:
+                attempts = min(2, profile.draft_attempts) if check_script_subject else profile.draft_attempts
+                if draft_stage == 'file' and file_draft_attempts < attempts and more:
                     messages.append({'role':'user','_automation_nudge':True,'content':
                         ('The scene was not verified. Return a corrected complete scene.py in the same JSON format. '
                          if scene_request else 'No file was written. Return a shorter complete JSON object with path and content. ') + reason})
                     request_file_draft = True
                     if profile.name != 'standard':
-                        emit('status', f'Attempt {file_draft_attempts} of {profile.draft_attempts} did not pass: '
+                        emit('status', f'Attempt {file_draft_attempts} of {attempts} did not pass: '
                                        f'{draft_failures[-1]} Asking the model to correct it…')
                     continue
                 if scene_request:
@@ -2493,12 +2785,13 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
                         draft_stage = 'spec'
                         messages.append({'role':'user','_automation_nudge':True,'content':
                             ('That scene description could not be used: ' + reason + ' ' if again else
-                             'Writing the Blender script did not work. Use this simpler route instead. ') + scene_kit.SCENE_PROMPT})
+                             'Writing the Blender script did not work. Use this simpler route instead. ')
+                            + scene_kit.SCENE_PROMPT + brief_context})
                         request_file_draft = True
                         emit('status','Asking the model to describe the scene as simple shapes instead of code…')
                         continue
                     emit('status','Building the scene with the built-in generator instead…')
-                    deliver_scene(scene_kit.template_scene(file_request)[1], step, 'template')
+                    build_scene_fallback(step)
                     return
                 if profile.name != 'standard':
                     emit('message', {'role':'assistant','content':
@@ -2506,8 +2799,9 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
                         + ('s' if len(draft_failures) != 1 else '') + ', so nothing was written.\n\n```text\n'
                         + '\n'.join(f'{number}. {item}' for number, item in enumerate(draft_failures[-6:], 1))
                         + '\n```\n\nTry Effort Max, a larger model, or ask for a smaller file.'})
-                goal_checkpoint('paused', step+1, ['The model did not supply a complete new file'])
-                emit('status','Response finished - task unfinished: the model did not supply a complete new file')
+                finish_blocked(step+1,['The model did not supply a complete new file'],
+                               'Response finished - task unfinished: the model did not supply a complete new file',
+                               'Would you like a smaller deliverable, or can you select a model that can finish this file?')
                 return
             content = ''
         cut_write = None
@@ -2545,6 +2839,10 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
                     continue
                 malformed_retries+=1
                 if malformed_retries>2:
+                    if until_done:
+                        ask_to_resume(step+1,['The model repeatedly returned incomplete tool calls.'],
+                                      'Can you select a model that supports structured tool calls and reply here to continue?')
+                        return
                     raise RuntimeError('Model repeatedly returned incomplete or invalid tool output. No actions from those responses were executed.') from exc
                 messages.append({'role':'user','_automation_nudge':True,'content':
                     'The previous tool response was invalid and NONE of its actions executed. '+
@@ -2563,7 +2861,12 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
         except (ValueError,TypeError) as exc:
             protocol_error=True
             malformed_retries+=1
-            if malformed_retries>2:raise RuntimeError('Model repeatedly produced invalid structured tool calls. No actions from those batches were executed.') from exc
+            if malformed_retries>2:
+                if until_done:
+                    ask_to_resume(step+1,['The model repeatedly returned invalid tool arguments.'],
+                                  'Can you select a model that supports structured tool calls and reply here to continue?')
+                    return
+                raise RuntimeError('Model repeatedly produced invalid structured tool calls. No actions from those batches were executed.') from exc
             messages.append({'role':'user','_automation_nudge':True,'content':'Your previous structured tool batch was invalid and none of it was executed. Return function names and JSON-object arguments for available tools. Error: '+str(exc)[:200]})
             emit('status','Repairing invalid tool arguments - no action executed')
             continue
@@ -2582,6 +2885,10 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
             emit('question_open', {'question':questions[0]})
             emit('status','Question noted; continuing without waiting')
         if calls:protocol_error=False
+        if until_done and not calls and not truncated and not drafting_file:
+            refresh_workspace('before_completion')
+            if verify_pending_changes():
+                continue
         assistant = {'role': 'assistant', 'content': content}
         if calls:
             assistant['tool_calls'] = calls
@@ -2604,8 +2911,10 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
                     continue
                 reason = ('No requested file was observed' if needs_file else
                           'No task tool action was observed for the requested Code work')
-                goal_checkpoint('paused',step+1,[reason])
-                emit('status','Response finished - task unfinished: '+reason[0].lower()+reason[1:])
+                if until_done and request_new_file(content,step,recover=True):
+                    continue
+                finish_blocked(step+1,[reason],'Response finished - task unfinished: '+reason[0].lower()+reason[1:],
+                               'Which project file or deliverable should I start with, or would you like to select another model to carry out this request?')
                 return
             refresh_workspace('before_completion')
             if tools.jobs and tools.jobs.running() and not job_review_requested and step+1<max_steps:
@@ -2619,8 +2928,8 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
                     messages.append({'role':'user','_automation_nudge':True,'content':'Continue the unfinished response/task from the saved state. Do not repeat actions already executed. Any incomplete tool batch in the last response was NOT executed; inspect current state before retrying. Stay within the original request.'})
                     emit('status',f'Continuing automatically after output limit - {continuations}/{profile.text_continuations}')
                     continue
-                goal_checkpoint('paused',step+1)
-                emit('status','Paused at the output limit - progress is saved; send Continue when ready')
+                finish_blocked(step+1,['The model reached its output limit.'],'Paused at the output limit - progress is saved; send Continue when ready',
+                               'Would you like me to finish in smaller sections, or can you select a model with a longer response limit?')
                 return
             workspace_dirty=workspace_unknown_dirty or bool(workspace_report and workspace_report['revision']!=checked_workspace_revision)
             if act and (len(tools.changes)>checked_changes or workspace_dirty) and \
@@ -2637,8 +2946,9 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
                 emit('status','Reviewing unfinished task steps')
                 continue
             if unfinished:
-                goal_checkpoint('paused',step+1)
-                emit('status',f'Response finished - {len(unfinished)} task steps remain unresolved')
+                remaining=unfinished[0]['step']
+                finish_blocked(step+1,[remaining],f'Response finished - {len(unfinished)} task steps remain unresolved',
+                               'What input or decision can you supply for this remaining checklist item?')
                 return
             unmet=[criterion for criterion in (goal or {}).get('criteria',[]) if criterion['status']!='met']
             if unmet and not goal_review_requested and step+1<max_steps:
@@ -2651,8 +2961,8 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
                 continue
             if unmet:
                 blockers=['Goal '+item['id']+' '+item['status']+': '+item['text'] for item in unmet]
-                goal_checkpoint('paused',step+1,blockers)
-                emit('status','Response finished - task unfinished: '+'; '.join(blockers))
+                finish_blocked(step+1,blockers,'Response finished - task unfinished: '+'; '.join(blockers),
+                               'What detail or evidence should I use to resolve the first outstanding criterion?')
                 return
             # Prose cannot erase failed actions or pending process evidence.
             # Permit one bounded recovery opportunity, then remain unfinished.
@@ -2675,13 +2985,18 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
                 blockers.append('Project source changed after the last passed check; verification remains unfinished')
             if verification and verification['status']!='passed':blockers.append('checks '+verification['status'])
             if blockers:
-                goal_checkpoint('paused',step+1,blockers)
-                emit('status','Response finished - task unfinished: '+'; '.join(blockers))
+                if until_done and last_tool_error:
+                    blockers.append(last_tool_error)
+                question=('Which command or observable result should I use to verify these changes?' if workspace_dirty or
+                          (verification and verification['status']!='passed') else
+                          'What input or permission can you supply to resolve the remaining tool or process error?')
+                finish_blocked(step+1,blockers,'Response finished - task unfinished: '+'; '.join(blockers),question)
                 return
             goal_checkpoint('completed',step+1)
             emit('status','Ready')
             return
         check_recovery_pending=None
+        discovery_guard.repeated_source=False
         for call in calls:
             if cancel.is_set():
                 goal_checkpoint('stopped',step)
@@ -2696,6 +3011,7 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
             count = len(tools.changes)
             signature=json.dumps([name,args],sort_keys=True)
             python_probe_failed = False
+            prior_pass_errors=pass_errors
             try:
                 if name not in {t['function']['name'] for t in active_tools}:
                     raise PermissionError('This tool is not enabled for this turn.')
@@ -2743,6 +3059,8 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
                     result = tools.execute(name, args)
                 observed_result=result
                 command_failed=name in ('run_checks','run_command','desktop_run_command','remote_run_command','run_blender_script','build_native','run_script') and any(int(code)!=0 for code in re.findall(r'^Exit (-?\d+)\s*$',result,re.M))
+                if name in ('run_checks','run_command','run_blender_script','build_native','run_script'):
+                    discovery_guard.record_command(result, command_failed)
                 chain_status='completed'
                 if name=='invoke_chain':
                     try:chain_status=json.loads(result).get('status','failed')
@@ -2751,13 +3069,19 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
                 if guard_result is None and not command_failed and name not in ('run_command','desktop_run_command','remote_run_command'):
                     guidance=discovery_guard.observe(name,args,result)
                     if guidance:
-                        result=guidance+'\n\nObserved tool result:\n'+result
-                        emit('status','Repeated unchanged discovery detected; focusing on the selected project.')
+                        if name in ('read_file', 'read_project_files'):
+                            result=guidance
+                            emit('status','The source is unchanged. Using the earlier read and the reported error location.')
+                        else:
+                            result=guidance+'\n\nObserved tool result:\n'+result
+                            emit('status','Repeated unchanged discovery detected; focusing on the selected project.')
+                    excerpt=discovery_guard.traceback_excerpt(name,args,observed_result)
+                    if excerpt:
+                        result=excerpt+'\n\n'+result
                 if len(tools.changes)>count or name in ('write_file','write_file_checked','edit_file','desktop_write_file','run_blender_script'):
                     discovery_guard.reset()
                 # Commands (including successful directory listings) do not
                 # prove a mutation; changed discovery output resets its own count.
-                prior_pass_errors=pass_errors
                 if command_failed or (name=='run_checks' and check_evidence(result)['status']!='passed'):
                     pass_errors=True
                     if name == 'run_command':
@@ -2799,28 +3123,8 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
                 refresh_workspace('python_probe' if python_probe_failed else name)
             verify_release_policy()
             if name=='run_checks':
-                verification=check_evidence(result);emit('verification',verification)
-                if verification['status']!='passed' and tools.changes:
-                    checked_changes=min(checked_changes,len(tools.changes)-1)
-                if verification['status']=='failed':
-                    failure_key=hashlib.sha256(result.encode('utf-8')).hexdigest()
-                    if failure_key not in failure_recovery_seen:
-                        failure_recovery_seen.add(failure_key);check_recovery_pending=True
-                elif verification['status']=='passed':check_recovery_pending=None
-                if verification['status']=='passed':
-                    checked_changes=len(tools.changes)
-                    checked_workspace_revision=workspace_report['revision'] if workspace_report else None
-                    workspace_unknown_dirty=False
-                    # Passing local checks cannot recover a failed browser,
-                    # remote, mail or chain action. Those need their own
-                    # successful observation or an explicit unfinished report.
-                    if unresolved_tool_failures:
-                        pass_errors=True
-                        last_tool_error=list(unresolved_tool_failures.values())[-1]
-                    else:
-                        last_tool_error=''
-                        pass_recovered_errors=pass_recovered_errors or prior_pass_errors
-                        pass_errors=False
+                recovery_needed=record_check(result,prior_pass_errors)
+                if recovery_needed is not None:check_recovery_pending=recovery_needed
             if len(tools.changes) > count:
                 if pass_recovered_errors:pass_errors=True
                 emit('change', tools.changes[-1])
@@ -2878,6 +3182,10 @@ def _run_agent(url, model, history, project, act, cancel, emit, rounds, performa
                 'then rerun run_checks. Inspect only the missing relevant lines; do not repeat unchanged whole-file reads or broad discovery. '+
                 'Preserve the tests and original requested behavior. If recovery is blocked, explain the precise reason.'})
             emit('status','Diagnosing the specific failed check before further edits')
+        if until_done and (discovery_guard.paused or discovery_guard.repeated_source):
+            if recover_stall(step+1,['Repeated reads returned the same project evidence.']):
+                continue
+            return
         if discovery_guard.paused:
             goal_checkpoint('paused',step+1)
             emit('status','Paused: the model repeated unchanged discovery after recovery guidance. Progress is saved; the task remains unfinished.')

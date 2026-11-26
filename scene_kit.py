@@ -686,7 +686,7 @@ canvas{display:block;width:100%;height:100%;touch-action:none;cursor:grab}
 const SCENE=__DATA__;
 const canvas=document.getElementById('view');
 const gl=canvas.getContext('webgl',{antialias:true});
-if(!gl){document.getElementById('note').textContent='This browser cannot show WebGL. Open scene.glb in another viewer.';}
+if(!gl){document.getElementById('note').textContent='This browser could not start WebGL. Open the viewer in a browser with hardware acceleration enabled.';}
 else{
 const flat=gl.getExtension('OES_standard_derivatives');
 const vs='attribute vec3 p;uniform mat4 m;uniform mat4 v;varying vec3 w;varying float d;void main(){w=p;vec4 e=v*vec4(p,1.0);d=-e.z;gl_Position=m*vec4(p,1.0);}';
@@ -698,6 +698,7 @@ const prog=gl.createProgram();gl.attachShader(prog,shader(gl.VERTEX_SHADER,vs));
 const loc=n=>gl.getUniformLocation(prog,n);
 function bytes(t){const b=atob(t),a=new Uint8Array(b.length);for(let i=0;i<b.length;i++)a[i]=b.charCodeAt(i);return a.buffer;}
 const parts=SCENE.batches.map(b=>{const p=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,p);gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(bytes(b.p)),gl.STATIC_DRAW);
+if(!b.i)return{p,i:null,n:b.n,c:b.c,g:b.g};
 const i=gl.createBuffer();const idx=new Uint16Array(bytes(b.i));gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,i);gl.bufferData(gl.ELEMENT_ARRAY_BUFFER,idx,gl.STATIC_DRAW);return{p,i,n:idx.length,c:b.c,g:b.g};});
 let yaw=SCENE.yaw,pitch=SCENE.pitch,dist=SCENE.dist,spin=true,drag=null;
 function perspective(f,a,n,r){const t=1/Math.tan(f/2);return[t/a,0,0,0,0,t,0,0,0,0,(r+n)/(n-r),-1,0,0,2*r*n/(n-r),0];}
@@ -711,7 +712,7 @@ if(spin)yaw+=0.0025;const c=SCENE.centre;const e=[c[0]+dist*Math.cos(pitch)*Math
 const view=look(e,c);const far=dist*4+SCENE.reach*4;gl.uniformMatrix4fv(loc('m'),false,mul(perspective(0.8,w/h,Math.max(0.05,dist/200),far),view));gl.uniformMatrix4fv(loc('v'),false,view);
 gl.uniform3fv(loc('sky'),SCENE.sky);gl.uniform3fv(loc('sun'),SCENE.sun);gl.uniform1f(loc('far'),far);
 for(const b of parts){gl.bindBuffer(gl.ARRAY_BUFFER,b.p);gl.enableVertexAttribArray(0);gl.vertexAttribPointer(0,3,gl.FLOAT,false,0,0);gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,b.i);
-gl.uniform3fv(loc('c'),b.c);gl.uniform1f(loc('g'),b.g);gl.drawElements(gl.TRIANGLES,b.n,gl.UNSIGNED_SHORT,0);}
+gl.uniform3fv(loc('c'),b.c);gl.uniform1f(loc('g'),b.g);if(b.i)gl.drawElements(gl.TRIANGLES,b.n,gl.UNSIGNED_SHORT,0);else gl.drawArrays(gl.TRIANGLES,0,b.n);}
 requestAnimationFrame(draw);}
 gl.bindAttribLocation(prog,0,'p');gl.linkProgram(prog);gl.useProgram(prog);
 canvas.addEventListener('pointerdown',e=>{drag=[e.clientX,e.clientY];spin=false;canvas.setPointerCapture(e.pointerId);canvas.style.cursor='grabbing';});
@@ -740,10 +741,16 @@ def to_viewer_html(scene, note=''):
             'dist': round(distance, 4), 'yaw': round(math.atan2(offset[0], offset[2]), 5),
             'pitch': round(math.asin(max(-1.0, min(1.0, offset[1] / distance))), 5),
             'sun': [round(part, 4) for part in direction]}
-    sky = '#%02x%02x%02x' % tuple(int(round(part * 255)) for part in scene['background'])
+    return mesh_viewer_html(scene['title'], data, note)
+
+
+def mesh_viewer_html(title, data, note):
+    """Build the same offline page for procedural meshes and evaluated Blender geometry."""
+    sky = '#%02x%02x%02x' % tuple(int(round(part * 255)) for part in data['sky'])
     escape = lambda text: text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')  # noqa: E731
-    return (_VIEWER.replace('__TITLE__', escape(scene['title'])).replace('__NOTE__', escape(note)[:300])
-            .replace('__CSS__', sky).replace('__DATA__', json.dumps(data, separators=(',', ':'))))
+    fields = {'__TITLE__': escape(title), '__NOTE__': escape(note)[:300], '__CSS__': sky,
+              '__DATA__': json.dumps(data, separators=(',', ':'), allow_nan=False).replace('<', r'\u003c')}
+    return re.sub(r'__TITLE__|__NOTE__|__CSS__|__DATA__', lambda match: fields[match[0]], _VIEWER)
 
 
 # ------------------------------------------------------------------ preview
@@ -848,6 +855,7 @@ SCENE_FORMAT = {
         'objects': {'type': 'array', 'minItems': 4, 'maxItems': 80, 'items': {
             'type': 'object',
             'properties': {
+                'name': {'type': 'string'},
                 'shape': {'type': 'string', 'enum': list(SHAPES)},
                 'at': {'type': 'array', 'items': {'type': 'number'}, 'minItems': 3, 'maxItems': 3},
                 'size': {'type': 'array', 'items': {'type': 'number'}, 'minItems': 3, 'maxItems': 3},
@@ -870,7 +878,8 @@ SCENE_FORMAT = {
 SCENE_PROMPT = (
     'Design the requested 3D scene as data instead of code. Return one JSON object with title, background '
     '(a hex colour) and objects: a list of 15 to 60 simple shapes. Each object has shape (box, sphere, cylinder, '
-    'cone, torus, pyramid, crystal, gem or plane), at [x, y, z] for its centre in metres (z is up, the ground is '
+    'cone, torus, pyramid, crystal, gem or plane), a name identifying what part of the requested subject it depicts, '
+    'at [x, y, z] for its centre in metres (z is up, the ground is '
     'z = 0), and color (hex). Give box, pyramid and plane a size [x, y, z]; give round shapes a radius and, for '
     'cylinder, cone and crystal, a height; give torus a radius and tube. Optional: rotate [x, y, z] in degrees, '
     'glow (1 to 10) for lamps and lights, ring {"count", "radius"} to copy an object around a circle, and scatter '
@@ -1067,22 +1076,138 @@ def _sculpture(text, source):
                        {'type': 'point', 'at': [0, 0, 15], 'color': tone(0.0, 0.72), 'power': 3500}]}
 
 
+def _lunar(text, source):
+    """A stylised still built from crater rims, regolith, a luminous flash and arcs of dust."""
+    objects = [_shape('plane', (0, 0, -0.08), '#787485', size=[96, 76, 0], name='Lunar regolith'),
+               _shape('sphere', (-12, 25, 13), '#659cd1', radius=1.7, name='Distant Earth')]
+    for x, y, radius in ((0, 0, 3.5), (-7, -5, 2.3), (9, -1, 2.8), (-11, 6, 4.3), (6, 10, 2.4)):
+        objects.append(_shape('torus', (x, y, 0), '#a09aaa', radius=radius, tube=0.16 * radius,
+                              scale=[1, 0.88, 0.38], name='Lunar crater rim'))
+        objects.append(_shape('cylinder', (x, y, -0.04), '#514c60', radius=radius * 0.89, height=0.09,
+                              scale=[1, 0.88, 1], name='Crater floor'))
+    for i in range(16):
+        x, y = -23 + i * 3.2, source.uniform(13, 20)
+        objects.append(_shape('gem', (x, y, 0), '#686577', radius=1, scale=[
+            source.uniform(3, 6), source.uniform(2, 4), source.uniform(1, 3.2)], name='Lunar ridge'))
+    objects.append(_shape('gem', (0, 0, 0.08), '#77737e', radius=0.21, scale=[1, 0.77, 0.61],
+                          scatter={'count': 90, 'area': [34, 24], 'vary': 0.8, 'seed': source.randrange(1000)},
+                          name='Regolith boulder'))
+    scene = {'title': 'Lunar crater plain', 'background': '#090b19', 'objects': objects,
+             'camera': {'at': [14, -20, 8], 'look_at': [0, 1, 2]},
+             'lights': [{'type': 'sun', 'at': [-12, -11, 9], 'color': '#c8d2fc', 'power': 2.6}]}
+    if not lunar_impact_request(text):
+        return scene
+    objects.append(_shape('sphere', (0, 0, 1.1), '#fff0b0', radius=1.6, glow=8, name='Impact flash'))
+    for spoke in range(13):
+        angle = math.tau * spoke / 13 + source.uniform(-0.13, 0.13)
+        reach, peak = source.uniform(3.5, 7), source.uniform(2.5, 6.5)
+        for step in range(1, 8):
+            t = step / 8
+            x, y = math.cos(angle) * reach * t, math.sin(angle) * reach * t
+            z = 0.45 + peak * math.sin(t * math.pi)
+            colour = '#ffc578' if step <= 2 else source.choice(('#c39685', '#bbaca1', '#938592'))
+            objects.append(_shape('gem', (x, y, z), colour, radius=(1 - t) * 0.58 + 0.09,
+                                  glow=2 if step <= 2 else 0, name='Impact dust arc'))
+    for i in range(10):
+        height = 1.4 + i * 0.55
+        objects.append(_shape('sphere', (0.3 * math.sin(i), 0.2 * math.cos(i), height),
+                              '#ffe4a4' if i < 4 else '#c7a39d', radius=0.85 - i * 0.038,
+                              glow=4 if i < 4 else 0, name='Illuminated dust plume'))
+    scene['title'] = 'Lunar impact flash'
+    scene['camera']['look_at'] = [0, 1, 3.3]
+    scene['lights'].append({'type': 'point', 'at': [0, 0, 3], 'color': '#ffba77', 'power': 2400})
+    return scene
+
+
 _TEMPLATES = (
     ('winter', r'\b(?:winter|snow\w*|christmas|xmas|frost\w*|ic[ey]|nottingham|village|cabin|chalet)\b', _winter),
-    ('portal', r'\b(?:portal|crystals?|sci-?fi|futuris\w*|space|cosmic|galax\w*|nexus|alien|magic\w*|fantasy)\b', _portal),
+    ('portal', r'\b(?:portals?|nexus)\b', _portal),
     ('city', r'\b(?:city|cities|skyline|neon|cyber\w*|downtown|streets?|buildings?|skyscrapers?|metropolis|urban)\b', _city),
     ('island', r'\b(?:islands?|forest|trees?|nature|garden|mountains?|landscape|lake|beach|summer|sea|ocean|park)\b', _island),
     ('sculpture', r'\b(?:sculptures?|abstract|artwork|statue|installation)\b', _sculpture),
 )
 _OPEN_CHOICE = ('portal', 'sculpture', 'city', 'island', 'winter')
+_MOON = re.compile(r'\b(?:moon|lunar)\b', re.I)
+_IMPACT = re.compile(r'\b(?:impact|meteor(?:ite)?|explosion|blast|eruption|flash)\b', re.I)
+_REALISM = re.compile(r'\b(?:(?:photo|hyper|ultra|super)[ -]?)?(?:real{1,2}[ia]stic|realism|photoreal|lifelike)\b', re.I)
+_LUNAR_TERRAIN = re.compile(
+    r'\b(?:moon|lunar)\s+(?:landscape|terrain|surface|craters?|plain)\b|'
+    r'\b(?:landscape|terrain|surface|craters?|plain)\s+(?:of|on)\s+(?:the )?moon\b', re.I)
+_MODEL_QUALIFIERS = re.compile(
+    r'\b(?:offline|(?:without(?: using)?|with no|no)\s+(?:(?:a|an|the|any)\s+)?(?:local\s+)?'
+    r'(?:llm|model|api)(?:\s+(?:calls?|access))?(?:\s+or\s+(?:an?\s+)?(?:api|llm|model))?|'
+    r'(?:using\s+)?(?:the\s+)?built[- ]in generator)\b', re.I)
+_OPEN_WORDS = set(
+    'a an the me of by your own you want choosing choose choice anything something whatever '
+    'surprise decide like make create build design generate blender 3d three dimensional scene '
+    'model artistic art abstract cool quick fast one simple small impressive wow max maximum effort '
+    'please sir use all tools and it etc extreme beautiful realistic detailed super'.split())
+
+
+def named_scene_subject(request):
+    """Keep the main noun phrase ahead of setting or style qualifiers."""
+    request = _REALISM.sub(' ', _MODEL_QUALIFIERS.sub(' ', request))
+    match = re.search(r'\b(?:of|depicting|showing)\s+(.+)', request, re.I)
+    if not match:
+        match = re.search(r'\bblender[ -]+(?:design|scene|model|sculpture|artwork)\s+(.+)', request, re.I)
+        if not match:
+            return ''
+    phrase = re.split(r'[,;.!?]|\s+(?:on|in|with|under|beside|at|using|against|made of)\s+', match[1], maxsplit=1, flags=re.I)[0]
+    words = [word for word in re.findall(r'[\w-]+', phrase.lower()) if word not in _OPEN_WORDS]
+    return ' '.join(words)
+
+
+def lunar_impact_request(request):
+    subject = named_scene_subject(request)
+    return bool(_MOON.search(request) and _IMPACT.search(subject or request))
+
+
+def scene_quality_limit(request, origin):
+    """A scene assembled from the shape library is a starting point for photorealistic work."""
+    text = re.sub(r'\b(?:not|never)\s+' + _REALISM.pattern, '', request, flags=re.I)
+    if origin in {'model', 'template'} and _REALISM.search(text):
+        return 'This is a stylized starting scene. The requested photorealistic appearance remains unfinished.'
+    return ''
+
+
+def check_subject_labels(request, object_names):
+    """Use geometry names, not a filename, title or the model's prose, as subject evidence."""
+    names = [re.sub(r'(?<=[a-z])(?=[A-Z])', ' ', name).lower().replace('_', ' ') for name in object_names]
+    subject = named_scene_subject(request)
+    if lunar_impact_request(request):
+        surface = {i for i, name in enumerate(names) if re.search(r'\b(?:lunar|moon|craters?|regolith)\b', name)}
+        effect = {i for i, name in enumerate(names) if re.search(
+            r'\b(?:impact|flash|plume|dust|burst|blast|explosion|meteor\w*|ejecta|fireball)\b', name)}
+        if not surface or not effect or len(surface | effect) < 2:
+            raise ValueError('Include named geometry for both the lunar surface and the visible impact effect.')
+    elif subject:
+        noun = subject.split()[-1]
+        singular = noun[:-1] if len(noun) > 3 and noun.endswith('s') and not noun.endswith('ss') else noun
+        if not re.search(r'\b' + re.escape(singular) + r'(?:s|es)?\b', ' '.join(names)):
+            raise ValueError(f'Name the objects that depict the requested subject “{subject[:100]}”.')
 
 
 def template_scene(request=''):
-    """Choose a built-in design from the words of the request. Returns (key, scene)."""
+    """Return (key, scene), or (None, None) when the named subject has no built-in design."""
     text = request if isinstance(request, str) else ''
     seed = int.from_bytes(hashlib.sha256(text.strip().lower().encode('utf-8')).digest()[:4], 'big')
     builders = {key: builder for key, _, builder in _TEMPLATES}
-    key = next((name for name, pattern, _ in _TEMPLATES if re.search(pattern, text, re.I)), None)
+    if lunar_impact_request(text):
+        return 'lunar_impact', normalize_scene(_lunar(text, random.Random(seed)), origin='template')
+    subject = named_scene_subject(text)
+    if _LUNAR_TERRAIN.search(text) and (not subject or _MOON.search(subject)
+            or re.search(r'\b(?:landscape|terrain|surface|craters?|plain)\b', subject, re.I)):
+        return 'lunar', normalize_scene(_lunar(text, random.Random(seed)), origin='template')
+    if re.search(r'\bon (?:the )?moon\b', text, re.I) or _MOON.search(subject):
+        return None, None
+    # A snowy owl and a snowy landscape are different briefs. An accent or
+    # background word cannot stand in for a named foreground subject.
+    head = subject.split()[-1] if subject else ''
+    theme = subject if head in {'landscape', 'environment', 'terrain', 'scenery'} else head
+    key = next((name for name, pattern, _ in _TEMPLATES if re.search(pattern, theme or text, re.I)), None)
     if key is None:
+        choice_text = _REALISM.sub(' ', _MODEL_QUALIFIERS.sub(' ', text.lower()))
+        if set(re.findall(r'[\w-]+', choice_text)) - _OPEN_WORDS:
+            return None, None
         key = _OPEN_CHOICE[seed % len(_OPEN_CHOICE)]
     return key, normalize_scene(builders[key](text, random.Random(seed)), origin='template')

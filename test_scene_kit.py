@@ -5,8 +5,11 @@ import json
 import math
 import struct
 import sys
+import tempfile
 import types
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 import scene_kit as kit
 
@@ -151,6 +154,64 @@ class SceneKitTests(unittest.TestCase):
                 self.assertEqual(kit.check_glb(kit.to_glb(scene))['objects'], kit.statistics(scene)['objects'])
         self.assertIn(kit.template_scene('make anything you like, your choice')[0], ('portal', 'sculpture', 'city', 'island', 'winter'))
         self.assertNotEqual(kit.template_scene('your choice')[0], 'winter')
+
+    def test_no_model_requests_preserve_a_supplied_subject_or_an_open_choice(self):
+        for request in ('make a 3d design quick one, of your choice', 'make a 3d design offline',
+                        'make a 3d design of your choosing without an LLM or API',
+                        'make a blender design by your choice using the built-in generator'):
+            with self.subTest(request=request):
+                self.assertIsNotNone(kit.template_scene(request)[1])
+        for request in ('Make a 3D model of an ice dragon in a winter forest',
+                        'Make a Blender design of an observatory on the moon',
+                        'Make a 3D scene of a teapot on the lunar surface with an impact flash'):
+            with self.subTest(request=request):
+                self.assertEqual(kit.template_scene(request), (None, None))
+        key, plain = kit.template_scene('make a 3d lunar landscape offline')
+        self.assertEqual(key, 'lunar')
+        self.assertTrue(any('crater' in item['name'].lower() for item in plain['objects']))
+        self.assertFalse(any('flash' in item['name'].lower() for item in plain['objects']))
+
+
+class SavedSceneBrowserTests(unittest.TestCase):
+    def test_preview_keeps_the_referenced_artifact_and_never_selects_an_unrelated_file(self):
+        from scene_browser import preview_request
+        first = {'artifact': 'First Scene.blend'}
+        second = {'artifact': 'Second Scene.blend'}
+        records = [first, second]
+        self.assertEqual(preview_request('open "First Scene.blend" in my browser', records), (first, True))
+        self.assertEqual(preview_request('how do i open file sir with browser?', records), (second, False))
+        self.assertIsNone(preview_request('open news.html in the browser', records))
+        self.assertIsNone(preview_request('open the file in my browser', records + [{'artifact': 'report.pdf'}]))
+
+    def test_real_saved_blend_to_offline_geometry_and_verified_cache(self):
+        from agent_core import ProjectTools
+        from engine_discovery import find_blender
+        from scene_browser import prepare_viewer, verified_viewer
+        from workspace_outputs import register_output
+        blender = find_blender()
+        if not blender:
+            self.skipTest('Blender is not installed on this runner')
+        with tempfile.TemporaryDirectory(prefix='TalkToAi scene with spaces ') as directory:
+            tools = ProjectTools(directory, True, project_only=True)
+            source = tools.build_blender_scene(blender, 'import bpy\nbpy.ops.mesh.primitive_cube_add(location=(17,3,-1))')
+            record = json.loads(register_output(tools, str(source)))
+            preview = prepare_viewer(tools, record, [record])
+            page = verified_viewer(tools, preview).read_text(encoding='utf-8')
+            meshes = json.loads(page.split('const SCENE=', 1)[1].split(';\nconst canvas', 1)[0])
+            self.assertEqual(meshes['centre'], [17, -1, -3])
+            self.assertEqual(sum(batch['n'] for batch in meshes['batches']), 36)
+            self.assertNotIn('https://', page)
+            self.assertEqual(json.loads(register_output(tools, str(source)))['sha256'], record['sha256'])
+            with patch.object(tools, '_engine_command', side_effect=AssertionError('A second Blender launch')):
+                self.assertEqual(prepare_viewer(tools, record, [record, preview]), preview)
+            Path(preview['artifact']).write_text('changed')
+            with self.assertRaisesRegex(ValueError, 'changed'):
+                verified_viewer(tools, preview)
+            tools.act = False
+            with self.assertRaisesRegex(ValueError, 'Switch to Act'):
+                prepare_viewer(tools, record, [record, preview])
+            with self.assertRaisesRegex(ValueError, 'inside the selected project'):
+                prepare_viewer(tools, {'artifact': '../another.blend'}, [])
 
 
 if __name__ == '__main__':

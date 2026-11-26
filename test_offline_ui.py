@@ -1,4 +1,5 @@
 """Offline workspace integration: isolated profiles and no network/model calls."""
+import json
 import tempfile
 import unittest
 from contextlib import ExitStack
@@ -6,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from PySide6.QtWidgets import QApplication, QDialog
+from PySide6.QtCore import QUrl
 
 import studio
 from offline_assistant import OFFLINE_COMMANDS
@@ -51,9 +53,215 @@ class OfflineWorkspaceTests(unittest.TestCase):
         for method in (self.route, self.agent, self.tunnel, self.local_model):
             method.assert_not_called()
 
+    def test_offline_scene_via_send_writes_verified_glb_without_a_model(self):
+        import scene_kit
+        w = self.window
+        w.mode.setCurrentText('Act')
+        w.config['auto_open_results'] = False
+        w.prompt.setPlainText('Make a 3D winter scene offline')
+        worker = self.capture_worker()
+        with patch('engine_discovery.find_blender', return_value=None):
+            w.send()
+            worker.call_args.kwargs['target']()
+        self.assert_no_model()
+        self.assertFalse(w.busy)
+        files = {Path(a['artifact']).suffix: Path(a['artifact']) for a in w.task['artifacts']}
+        self.assertGreater(scene_kit.check_glb(files['.glb'].read_bytes())['objects'], 10)
+        self.assertTrue(files['.html'].is_file())
+        self.assertIn('winter', w.task['messages'][-1]['content'].lower())
+
+    def test_offline_realism_remains_partial_until_user_accepts_verified_scene(self):
+        w = self.window
+        w.mode.setCurrentText('Act')
+        w.config['auto_open_results'] = False
+        w.prompt.setPlainText('Make a photorealistic 3D lunar impact scene offline')
+        worker = self.capture_worker()
+        with patch('engine_discovery.find_blender', return_value=None):
+            w.send()
+            worker.call_args.kwargs['target']()
+        marker = w.task['messages'][-1]['scene_delivery']
+        self.assertFalse(marker['complete'])
+        self.assertIn('stylized', w.task['pending_question'])
+        w.prompt.setPlainText('keep the stylized scene')
+        w.send()
+        self.assertFalse(w.busy)
+        self.assertNotIn('pending_question', w.task)
+        self.assertEqual(w.task['messages'][-1]['scene_delivery'], dict(marker, complete=True))
+        self.assertEqual(len(list(self.root.glob('*.glb'))), 1)
+        self.assert_no_model()
+
+    def test_connection_handoff_resumes_the_original_work_in_until_done(self):
+        w = self.window
+        w.mode.setCurrentText('Act')
+        w.route.setCurrentIndex(1)
+        w.prompt.setPlainText('Improve the project menu')
+        worker = self.capture_worker()
+        self.local_model.side_effect = ConnectionError('Fixture service offline')
+        w.send()
+        worker.call_args.kwargs['target']()
+        self.assertEqual(w.task['goal_checkpoint']['state'], 'awaiting answer')
+        self.assertIn('select a working model', w.task['pending_question'])
+        self.local_model.side_effect = None
+        self.route.side_effect = None
+        self.route.return_value = {'route':'local','model':'fixture','url':'http://127.0.0.1:11434','reason':'test'}
+        self.agent.side_effect = None
+        w.prompt.setPlainText('It is connected now')
+        w.send()
+        worker.call_args.kwargs['target']()
+        history = self.agent.call_args.args[2]
+        self.assertTrue(history[-1]['answers_task_question'])
+        self.assertIn('Improve the project menu', [item['content'] for item in history])
+        self.assertNotIn('pending_question', w.task)
+
+    def test_unknown_offline_scene_asks_for_a_subject_without_connecting(self):
+        w = self.window
+        w.mode.setCurrentText('Act')
+        w.prompt.setPlainText('Make a 3D model of a violin offline')
+        w.send()
+        self.assertFalse(w.busy)
+        self.assertIn('supported subject', w.task['messages'][-1]['content'])
+        self.assertFalse(list(self.root.glob('*.glb')))
+        self.assert_no_model()
+
+    def test_missing_model_uses_scene_generator_before_any_agent_turn(self):
+        w = self.window
+        w.mode.setCurrentText('Act')
+        w.route.setCurrentIndex(1)
+        w.config['auto_open_results'] = False
+        w.prompt.setPlainText('Create a 3D winter scene')
+        worker = self.capture_worker()
+        self.local_model.side_effect = ConnectionError('Offline fixture')
+        with patch('engine_discovery.find_blender', return_value=None):
+            w.send()
+            worker.call_args.kwargs['target']()
+        self.assertFalse(w.busy)
+        self.assertTrue(list(self.root.glob('*.glb')))
+        self.agent.assert_not_called()
+        self.route.assert_not_called()
+        self.assertIn('no model request', w.performance_label.text())
+
     def capture_worker(self):
         worker = self.stack.enter_context(patch('studio.threading.Thread'))
         return worker
+
+    def test_checklist_in_chat_and_code_is_offline_scoped_and_persistent(self):
+        w = self.window
+        for kind in ('chat','code'):
+            with self.subTest(kind=kind):
+                w.task['kind'] = kind
+                w.prompt.setPlainText('Make a to-do list: sketch the scene, add lighting, export the model')
+                w.send()
+                w.prompt.setPlainText('mark item 2 done')
+                w.send()
+                self.assertIn('Done (marked by you) · add lighting', w.transcript.toPlainText())
+                reread = next(task for task in load_tasks(studio.SESSION)[0] if task['id'] == w.task['id'])
+                self.assertEqual(studio.task_checklist.saved(reread)['steps'][1]['status'], 'completed')
+                w.prompt.setPlainText('uncheck 2')
+                w.send()
+                self.assertEqual(studio.task_checklist.saved(w.task)['steps'][1]['status'], 'pending')
+        project = w.task['project']
+        w.task['project'] = str(self.root/'another')
+        w.prompt.setPlainText('show my to-do list')
+        w.send()
+        self.assertIn('What would you like to get done?', w.task['messages'][-1]['content'])
+        w.task['project'] = project
+        self.assertEqual(len(studio.task_checklist.saved(w.task)['steps']), 3)
+        self.assert_no_model()
+
+    def test_make_a_list_of_to_do_uses_latest_human_objective_and_newer_goal(self):
+        w = self.window
+        w.task['messages'] = [
+            {'role':'user','content':'Make a winter scene'},
+            {'role':'user','content':'Fix the exporter, run the tests and publish the update'},
+            {'role':'assistant','content':'I published it'}, {'role':'user','content':'thanks sir'}]
+        w.prompt.setPlainText('make a list of to do')
+        w.send()
+        plan = studio.task_checklist.saved(w.task)
+        self.assertEqual([s['step'] for s in plan['steps']], ['Fix the exporter','run the tests','publish the update'])
+        self.assertTrue(all(s['status'] == 'pending' for s in plan['steps']))
+        w.handle_event('task_goal',{'objective':'Review the installer', 'criteria':[{'text':'Check signatures'}]})
+        w.prompt.setPlainText('show my checklist')
+        w.send()
+        self.assertIn('Check signatures', w.task['messages'][-1]['content'])
+        self.assertNotIn('Fix the exporter', w.task['messages'][-1]['content'])
+        self.assert_no_model()
+
+    def test_busy_checklist_preserves_run_and_checks_only_the_verified_scene(self):
+        w = self.window
+        w.task['messages'] = [{'role':'user', 'content':'Make a lunar scene and write the guide'}]
+        w.execution_kind = 'model'
+        w.set_busy(True)
+        try:
+            w.begin_checklist(w.task['messages'][0]['content'], scene=True)
+            history = list(w.task['messages'])
+            token = w.cancel
+            with patch.object(w, '_request_stop', side_effect=AssertionError('A checklist must not interrupt')):
+                w.prompt.setPlainText('show my to-do list')
+                w.send()
+            self.assertEqual(w.task['messages'], history)
+            self.assertIs(w.cancel, token)
+            self.assertFalse(token.is_set())
+            self.assertEqual(w.pending_prompt, '')
+            self.assertIn('Verify the saved scene', w.transcript.toPlainText())
+            scene = self.root/'moon.blend'
+            scene.write_bytes(b'BLENDER fixture')
+            record = json.loads(studio.register_output(studio.ProjectTools(self.root, project_only=True),str(scene)))
+            w.handle_event('artifact', record)
+            result = {'status':'passed','summary':'Geometry checked.',
+                      'primary_output':{'name':scene.name,'sha256':'0'*64}}
+            w.handle_event('verification',result)
+            self.assertEqual(w.checklist_run['steps'][0]['status'],'pending')
+            result['primary_output']['sha256'] = record['sha256']
+            w.handle_event('verification',result)
+            self.assertEqual([item['status'] for item in w.checklist_run['steps']], ['completed','completed','pending'])
+            self.assertIn('Done (app check)', w.transcript.toPlainText())
+        finally:
+            w.set_busy(False)
+        self.assert_no_model()
+
+    def test_project_syntax_check_cannot_mark_tests_complete(self):
+        w = self.window
+        plan = studio.task_checklist.begin(w.task, 'Write the guide and run the tests')
+        studio.task_checklist.observe(plan, {'status':'passed','summary':'Valid syntax'}, set(), checked=True)
+        studio.task_checklist.observe_test_output(plan, 'Exit 0\nStandalone file checks\nScript compiles.')
+        self.assertEqual(plan['steps'][1]['status'], 'pending')
+        studio.task_checklist.observe_test_output(plan, 'Exit 1\nRan 4 tests in 0.1s\nFAILED')
+        self.assertEqual(plan['steps'][1]['status'], 'pending')
+        studio.task_checklist.observe_test_output(plan, 'Exit 0\nRan 4 tests in 0.1s\nOK')
+        self.assertEqual(plan['steps'][1]['status'], 'completed')
+        self.assertEqual(plan['steps'][1]['basis'], 'observed')
+
+    def test_scene_browser_followup_uses_registered_local_viewer_without_a_model(self):
+        w = self.window
+        tools = studio.ProjectTools(self.root, True, project_only=True)
+        scene = self.root / 'Moon Garden.glb'
+        page = self.root / 'Moon Garden-viewer.html'
+        scene.write_bytes(b'GLB fixture')
+        page.write_text('<html>mesh fixture</html>')
+        src = json.loads(studio.register_output(tools, str(scene)))
+        viewer = dict(json.loads(studio.register_output(tools, str(page))), type='viewer', auto_open=True)
+        w.task['artifacts'] = [src, viewer]
+        worker = self.capture_worker()
+        with patch.object(studio.QDesktopServices, 'openUrl', return_value=True) as opened:
+            w.prompt.setPlainText('how do i open file sir with browser?')
+            w.send()
+            worker.call_args.kwargs['target']()
+            opened.assert_not_called()
+            url = 'talktoai-viewer://local/' + viewer['sha256']
+            self.assertIn(url, w.transcript.toHtml())
+            w.open_chat_link(QUrl(url))
+            self.assertEqual(Path(opened.call_args.args[0].toLocalFile()), page.resolve())
+            opened.reset_mock()
+            w.prompt.setPlainText('open the scene in my browser')
+            w.send()
+            worker.call_args.kwargs['target']()
+            opened.assert_called_once()
+            self.assertEqual(len(w.task['artifacts']), 2)
+            opened.reset_mock()
+            page.write_text('<html>modified after registration</html>')
+            self.assertFalse(w.open_chat_link(QUrl(url)))
+            opened.assert_not_called()
+        self.assert_no_model()
 
     @staticmethod
     def report(**changes):

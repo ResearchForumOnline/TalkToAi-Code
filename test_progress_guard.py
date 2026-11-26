@@ -45,6 +45,49 @@ class ProgressGuardTests(unittest.TestCase):
         for i in range(200):guard.observe('search_code',{'query':str(i)},'none')
         self.assertEqual(len(guard.entries),128)
 
+    def test_repeated_source_reads_observe_external_edits_and_can_request_the_failing_line(self):
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as folder:
+            guard = DiscoveryProgressGuard(folder)
+            tools = core.ProjectTools(folder, False)
+            path = Path(folder, 'example.py')
+            source = ''.join(f'# line {n}\n' for n in range(1, 1200))
+            path.write_text(source, encoding='utf-8')
+            args = {'path': 'example.py'}
+            for attempt in range(3):
+                self.assertIsNone(guard.before('read_file', args))
+                text = tools.execute('read_file', args)
+                self.assertEqual(text, source)
+                hint = guard.observe('read_file', args, text)
+                self.assertEqual(hint is None, attempt < 2)
+            self.assertIn('1-based line number', hint)
+            self.assertFalse(guard.paused)
+            path.write_text(source.replace('# line 650\n', 'updated = True\n'), encoding='utf-8')
+            self.assertIsNone(guard.observe('read_file', args, tools.execute('read_file', args)))
+            excerpt = tools.execute('read_file', dict(args, line='650'))
+            self.assertIn('650: updated = True', excerpt)
+            self.assertEqual(len(excerpt.splitlines()), 9)
+            with self.assertRaisesRegex(ValueError, 'outside this file'):
+                tools.execute('read_file', dict(args, line='0'))
+
+    def test_latest_traceback_finds_the_exact_frame_in_an_already_read_project_file(self):
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as folder:
+            guard = DiscoveryProgressGuard(folder)
+            path = Path(folder) / 'with spaces' / 'example.py'
+            reported = (f'Exit 1\nTraceback (most recent call last):\n  File "{path}", line 65, in build\n'
+                        '  File "library.py", line 600, in load\nKeyError: color\n')
+            guard.record_command(reported, True)
+            args = {'path':'with spaces/example.py'}
+            current = '\n'.join(f'new source {i}' for i in range(1, 100))
+            excerpt = guard.traceback_excerpt('read_file', args, current)
+            self.assertIn('65: new source 65', excerpt)
+            self.assertNotIn('50: new source', excerpt)
+            self.assertEqual(guard.traceback_excerpt('read_file', {'path':'unrelated/example.py'}, current), '')
+            self.assertEqual(guard.traceback_excerpt('read_file', dict(args, line='6'), current), '')
+            guard.record_command('Exit 0\nDone.', False)
+            self.assertEqual(guard.traceback_excerpt('read_file', args, current), '')
+
     def run_fixture(self,commands,cancel=None,command_result=None):
         payloads=[];events=[];executed=[]
         def stream(_url,payload,_cancel):

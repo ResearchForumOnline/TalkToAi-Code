@@ -23,7 +23,7 @@ _PREFERENCES = {
     'show_tool_activity': ('Show tool activity in the Tools panel', True, (False, True)),
     'show_model_activity': ('Show available model activity', False, (False, True)),
     'keep_going': ('Default Keep going for new Code tasks', True, (False, True)),
-    'work_session_minutes': ('Maximum Keep going duration for future requests', 120, (60, 120, 240)),
+    'work_session_minutes': ('Keep going duration in minutes. Choose -1 for Until done.', -1, (-1, 60, 120, 240)),
     'num_ctx': ('Context size requested for future model calls', 8192, (8192, 16384, 32768)),
     'ollama_keep_alive': ('Time to keep a local model in memory after a reply', DEFAULT_KEEP_ALIVE, KEEP_ALIVE_CHOICES),
     'local_worker_limit': ('Maximum local project reviewers per task', 3, (0, 1, 2, 3)),

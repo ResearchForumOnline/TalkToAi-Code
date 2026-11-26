@@ -33,7 +33,7 @@ SCENE_REQUEST = 'create an artistic design 3d model winter scene in nottingham e
 
 class Harness:
     def run_sequence(self, root, sequence, *, text=SCENE_REQUEST, effort='high', blender='blender-fixture',
-                     build=None, rounds=16, performance=None, act=True, provider=None):
+                     build=None, rounds=16, performance=None, act=True, provider=None, history=None):
         payloads, events = [], []
 
         def stream(url, payload, cancel):
@@ -56,7 +56,8 @@ class Harness:
         for item in patches:
             item.start()
         try:
-            core._run_agent('fixture', 'fixture', [{'role': 'user', 'content': text}], root, act, threading.Event(),
+            turns = list(history or ()) + [{'role': 'user', 'content': text}]
+            core._run_agent('fixture', 'fixture', turns, root, act, threading.Event(),
                             lambda kind, value: events.append((kind, value)), rounds, settings, tools, keep_going=True)
         finally:
             for item in reversed(patches):
@@ -83,6 +84,103 @@ class Harness:
 
 
 class ScenePipelineTests(Harness, unittest.TestCase):
+    def test_finish_restores_lunar_brief_and_rejects_a_tower_before_building(self):
+        request = 'sir make a blender design max effort explosion on the moon, use all tools'
+        continuation = 'ok finish sir you stopped you should of carried on'
+        turns = [{'role': 'user', 'content': 'make a 3d design of your choice'},
+                 {'role': 'assistant', 'content': 'Created an abstract sculpture.'},
+                 {'role': 'user', 'content': request},
+                 {'role': 'assistant', 'content': 'Let me create a futuristic tower.'},
+                 {'role': 'user', 'content': 'oh sir many errors but did you save any scene .blend ?'},
+                 {'role': 'assistant', 'content': 'A file named tower.blend exists.'}]
+        wrong = {'title': 'Lunar impact', 'objects': [
+            {'shape': 'box', 'name': 'Tower floor', 'at': [0, 0, i], 'color': '#444444'} for i in range(4)]}
+        with tempfile.TemporaryDirectory() as root:
+            built, build = self.blender(root)
+            requests, events = self.run_sequence(root, [response(json.dumps(wrong)) for _ in range(2)],
+                                                 text=continuation, history=turns, build=build)
+            self.assertTrue(all(item['format'] == scene_kit.SCENE_FORMAT for item in requests))
+            self.assertIn(request, requests[0]['messages'][-1]['content'])
+            self.assertIn('both the lunar surface', requests[1]['messages'][-1]['content'])
+            self.assertEqual(len(built), 1)
+            self.assertIn('Lunar crater rim', built[0])
+            self.assertIn('Impact dust arc', built[0])
+            self.assertIn('Lunar impact flash', self.replies(events)[-1])
+            completion = next(value for kind, value in events if kind == 'message' and 'scene_delivery' in value)
+            receipt = completion['scene_delivery']
+            self.assertEqual(receipt['brief'], request)
+            # A verified delivery in this task can be returned after app restart without a model or a second build.
+            turns = turns + [{'role': 'user', 'content': continuation}, completion]
+            requests, replay = self.run_sequence(root, [], text='finish please', history=turns, build=build)
+            self.assertFalse(requests)
+            self.assertEqual(len(built), 1)
+            self.assertIn('already complete', self.replies(replay)[-1])
+            Path(root, receipt['name']).write_bytes(b'changed later')
+            self.assertIsNone(core.verified_scene_delivery(request, turns, core.ProjectTools(root, True)))
+
+    def test_unsupported_named_subject_is_not_replaced_by_an_existing_or_random_scene(self):
+        with tempfile.TemporaryDirectory() as root:
+            Path(root, 'previous.blend').write_bytes(b'unrelated previous file')
+            wrong = {'title': 'Violin', 'objects': [{'shape': 'box', 'name': 'Tower'}]}
+            _, events = self.run_sequence(root, [response(json.dumps(wrong)) for _ in range(2)],
+                                         text='Make a 3D model of a violin', blender=None)
+            self.assertEqual(Path(root, 'previous.blend').read_bytes(), b'unrelated previous file')
+            self.assertFalse(list(Path(root).glob('*.glb')))
+        self.assertIn('no matching design', self.replies(events)[-1])
+        self.assertFalse(any(kind == 'artifact' for kind, _ in events))
+        self.assertEqual([value['state'] for kind, value in events if kind == 'goal_checkpoint'][-1], 'paused')
+
+    def test_photorealism_request_keeps_a_stylized_starter_partial_across_resume(self):
+        prompt = 'sir make a blender design max effort explosion on the moon super reallastic, use all tools'
+        with tempfile.TemporaryDirectory() as root:
+            built, build = self.blender(root)
+            failures = [response(draft('import bpy\nx = (')) for _ in range(2)] + [response('{}'), response('{}')]
+            _, events = self.run_sequence(root, list(failures), text=prompt, build=build)
+            final = next(value for kind, value in events if kind == 'message' and 'scene_delivery' in value)
+            self.assertIn('stylized starting scene', final['content'])
+            self.assertFalse(final['scene_delivery']['complete'])
+            self.assertEqual([value['state'] for kind, value in events if kind == 'goal_checkpoint'][-1], 'paused')
+            turns = [{'role': 'user', 'content': prompt}, final]
+            tools = core.ProjectTools(root, True)
+            self.assertIsNone(core.verified_scene_delivery(prompt, turns, tools))
+            self.assertIsNotNone(core.verified_scene_delivery(prompt, turns, tools, complete=False))
+            _, retried = self.run_sequence(root, list(failures), text='finish sir', history=turns, build=build)
+            self.assertEqual(len(built), 1)
+            self.assertIn('saved starting scene', self.replies(retried)[-1])
+            self.assertNotIn(('status', 'Ready'), retried)
+
+    def test_native_build_checks_the_subject_of_reopened_geometry_before_committing(self):
+        prompt = 'Create a Blender design of a realistic lunar impact flash.'
+        actual_names = ['Tower']
+        def build(engine, executable, arguments, timeout):
+            directory = Path(arguments[-1]).parent
+            (directory / 'verified.blend').write_bytes(b'BLENDER fixture')
+            (directory / 'geometry-names.json').write_text(json.dumps(actual_names), encoding='utf-8')
+            return 'Exit 0\n'
+        with tempfile.TemporaryDirectory() as root:
+            tools = core.ProjectTools(root, True)
+            with patch.object(tools, '_engine_command', side_effect=build):
+                with self.assertRaisesRegex(ValueError, 'both the lunar surface'):
+                    tools.build_blender_scene('fixture', GOOD, brief=prompt)
+                self.assertFalse(list(Path(root).glob('*.blend')))
+                actual_names[:] = ['LunarCraterRim', 'Impact_Flash']
+                output = tools.build_blender_scene('fixture', GOOD, brief=prompt)
+                self.assertTrue(output.is_file())
+
+    def test_until_done_preserves_stylized_artifact_and_asks_about_requested_realism(self):
+        prompt='Make a super realistic Blender scene of an explosion on the moon.'
+        with tempfile.TemporaryDirectory() as root:
+            built,build=self.blender(root)
+            failures=[response(draft('import bpy\nx = (')) for _ in range(2)] + [response('{}'),response('{}')]
+            _,events=self.run_sequence(root,failures,text=prompt,build=build,performance={'work_session_minutes':-1})
+            delivery=next(v for k,v in events if k=='message' and 'scene_delivery' in v)
+            self.assertFalse(delivery['scene_delivery']['complete'])
+            self.assertTrue((Path(root)/delivery['scene_delivery']['name']).is_file())
+            self.assertEqual([v['state'] for k,v in events if k=='goal_checkpoint'][-1],'awaiting answer')
+            questions=[v['question'] for k,v in events if k=='question_pending']
+            self.assertEqual(len(questions),1)
+            self.assertIn('keep the saved stylized scene',questions[0])
+
     def test_syntax_error_reports_line_and_caret_then_the_correction_builds(self):
         broken = 'import bpy\nbpy.ops.mesh.primitive_cube_add(\nbpy.ops.mesh.primitive_uv_sphere_add()\n'
         with tempfile.TemporaryDirectory() as root:

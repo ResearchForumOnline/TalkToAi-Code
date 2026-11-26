@@ -35,12 +35,14 @@ from session_store import load_tasks, save_tasks, matches_task
 from task_starters import STARTERS, STARTER_GROUPS
 from process_jobs import ProcessJobs
 from workspace_outputs import register_output
+from scene_browser import prepare_viewer, preview_request, verified_viewer
+import task_checklist
 from updates import is_store_package, VERSION
 from amd_runtime import ensure_amd_tunnel
 from mail_connectors import gmail_connect, gmail_status
 from skynet_mode import run_improvement
 from app_preferences import AppPreferenceManager
-from platform_paths import state_dir
+from platform_paths import desktop_home, state_dir
 from project_context import resolve_project_target, requested_runtime, explicit_project_directory
 from task_navigation import natural_desktop_target
 from remote_intent import requests_remote_work
@@ -55,7 +57,7 @@ from conversation_export import format_conversation, save_conversation
 from project_templates import create_project_template
 from model_storage import clean_stale_partials
 
-from chat_intent import chat_requests_tools, chat_web_query, media_request, request_body
+from chat_intent import chat_requests_tools, chat_web_query, media_request, request_body, scene_creation_brief
 from activity_bar import create_activity_bar
 from effort import LEVELS as EFFORT_LEVELS, PROFILES as EFFORT_PROFILES, DEFAULT_EFFORT, normalize_effort
 from chat_web import lookup_chat_web
@@ -77,9 +79,9 @@ def conversation_prose(content):
     return '\n'.join(lines).strip(),False
 
 SOURCE = Path(__file__).resolve().parent
-HOME = Path(os.environ.get('TALKTOAI_CODE_HOME', str(Path(sys.executable).parent if getattr(sys, 'frozen', False) else SOURCE)))
 STORE_PACKAGE = is_store_package()
 STATE = state_dir(STORE_PACKAGE)
+HOME = desktop_home(SOURCE, STATE)
 STATE.mkdir(parents=True, exist_ok=True)
 SESSION = STATE / 'studio.json'
 CONNECTIONS = STATE / 'connections.json'
@@ -235,7 +237,7 @@ class Studio(QMainWindow):
             'keep_going': True,
             'show_tool_activity': True,
             'show_model_activity': False,
-            'work_session_minutes': 120,
+            'work_session_minutes': -1,
             'remote_enabled': True,
             'remote_pilot': True,
             'active_ssh_alias': '',
@@ -509,10 +511,10 @@ class Studio(QMainWindow):
         self.effort_choice.setCurrentIndex(max(0,self.effort_choice.findData(normalize_effort(self.config.get('effort')) or DEFAULT_EFFORT)))
         self.effort_choice.setToolTip('\n'.join(f'{EFFORT_PROFILES[level].label}: {EFFORT_PROFILES[level].summary}' for level in EFFORT_LEVELS))
         self.effort_choice.currentIndexChanged.connect(self.save_effort);options.addWidget(self.effort_choice)
-        self.keep_going=QCheckBox('Keep going');self.keep_going.setToolTip('Continue bounded coding passes until done or paused. Stop or steer at any time. More time uses more inference.');self.keep_going.toggled.connect(self.save_keep_going);options.addWidget(self.keep_going)
-        self.work_duration=QComboBox();self.work_duration.setToolTip('Maximum elapsed time when Keep going is on; the agent also has step and pass limits.')
-        for title,value in [('1 hour',60),('2 hours',120),('4 hours',240)]:self.work_duration.addItem(title,value)
-        self.work_duration.setCurrentIndex(max(0,self.work_duration.findData(self.config.get('work_session_minutes',120))))
+        self.keep_going=QCheckBox('Keep going');self.keep_going.setToolTip('Continue working across passes. You can stop, steer, or set a time limit.');self.keep_going.toggled.connect(self.save_keep_going);options.addWidget(self.keep_going)
+        self.work_duration=QComboBox();self.work_duration.setToolTip('Until done continues across work passes and asks when it needs your input.')
+        for title,value in [('Until done',-1),('1 hour',60),('2 hours',120),('4 hours',240)]:self.work_duration.addItem(title,value)
+        self.work_duration.setCurrentIndex(max(0,self.work_duration.findData(self.config.get('work_session_minutes',-1))))
         self.work_duration.currentIndexChanged.connect(self.save_work_duration);options.addWidget(self.work_duration)
         options.addStretch()
         self.retry_button=self.button('Retry reply',lambda:self.send(retry=True),options)
@@ -608,6 +610,11 @@ class Studio(QMainWindow):
 
     def save_draft(self):
         if self.task:self.task['draft']=self.prompt.toPlainText()
+        if self.busy and hasattr(self, 'send_button'):
+            checklist = not self.attachments and bool(task_checklist.command(self.prompt.toPlainText()))
+            steer = self.execution_kind != 'conversation'
+            self.send_button.setEnabled(checklist or steer)
+            self.send_button.setText('To-do list' if checklist else '✦  Steer' if steer else '↑  Send')
         if hasattr(self,'draft_timer'):self.draft_timer.start(750)
 
     def save_agent_focus(self):
@@ -615,8 +622,21 @@ class Studio(QMainWindow):
             self.task['agent_focus'] = self.saved_focus_key(self.agent_focus.currentData())
             self.autosave_draft()
 
-    @staticmethod
-    def open_chat_link(url):
+    def open_chat_link(self,url):
+        if url.scheme() == 'talktoai-viewer' and url.host() == 'local':
+            digest = url.path().removeprefix('/')
+            record = next((item for item in self.task.get('artifacts', [])
+                           if item.get('type') == 'viewer' and item.get('sha256') == digest), None)
+            if record and re.fullmatch('[0-9a-f]{64}', digest):
+                try:
+                    path = verified_viewer(ProjectTools(self.task['project'], project_only=True), record)
+                    opened = QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+                    if not opened:
+                        self.status.setText('The browser could not open this viewer. Find its HTML file in Evidence.')
+                    return opened
+                except (ValueError, OSError) as exc:
+                    self.status.setText(str(exc))
+            return False
         if url.isValid() and url.scheme() in ('https', 'http') and url.host() and not url.userInfo():
             QDesktopServices.openUrl(url)
 
@@ -867,7 +887,9 @@ class Studio(QMainWindow):
             items=[dict(old[line]) if same_objective and line in old else {'text':line,'status':'pending','evidence':''} for line in (line.strip() for line in criteria.toPlainText().splitlines()) if line]
             try:goal=normalize_goal({'objective':text,'criteria':items,'next_action':next_action.text()},previous=previous or None)
             except ValueError as exc:self.error(exc);return
-            if goal!=previous:self.task.pop('goal_checkpoint',None)
+            if goal!=previous:
+                self.task.pop('goal_checkpoint',None)
+                self.task['checklist_goal_position'] = len(self.task['messages'])
             self.task['task_goal']=goal;self.task['task_goal_project']=self.task['project'];self.persist();self.refresh_plan();dialog.accept()
         def clear():
             self.task.pop('goal_checkpoint',None)
@@ -889,6 +911,9 @@ class Studio(QMainWindow):
                 item=QListWidgetItem(text);item.setToolTip(text);self.goal_list.addItem(item)
         else:self.goal_summary.setText('No saved task goal. Add an objective and completion criteria.');self.goal_summary.setToolTip('')
         plan=self.task.get('plan') or {}
+        context = self.task.get('checklist_plan_context')
+        if context and context[0] != str(Path(self.task['project']).resolve()):
+            plan = {}
         try:plan=normalize_plan(plan.get('steps'),plan.get('explanation',''))
         except (ValueError,TypeError,AttributeError):plan={}
         labels={'pending':'To do','in_progress':'Working','completed':'Done (reported)','blocked':'Blocked'}
@@ -897,6 +922,14 @@ class Studio(QMainWindow):
         checkpoint=self.task.get('goal_checkpoint') or {}
         progress=(self.checkpoint_status(checkpoint)+'\n\n' if checkpoint else '')
         self.plan_summary.setText(progress+(plan.get('explanation')+'\n\n' if plan.get('explanation') else '')+'Checklist status is agent-reported, not independent proof. Inspect checks and evidence before relying on it.')
+        local = getattr(self, 'checklist_run', None) if self.busy else None
+        local = local or task_checklist.saved(self.task)
+        if local:
+            self.plan_summary.setText(progress + local['objective'][:400])
+            for step in reversed(local['steps']):
+                item = QListWidgetItem(task_checklist.line(step))
+                item.setToolTip(step.get('evidence') or step['step'])
+                self.plan_list.insertItem(0, item)
         context=self.task.get('project_context',{})
         checks=context.get('checks',{}) if isinstance(context,dict) else {}
         self.context_summary.setText(('Project: '+str(context.get('engine','General'))+'\nDetected check commands: '+str(len(checks.get('commands',[])))) if context else 'Project overview appears when an agent task starts.')
@@ -1046,7 +1079,7 @@ class Studio(QMainWindow):
     def new_task(self):
         if self.busy: return
         self.task_search.clear();self.task_view.setCurrentIndex(0)
-        task={'id':uuid.uuid4().hex,'title':'New chat' if self.workspace=='chat' else 'New task','project':self.task['project'] if self.task else self.config['project'],'messages':[],'changes':[],'pinned':False,'archived':False,'kind':self.workspace,'keep_going':bool(self.config.get('keep_going',False))}
+        task={'id':uuid.uuid4().hex,'title':'New chat' if self.workspace=='chat' else 'New task','project':self.task['project'] if self.task else self.config['project'],'messages':[],'changes':[],'pinned':False,'archived':False,'kind':self.workspace,'keep_going':bool(self.config.get('keep_going',True))}
         self.tasks.insert(0,task); self.refresh_tasks(); self.select_task_by_id(task['id']); self.persist()
 
     def select_task(self,row):
@@ -1080,7 +1113,7 @@ class Studio(QMainWindow):
         self.status.setText('' if is_chat else 'Ready')
         self.refresh_attachments()
         self.compose_hint.setText('Enter to send  ·  Shift+Enter for a new line' if is_chat else 'Enter to send  ·  Shift+Enter for a new line  ·  Drag files onto the message  ·  Ctrl+O to open a project')
-        self.keep_going.blockSignals(True);self.keep_going.setChecked(bool(self.task.setdefault('keep_going',self.config.get('keep_going',False))));self.keep_going.blockSignals(False);self.keep_going.setVisible(kind=='code');self.work_duration.setVisible(kind=='code')
+        self.keep_going.blockSignals(True);self.keep_going.setChecked(bool(self.task.setdefault('keep_going',self.config.get('keep_going',True))));self.keep_going.blockSignals(False);self.keep_going.setVisible(kind=='code');self.work_duration.setVisible(kind=='code')
         self.mode.setCurrentText('Plan' if self.config.get('approval_policy')=='plan' else 'Act')
         self.prompt.setPlaceholderText('Message TalkToAi…' if is_chat else f'Ask {AGENT_NAME} to find your game and fix its menu…')
         self.prompt.setFixedHeight(76 if is_chat else 104)
@@ -1205,6 +1238,10 @@ class Studio(QMainWindow):
                 parts.append(heading+'\n\n'+content)
         partial,hidden=conversation_prose(self.partial);hidden_protocol=hidden_protocol or hidden
         if partial:parts.append(assistant_heading+'\n\n'+partial)
+        if self.busy:
+            checklist = getattr(self, 'checklist_notice', None) or getattr(self, 'checklist_run', None)
+            if checklist:
+                parts.append(task_checklist.readout(checklist) if isinstance(checklist, dict) else checklist)
         if hidden_protocol and not is_chat:parts.append('Model protocol text is hidden from this conversation view. Actual tool activity appears in Tools; protocol text alone does not establish execution.')
         if not is_chat and not self.busy and not self.task.get('pause_summary') and self.task.get('goal_checkpoint',{}).get('state')=='paused':
             parts.append('## Task pause report\n\n'+self.pause_report(self.task['goal_checkpoint']))
@@ -1298,6 +1335,8 @@ class Studio(QMainWindow):
 
     @staticmethod
     def checkpoint_status(checkpoint):
+        if checkpoint.get('state') == 'awaiting answer':
+            return 'Waiting for your answer · reply here to resume'
         label = str(checkpoint.get('pass', 1))
         if checkpoint.get('total_passes'):
             label += '/' + str(checkpoint['total_passes'])
@@ -1508,6 +1547,103 @@ class Studio(QMainWindow):
             finally:self.bus.event.emit('finished',None)
         threading.Thread(target=work,daemon=True).start()
 
+    @staticmethod
+    def write_local_scene(project, brief, design, cancel, emit, resume_history=()):
+        from agent_core import verified_scene_delivery
+        from engine_discovery import discover_blender, find_blender
+        from scene_kit import scene_quality_limit
+        from scene_outputs import build_scene_files
+        tools = ProjectTools(project, True, cancel, project_only=True)
+        limitation = scene_quality_limit(brief, 'template')
+        question = 'Would you like to keep this stylized scene, or use a model to refine its appearance?'
+        if resume_history:
+            previous = verified_scene_delivery(brief, resume_history, tools, complete=not limitation)
+            if previous:
+                name = Path(previous['artifact']).name
+                emit('artifact', previous)
+                emit('verification', {'status': 'passed', 'summary': 'The saved scene matches its verified SHA-256.',
+                                      'primary_output': {'name': name, 'sha256': previous['sha256']}})
+                emit('message', {'role': 'assistant', 'source': 'local',
+                                 'content': (f'**{name}** is already saved and verified. Open it from Evidence.'
+                                             + ('\n\n' + limitation + ' ' + question if limitation else ''))})
+                if limitation:
+                    emit('question_pending', {'question': question})
+                emit('status', 'Waiting for your choice' if limitation else 'Ready')
+                return
+        try:
+            blender = find_blender()
+        except ValueError:
+            blender = discover_blender()
+        files, verification, issue = build_scene_files(tools, design, blender, emit)
+        emit('verification', verification)
+        summary = [f"Built **{design['title']}** with the local scene generator.", verification['summary']]
+        summary.extend(f'- **{name}** · {title}' for name, _, title in files)
+        if issue:
+            summary.append('Blender reported ' + issue.splitlines()[0])
+        if limitation:
+            summary.append(limitation + ' ' + question)
+        delivery = dict(verification['primary_output'], brief=brief, project=str(tools.root), complete=not limitation)
+        emit('message', {'role': 'assistant', 'source': 'local', 'content': '\n\n'.join(summary),
+                         'scene_delivery': delivery})
+        if limitation:
+            emit('question_pending', {'question': question})
+        emit('status', 'Waiting for your choice' if limitation else 'Ready')
+
+    def accept_saved_scene(self, text):
+        if ('scene' not in self.task.get('pending_question', '').lower() or self.attachments
+                or not re.fullmatch(r'(?:please )?(?:keep|accept|use) (?:the |this |my )?(?:stylized|stylised|starting) scene[.! ]*', text, re.I)):
+            return False
+        from agent_core import verified_scene_delivery
+        messages = self.task['messages']
+        marker = next((m['scene_delivery'] for m in reversed(messages) if m.get('scene_delivery')), {})
+        if marker.get('complete') is not False:
+            return False
+        brief = marker.get('brief', '')
+        if marker.get('project') != str(Path(self.task['project']).resolve()):
+            return False
+        try:
+            tools = ProjectTools(self.task['project'], False, project_only=True)
+            previous = verified_scene_delivery(brief, messages, tools, complete=False)
+        except (ValueError, OSError):
+            return False
+        if not previous:
+            return False
+        self.task.pop('pending_question', None)
+        self.begin_local_run(text)
+        self.task['messages'][-1]['answers_task_question'] = True
+        name = Path(previous['artifact']).name
+        self.bus.publish('artifact', previous)
+        self.bus.publish('verification', {'status': 'passed', 'summary': 'The selected scene matches its saved SHA-256.',
+                                         'primary_output': {'name': name, 'sha256': previous['sha256']}})
+        self.bus.publish('message', {'role': 'assistant', 'source': 'local', 'scene_delivery': dict(marker, complete=True),
+                                     'content': f'Kept **{name}** as your finished stylized scene. Open it from Evidence.'})
+        self.bus.publish('goal_checkpoint', {'state': 'completed', 'steps': 0})
+        self.bus.publish('status', 'Ready')
+        self.bus.publish('finished', None)
+        return True
+
+    def start_local_scene(self, text, brief, design):
+        resume_history = list(self.task['messages']) if brief != text else ()
+        self.begin_local_run(text)
+        self.begin_checklist(brief, scene=True)
+        if design is None:
+            self.bus.publish('app_reply', 'The built-in generator needs a supported subject in the selected project. '
+                             'Try a winter village, a lunar impact scene, or an abstract sculpture.')
+            self.bus.publish('status', 'Choose a scene for the local generator')
+            self.bus.publish('finished', None)
+            return
+        project, cancel, emit = self.task['project'], self.cancel, self.bus.publish
+        def work():
+            try:
+                self.write_local_scene(project, brief, design, cancel, emit, resume_history)
+            except InterruptedError:
+                emit('status', 'Stopped')
+            except Exception as exc:
+                emit('error', str(exc))
+            finally:
+                emit('finished', None)
+        threading.Thread(target=work, daemon=True).start()
+
     def create_local_project(self,template_id,name):
         if self.busy:return
         if self.mode.currentText()!='Act':
@@ -1527,6 +1663,10 @@ class Studio(QMainWindow):
     def natural_control(self,text):
         normalized=text.strip().lower().rstrip('.!')
         body = request_body(text)
+        preview = preview_request(body, self.task.get('artifacts', []))
+        if preview:
+            self.start_scene_preview(text, *preview)
+            return True
         if re.fullmatch(r'(?:create|make|add|manage) (?:an? |my )?(?:custom )?(?:agents?|specialists?)[.!]?', body, re.I):
             if self.specialists_dialog():
                 self.prompt.clear()
@@ -1720,7 +1860,8 @@ class Studio(QMainWindow):
         messages=self.task['messages']
         if index is None:
             # Recover a pending conversational turn after an app exit or an 8.8 error.
-            index=next((i for i in reversed(range(len(messages))) if messages[i].get('role')=='user'),None)
+            index=next((i for i in reversed(range(len(messages)))
+                        if messages[i].get('role')=='user' and not messages[i].get('checklist_only')),None)
             if index is None:return None
             item=messages[index]
             if (item.get('source')=='app' or item.get('chat_mode')=='tools'
@@ -1730,11 +1871,67 @@ class Studio(QMainWindow):
                 and all(m.get('role')=='assistant' and (m.get('source') in ('chat_error','chat_partial')
                         or (m.get('content') or '').startswith('Task error: ')
                         or (m.get('source')=='app' and (m.get('content') or '').startswith('App pause report\nTask paused after 0 model steps.')))
-                        for m in messages[index+1:])):
+                        for m in messages[index+1:] if not m.get('checklist_only'))):
             return index
         return None
 
+    def begin_checklist(self, brief, *, scene=False):
+        self.checklist_run = task_checklist.begin(self.task, brief, scene=scene)
+        if self.checklist_run:
+            self.refresh_plan()
+            self.render()
+            self.persist()
+
+    def handle_checklist(self, text):
+        request = task_checklist.command(text)
+        if not request:
+            return False
+        try:
+            result = task_checklist.apply(self.task, request, self.current_task_goal())
+            reply = task_checklist.readout(result)
+        except ValueError as exc:
+            result = reply = str(exc)
+        self.prompt.clear()
+        self.task['draft'] = ''
+        if self.busy:
+            # Keep the model's in-flight conversation history and cancellation token intact.
+            self.checklist_notice = result
+        else:
+            if isinstance(result, dict) and self.task['title'] in ('New chat','New task'):
+                self.task['title'] = 'My to-do list'
+                self.title.setText(self.task['title'])
+                self.refresh_tasks()
+            self.task['messages'].extend((
+                {'role':'user', 'source':'app', 'checklist_only':True, 'content':text},
+                {'role':'assistant', 'source':'app', 'checklist_only':True, 'content':reply}))
+        self.refresh_plan()
+        self.render()
+        self.persist()
+        return True
+
+    def start_scene_preview(self, text, source, open_browser):
+        self.begin_local_run(text)
+        project, cancel = self.task['project'], self.cancel
+        act = self.mode.currentText() == 'Act'
+        artifacts = list(self.task.get('artifacts', []))
+        self.status.setText('Preparing the local browser preview…')
+        def work():
+            try:
+                record = prepare_viewer(ProjectTools(project, act, cancel, project_only=True), source, artifacts)
+                if not cancel.is_set():
+                    self.bus.event.emit('scene_preview', (record, open_browser))
+            except InterruptedError:
+                pass
+            except (OSError, ValueError, RuntimeError) as exc:
+                if not cancel.is_set():
+                    self.bus.event.emit('error', str(exc))
+            finally:
+                self.bus.event.emit('finished', None)
+        threading.Thread(target=work, daemon=True).start()
+
     def send(self,checked=False,*,retry=False):
+        if not retry and not self.attachments and not self.attachment_read and self.handle_checklist(self.prompt.toPlainText()):
+            return
         if self.attachment_read:
             self.send_after_read=True
             self.status.setText('Your message will send when document indexing finishes.')
@@ -1758,7 +1955,7 @@ class Studio(QMainWindow):
             self.status.setText('Steering queued · finishing the current tool safely')
             return
         if not retry and not self.attachments:
-            if self.natural_control(text):return
+            if self.accept_saved_scene(text) or self.natural_control(text):return
             text=self.prompt.toPlainText().strip()
         if not retry and (generation:=media_request(text)):
             self.start_media_request(text,generation)
@@ -1775,12 +1972,26 @@ class Studio(QMainWindow):
         resolved_focus = self.specialists.get(focus_preference) or resolve_focus(focus_preference, text, project_kind=project_kind)
         focus_options = {'focus': resolved_focus} if resolved_focus != 'everyday' else {}
         previous=next((item for item in reversed(messages) if item.get('role')=='user' and item.get('source')!='app'),{})
-        followup=previous.get('chat_mode')=='tools'
+        followup=previous.get('chat_mode')=='tools' or bool(is_chat and scene_creation_brief(text, messages))
         doc_history = any(m.get('typed_content') or m.get('document_refs') for m in messages if m.get('role') == 'user')
         answering_task = bool(self.task.get('pending_question')) and not retry
         web_query = chat_web_query(text, attached=bool(self.attachments or (original and original.get('typed_content'))),
                                    document_history=doc_history) if is_chat and not answering_task else None
         conversation=is_chat and not answering_task and (retry or bool(web_query) or not chat_requests_tools(text,attached=bool(self.attachments),followup=followup,focus=resolved_focus))
+        from scene_outputs import local_design, requests_local_generator
+        scene_brief = ''
+        if (not self.attachments and not retry and not answering_task and self.mode.currentText() == 'Act'):
+            scene_brief = scene_creation_brief(text, messages)
+        if scene_brief:
+            local_requested = requests_local_generator(scene_brief)
+            missing_profile = (self.route.currentIndex() == 4 and not self.active_provider()
+                               or MODEL_ROUTES[self.route.currentIndex()] == 'inkling' and not self._inkling_weights())
+            if local_requested or missing_profile:
+                design = local_design(scene_brief)
+                if local_requested or design is not None:
+                    if self.prepare_task_target(text):
+                        self.start_local_scene(text, scene_brief, design)
+                    return
         if self.route.currentIndex()==4 and not self.active_provider():
             self.status.setText('Add an API key and choose a model in your private vault to begin. Your draft is kept.')
             self.providers_dialog()
@@ -1834,9 +2045,11 @@ class Studio(QMainWindow):
         self.chat_response_received=False
         self.chat_recovery=''
         self.partial=''; self.render(); self.persist(); self.cancel=threading.Event(); self.set_busy(True)
+        if not retry and not answering_task:
+            self.begin_checklist(scene_brief or text, scene=bool(scene_brief))
         preference=MODEL_ROUTES[self.route.currentIndex()]
         self.started_at=time.monotonic();self.route_description=f'{AGENT_NAME} · selecting model';self.status.setText('Checking installed models…')
-        project=self.task['project']; history=list(self.task['messages']); act=self.mode.currentText()=='Act';task_id=self.task['id']
+        project=self.task['project']; history=[m for m in self.task['messages'] if not m.get('checklist_only')]; act=self.mode.currentText()=='Act';task_id=self.task['id']
         review_question = text if whole_review_requested(text) else ''
         if conversation and not web_query and previous.get('document_review') and re.fullmatch(r'(?:please )?(?:resume|continue|retry|carry on)(?: (?:the |my )?(?:document |filing )?review)?[.! ]*',text,re.I):
             review_question = previous['document_review']
@@ -1872,6 +2085,7 @@ class Studio(QMainWindow):
         def work():
             inkling_profile = None
             model_performance = performance
+            selected = None
             try:
                 if self.config.get('auto_tune',True) and preference not in ('provider','inkling'):
                     import routing
@@ -1991,7 +2205,31 @@ class Studio(QMainWindow):
                 run_agent(selected['url'],selected['model'],history,project,act,self.cancel,self.bus.event.emit,rounds=rounds,performance=model_performance,jobs=self.job_manager,task_kind=task_kind,keep_going=keep_going,task_goal=task_goal,app_preferences=self.preferences_manager,preference_change_notify=lambda result:self.bus.event.emit('app_preferences_changed',result),mcp_config=self.config.get('mcp_plugins'),**focus_options)
             except DownloadCancelled:
                 self.bus.event.emit('status','Model download stopped')
-            except Exception as exc:self.bus.event.emit('error',str(exc))
+            except Exception as exc:
+                # Only recover a failed connection before a model turn has started.
+                # An agent may already have made changes once selection succeeds.
+                design = (local_design(scene_brief) if scene_brief and selected is None
+                          and not self.cancel.is_set() and isinstance(exc, (OSError, RuntimeError, ValueError)) else None)
+                if (design is None and selected is None and keep_going and performance.get('work_session_minutes') == -1
+                        and not self.cancel.is_set() and isinstance(exc, (OSError, RuntimeError, ValueError))):
+                    reason = str(exc).strip()[:500]
+                    question = 'Can you connect or select a working model in Models, then reply here to resume this task?'
+                    self.bus.event.emit('message', {'role': 'assistant', 'source': 'app',
+                                                   'content': f'The selected model could not start. {reason}\n\n{question}'})
+                    self.bus.event.emit('question_pending', {'question': question})
+                    self.bus.event.emit('goal_checkpoint', {'state': 'awaiting answer', 'steps': 0, 'blockers': [reason]})
+                    self.bus.event.emit('status', 'Waiting for a model connection and your reply')
+                elif design is None:
+                    self.bus.event.emit('error', str(exc))
+                else:
+                    self.bus.event.emit('local_scene_fallback', 'The model could not start. Building the scene locally…')
+                    try:
+                        self.write_local_scene(project, scene_brief, design, self.cancel, self.bus.event.emit,
+                                               history if scene_brief != text else ())
+                    except InterruptedError:
+                        self.bus.event.emit('status', 'Stopped')
+                    except Exception as error:
+                        self.bus.event.emit('error', str(error))
             finally:
                 if not conversation:
                     set_active_remote(None)
@@ -2012,7 +2250,7 @@ class Studio(QMainWindow):
 
     def save_work_duration(self):
         if not self.busy:
-            self.config['work_session_minutes']=self.work_duration.currentData() or 120
+            self.config['work_session_minutes']=self.work_duration.currentData() or -1
             self.write_config()
 
     def toggle_model_activity(self,checked=False):
@@ -2066,6 +2304,8 @@ class Studio(QMainWindow):
             if self.current_file and self.editor.document().isModified():
                 self.error('Save your open file before switching to the project named in this request.');return False
             self.task['project']=target['root'];self.task['project_target']=target
+            self.task['checklist_history_start'] = len(self.task['messages'])
+            self.task.pop('checklist_goal_position', None)
             self.task.pop('workspace_changes',None)
             self.task.pop('project_context',None)
             had_goal=bool(self.task.pop('task_goal',None));self.task.pop('task_goal_project',None);self.task.pop('goal_checkpoint',None)
@@ -2173,6 +2413,9 @@ class Studio(QMainWindow):
 
     def set_busy(self,busy):
         if busy and not self.busy:
+            self.checklist_run = self.checklist_notice = None
+            self.checklist_outputs = set()
+            self.checklist_tool = ''
             self.output.clear();self.status.setText('Starting new run…')
             self.reasoning_excerpt='';self.model_activity.clear();self.run_card_title.setText('Request received')
             self.run_card_detail.setText('App status · checking the selected runtime. The model has not replied yet.')
@@ -2252,12 +2495,26 @@ class Studio(QMainWindow):
         if kind=='documents_ready':
             self.documents_ready(data)
             return
+        if kind == 'scene_preview':
+            if self.cancel.is_set():
+                return
+            record, open_browser = data
+            self.handle_event('artifact', dict(record, auto_open=False))
+            link = 'talktoai-viewer://local/' + record['sha256']
+            summary = 'Your offline 3D preview is ready.'
+            if open_browser:
+                if self.open_chat_link(QUrl(link)):
+                    summary = 'Opened the local 3D preview in your browser.'
+                else:
+                    summary = 'The viewer was saved. Your browser could not open it automatically.'
+            self.handle_event('app_reply', summary + '\n\n[Open the 3D viewer](' + link + ')')
+            return
         if kind=='app_reply':
             self.task['messages'].append({'role':'assistant','source':'app','content':data})
             self.persist();self.render()
             return
         if kind=='app_preferences_changed':
-            duration=self.work_duration.findData(self.config.get('work_session_minutes',120))
+            duration=self.work_duration.findData(self.config.get('work_session_minutes',-1))
             if duration>=0:
                 self.work_duration.blockSignals(True);self.work_duration.setCurrentIndex(duration);self.work_duration.blockSignals(False)
             self.model_activity_action.setChecked(bool(self.config.get('show_model_activity',False)))
@@ -2267,6 +2524,13 @@ class Studio(QMainWindow):
             if self.busy and data is self.control_cancel_token:self.stop_task()
         elif kind=='chat_recovery':
             self.chat_recovery=data
+            self.status.setText(data)
+        elif kind=='discard_partial':
+            self.partial = ''
+            self.stream_dirty = True
+        elif kind=='local_scene_fallback':
+            self.execution_kind = 'local'
+            self.route_description = 'Local program · no model request'
             self.status.setText(data)
         elif kind=='delta':self.partial+=data;self.stream_dirty=True;self.observe_progress('Model responding')
         elif kind=='model_wait':
@@ -2324,7 +2588,8 @@ class Studio(QMainWindow):
                 data=dict(data,**{key:run_summary[key] for key in ('next_action','last_tool_error','workspace_changes') if key in run_summary})
             self.task['goal_checkpoint']=data;self.refresh_plan();self.persist()
             self.status.setText(self.checkpoint_status(data))
-            self.observe_progress('Paused' if data.get('state')=='paused' else 'Continuing work',data.get('steps',self.run_step))
+            phase = {'paused': 'Paused', 'awaiting answer': 'Waiting for your answer', 'completed': 'Completed'}
+            self.observe_progress(phase.get(data.get('state'), 'Continuing work'),data.get('steps',self.run_step))
             if data.get('state')=='paused':
                 summary=self.pause_report(data)
                 if self.task.get('pause_summary')!=summary:
@@ -2342,11 +2607,16 @@ class Studio(QMainWindow):
             from task_goals import normalize_goal
             try:goal=normalize_goal(data,previous=self.current_task_goal())
             except (ValueError,TypeError) as exc:self.status.setText('Task goal update rejected: '+str(exc));return
-            self.task['task_goal']=goal;self.task['task_goal_project']=self.task['project'];self.refresh_plan();self.persist()
+            self.task['task_goal']=goal;self.task['task_goal_project']=self.task['project']
+            self.task['checklist_goal_position'] = len(self.task['messages'])
+            self.refresh_plan();self.persist()
         elif kind=='plan':
-            self.task['plan']=data;self.refresh_plan();self.persist()
+            self.task['plan']=data;task_checklist.note_model_plan(self.task);self.refresh_plan();self.persist()
         elif kind=='verification':
             self.observe_progress('Check result received')
+            if self.busy and getattr(self, 'checklist_run', None):
+                task_checklist.observe(self.checklist_run, data, self.checklist_outputs, self.checklist_tool == 'run_checks')
+                self.render()
             self.task['verification']=data;self.refresh_plan();self.persist()
         elif kind=='message':
             self.task['messages'].append(data);self.partial=''
@@ -2356,6 +2626,7 @@ class Studio(QMainWindow):
             self.persist();self.render()
         elif kind=='tool':
             name=data['name'];self.run_tool_counts[name]=self.run_tool_counts.get(name,0)+1
+            self.checklist_tool = name
             if name in ('read_file','read_project_files','list_files','project_info','search_code','project_map','git_changes'):phase='Inspecting project'
             elif name in ('write_file','write_file_checked','edit_file'):phase='Editing files'
             elif name=='run_checks':phase='Running project checks'
@@ -2373,11 +2644,20 @@ class Studio(QMainWindow):
         elif kind=='result':
             self.observe_progress('Tool result received')
             rendered=str(data)
+            if self.busy and getattr(self, 'checklist_run', None) and self.checklist_tool == 'run_checks':
+                task_checklist.observe_test_output(self.checklist_run, rendered)
+                self.refresh_plan()
+                self.render()
             if len(rendered)>12000:rendered=rendered[:7000]+f'\n\n… {len(rendered)-11000} characters omitted from this panel; the agent received the complete tool result …\n\n'+rendered[-4000:]
             if self.config.get('show_tool_activity',True):self.output.appendPlainText(rendered+'\n')
             self.task.setdefault('activity',[]).append(str(data)[-6000:]);self.persist()
         elif kind=='artifact':
             if isinstance(data,dict) and data.get('artifact'):
+                if self.busy and getattr(self, 'checklist_run', None):
+                    path = Path(data['artifact']).resolve()
+                    if (path.is_relative_to(Path(self.task['project']).resolve()) and path.suffix.lower() in ('.blend','.glb')
+                            and re.fullmatch('[0-9a-f]{64}', data.get('sha256') or '')):
+                        self.checklist_outputs.add((path.name, data['sha256']))
                 artifacts=self.task.setdefault('artifacts',[])
                 existing=next((a for a in artifacts if a['artifact']==data['artifact']),None)
                 if existing is not None:existing.update(data)
@@ -3055,7 +3335,7 @@ Use an available local or server model, stop a task, or steer it into a smaller 
                 'ollama_keep_alive':normalize_keep_alive(self.config.get('ollama_keep_alive')),
                 'local_worker_limit':worker_limit(self.config.get('local_worker_limit')),
                 'show_thinking':bool(self.config.get('show_model_activity',False)),
-                'work_session_minutes':self.work_duration.currentData() or 120,
+                'work_session_minutes':self.work_duration.currentData() or -1,
                 'effort':normalize_effort(self.config.get('effort')) or DEFAULT_EFFORT,
                 'auto_install':self.config.get('auto_install_tools',True) is True,
                 'questions':'wait' if self.config.get('question_policy')=='wait' else 'continue'}

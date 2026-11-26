@@ -63,6 +63,15 @@ _FOLLOWUP = re.compile(
 )
 _CONTINUE = re.compile(r"^(?:try (?:again|harder)|carry on|keep (?:going|trying)|continue(?: the (?:task|work))?|"
                        r"resume(?: the (?:task|work))?)[.! ]*$|\b(?:please|come on(?: sir)?|sir)[ ,!.]+try (?:again|harder)[.! ]*$", re.I)
+_FINISH = re.compile(
+    r"(?:(?:ok(?:ay)?|please|sir)[ ,.!]+)*(?:i(?:'ve| have)? )?(?:been waiting \d+ (?:min(?:ute)?s?|hours?)"
+    r"(?:[ ,.!]+i think you (?:might be|are) stuck)?[ ,.!]+)?"
+    r"(?:finish(?: (?:it|the (?:scene|task|job|design)))?|(?:continue|resume)(?: (?:the |this )?(?:task|work))?|"
+    r"carry on|keep going|try (?:again|harder)|go on|give it another try)"
+    r"(?:[ ,.!]+(?:sir|please|you stopped|you should (?:have|of) (?:continued|carried on)))*[ ,.!]*", re.I)
+_SCENE_STATUS = re.compile(
+    r"(?:did you (?:save|finish|create)|was (?:it|the (?:scene|file)) saved|where (?:is|did you save)|"
+    r"how (?:do|can) i (?:open|view))\b", re.I)
 _DRAW = re.compile(r"^(?:draw|paint|illustrate)\s+(.+)$", re.I)
 _MEDIA = re.compile(
     r"^(?:make|create|generate|render|produce|design)\s+"
@@ -76,7 +85,8 @@ _TEXT_FORMAT = re.compile(r"\b(?:in|as)\s+(?:an?\s+)?(?:svg|ascii|mermaid)\b", r
 _WRITING_DRAW = re.compile(r"^(?:up\s+|(?:me\s+)?(?:(?:a|my|your)\s+)?(?:conclusion|plan|ascii)\b)", re.I)
 _CREATE = re.compile(r"^(?:build|make|create|generate|design|write|code)\s+", re.I)
 _SCENE = re.compile(r"\b3d[ -]+(?:[a-z]+[ -]+){0,3}(?:artwork|design|model|scene|sculpture)\b|"
-                    r"\bblender[ -]+(?:model|scene)\b|\b[\w.-]+\.blend\b", re.I)
+                    r"\bblender[ -]+(?:artwork|design|model|scene|sculpture)\b|"
+                    r"\b(?:in|using|with) blender\b|\b[\w.-]+\.blend\b", re.I)
 _PROJECT_ARTIFACT = re.compile(
     r"\b(?:html|javascript|web ?page|website|web app|browser game|playable game|"
     r"video game|interactive (?:art|demo|game|animation|visuali[sz]ation)|(?:python|shell) script|"
@@ -153,7 +163,34 @@ def requests_new_blender_scene(text):
 
 
 def requests_tool_continuation(text):
-    return bool(_CONTINUE.search(request_body(text)))
+    body = request_body(text)
+    return bool(_CONTINUE.search(body) or _FINISH.fullmatch(body))
+
+
+def scene_creation_brief(text, history=()):
+    """Resolve a scene follow-up from user turns, never from a model's suggested subject."""
+    if requests_new_blender_scene(text):
+        return text
+    if not _FINISH.fullmatch(request_body(text)):
+        return ''
+    for message in reversed(history):
+        if message.get('role') != 'user' or message.get('_automation_nudge') or message.get('source') == 'app':
+            continue
+        earlier = message.get('typed_content', message.get('content'))
+        if not isinstance(earlier, str):
+            return ''
+        if requests_new_blender_scene(earlier):
+            return earlier
+        if _FINISH.fullmatch(request_body(earlier)) or re.fullmatch(
+                r'[\s,.!]*(?:(?:ok(?:ay)?|thank you|thanks|nice|great|amazing|work|sir)[\s,.!]*)+', earlier, re.I):
+            continue
+        # A question about the file just created can sit between a task and its resume.
+        # A new instruction, including a compound question with a new action, is a boundary.
+        if (_SCENE_STATUS.search(earlier) and re.search(r'\b(?:scene|file|blend)\b', earlier, re.I)
+                and not re.search(r'\b(?:and|then|instead|stop|cancel|delete|replace)\b', earlier, re.I)):
+            continue
+        break
+    return ''
 
 
 def wants_browser_lookup(text):

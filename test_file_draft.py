@@ -89,6 +89,27 @@ class SceneLintTests(unittest.TestCase):
         self.assertEqual(lint.lint_blender_script('x = 1\n')[2], ['The script never uses bpy, so it cannot build a Blender scene.'])
         self.assertIn('Remove the use of subprocess.', lint.lint_blender_script('import bpy, subprocess\nsubprocess.run(["x"])\n')[2][-1])
 
+    def test_format_property_repair_is_limited_to_known_blender_settings(self):
+        source = ('import bpy\nscene = bpy.context.scene\nsettings = scene.render\n'
+                  'formatting = "scène"; settings.image_format = "PNG"\n'
+                  'scene.render.image_settings.image_format = "JPEG"\n'
+                  'other.image_format = "RGBA"\nsettings = other\nsettings.file_format = "PNG"\n')
+        repaired, notes, problems = lint.lint_blender_script(source)
+        self.assertEqual(problems, [])
+        self.assertIn('corrected the Blender image format property', notes)
+        self.assertIn('settings.image_settings.file_format = "PNG"', repaired)
+        self.assertIn('scene.render.image_settings.file_format = "JPEG"', repaired)
+        self.assertIn('other.image_format = "RGBA"', repaired)
+        self.assertTrue(repaired.endswith('settings.file_format = "PNG"\n'))
+        compile(repaired, 'scene.py', 'exec')
+
+    def test_removing_a_save_preserves_geometry_on_the_same_line(self):
+        source = 'import bpy\nbpy.ops.wm.save_mainfile(); bpy.ops.mesh.primitive_cube_add()\n'
+        repaired, _, problems = lint.lint_blender_script(source)
+        self.assertFalse(problems)
+        self.assertIn('bpy.ops.mesh.primitive_cube_add()', repaired)
+        self.assertNotIn('save_mainfile', repaired)
+
     def test_blender_output_becomes_one_actionable_message(self):
         output = ('Blender 4.2\nTraceback (most recent call last):\n  File "/tmp/x/scene.py", line 3, in <module>\n'
                   '    bpy.ops.object.mode_set(mode="EDIT")\n'
