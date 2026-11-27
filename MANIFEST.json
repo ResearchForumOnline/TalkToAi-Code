@@ -5,7 +5,7 @@
   },
   {
     "path": ".github/workflows/portable-desktop-smoke.yml",
-    "sha256": "cc7784b59335485adbce7981f16650c615c60b1541e413c49cdedfea1df2a023"
+    "sha256": "530efff1555ddcd49f6a201d646aa6dc3076ff0a961c3ef9bad6fc4eea361c56"
   },
   {
     "path": ".github/workflows/release-apps.yml",
@@ -37,7 +37,7 @@
   },
   {
     "path": "README.md",
-    "sha256": "0cdac04394cacf8e27c3fb2345a36c45a4bdd844f17dd677ea19ebc143cccc23"
+    "sha256": "1250203df38122f987d8c88b88dea452aaaa8bcdf04499d87fa56e28d53825ac"
   },
   {
     "path": "RELEASE-NOTES.md",
@@ -244,6 +244,10 @@
     "sha256": "df0cef9c0d2cdd79681c5a9370d3ba6aa6215b0c7a84197416cfa45e30582cd5"
   },
   {
+    "path": "assets/zero-avatar/typing.jpg",
+    "sha256": "3b4b5ab0796b5d85ce6cb2608ef50d97169542f2c6338d0a99d658a99f5f258c"
+  },
+  {
     "path": "assets/zero-avatar/waking.jpg",
     "sha256": "6b434f15cd37c17f1956e9e94aafcd28b54819829448949b9ddf2a5623250635"
   },
@@ -385,7 +389,7 @@
   },
   {
     "path": "docs/DESKTOP-9.1.2.md",
-    "sha256": "192fc43f68c2ba40815f0b79db5ee6b7ab59a13edfb23b6aa428841ff1b67a7a"
+    "sha256": "f782eeb08e78ac8cf04f496d6401c7d7a372e8c4ae100edf11f9566e61077edd"
   },
   {
     "path": "docs/DEVSPACE-IDEAS-REVIEW.md",
@@ -1025,7 +1029,7 @@
   },
   {
     "path": "test_chat_ui.py",
-    "sha256": "004ec3c13b1a31a5088afa5b195edb7a6cff490dae287a92fa7ef735be226f88"
+    "sha256": "73cc62c58c18aaaa7763e747a69089b7a707296e89d8b7a012700da74c916f06"
   },
   {
     "path": "test_chat_web.py",
@@ -1321,7 +1325,7 @@
   },
   {
     "path": "test_zero_avatar.py",
-    "sha256": "c7091c956b84d7f630aba5acc87d3bcd7a337df2dfd3f4996b6a3ef5d36ca7b3"
+    "sha256": "ea86098a69de7cb587cb06cc2805be42d6578ab9bb071810cb66f534aa873e3c"
   },
   {
     "path": "tool_chains.py",
@@ -1381,6 +1385,6 @@
   },
   {
     "path": "zero_avatar.py",
-    "sha256": "e25428e72c7a0de9b0cae3ff5ba791e1912fd1c5c4dcfc944984ae0ccd8b1ec6"
+    "sha256": "a29433148b12ab9b429d359e638a8ceeb320ce138c1fed5d383854c634989ea4"
   }
 ]

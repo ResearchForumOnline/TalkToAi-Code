@@ -6,7 +6,7 @@
 
 ![Agent Zero in the TalkToAi Code conversation header on Windows](assets/screens/studio-zero-912.png)
 
-**Agent Zero moves as you work.** The conversation header shows when Zero is connecting, replying, waiting for a tool, or building. [See how it works](docs/DESKTOP-9.1.2.md).
+**Watch Agent Zero type as replies stream.** The conversation header also shows when Zero is connecting, waiting for a tool, or building. [See how it works](docs/DESKTOP-9.1.2.md).
 
 ## Install
 

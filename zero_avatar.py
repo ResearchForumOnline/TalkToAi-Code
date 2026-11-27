@@ -16,6 +16,7 @@ CLIPS = {
     'waking': ('waking', 32, False),
     'connecting': ('idle', 128, True),
     'working': ('working', 128, True),
+    'typing': ('typing', 128, True),
     'waiting': ('idle', 128, True),
     'making': ('making', 128, True),
     'complete': ('complete', 80, False),
@@ -215,8 +216,10 @@ class ZeroAvatar(QFrame):
         if kind == 'route':
             self.display('working', 'Waiting for the model')
         elif kind == 'delta':
-            if self.label != 'Writing a reply':
-                self.display('working', 'Writing a reply')
+            if data and self.state != 'typing':
+                self.display('typing', 'Writing a reply')
+        elif kind == 'discard_partial':
+            self.display('working', 'Waiting for the model')
         elif kind == 'tool' and isinstance(data, dict):
             name = data.get('name')
             label = 'Waiting for a project reviewer' if name == 'delegate_review' else describe_tool(name, data.get('args'))

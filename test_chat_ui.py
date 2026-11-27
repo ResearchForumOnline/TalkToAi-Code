@@ -148,8 +148,16 @@ class ChatUITests(unittest.TestCase):
     def test_native_enter_click_stream_and_follow_up(self):
         w = self.w
         _, requests, received, release = self.server()
+        avatar_events = []
+        update_avatar = w.zero_avatar.event_received
+
+        def record_avatar_event(kind, data):
+            update_avatar(kind, data)
+            avatar_events.append((kind, w.zero_avatar.state))
+
         w.task['project'] = str(self.root / 'removed-project')
-        with patch.object(w, 'prepare_task_target') as target, patch('studio.ProjectTools') as tools, patch('studio.ProcessJobs') as jobs:
+        with (patch.object(w, 'prepare_task_target') as target, patch('studio.ProjectTools') as tools,
+              patch('studio.ProcessJobs') as jobs, patch.object(w.zero_avatar, 'event_received', record_avatar_event)):
             self.submit('Help me plan tomorrow.')
             self.wait_for(lambda: received.is_set() and w.zero_avatar.state == 'working')
             self.assertTrue(w.stop.isEnabled())
@@ -164,6 +172,7 @@ class ChatUITests(unittest.TestCase):
             self.assertEqual([m['role'] for m in w.task['messages']], ['user','assistant'])
             self.assertIn('Let’s start with a short list.', w.transcript.toPlainText())
             self.assertEqual(w.status.text(), '')
+            self.assertIn(('delta', 'typing'), avatar_events)
             self.assertEqual(w.zero_avatar.label, 'Reply complete')
             QTest.mouseClick(w.send_button, Qt.LeftButton)
             self.wait_for(lambda: len(requests) == 2 and not w.busy)
