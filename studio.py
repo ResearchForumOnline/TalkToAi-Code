@@ -59,6 +59,7 @@ from model_storage import clean_stale_partials
 
 from chat_intent import chat_requests_tools, chat_web_query, media_request, request_body, scene_creation_brief
 from activity_bar import create_activity_bar
+from zero_avatar import ZeroAvatar
 from effort import LEVELS as EFFORT_LEVELS, PROFILES as EFFORT_PROFILES, DEFAULT_EFFORT, normalize_effort
 from chat_web import lookup_chat_web
 
@@ -347,8 +348,18 @@ class Studio(QMainWindow):
 
     def changeEvent(self,event):
         super().changeEvent(event)
-        if event.type()==QEvent.WindowStateChange and self.isMinimized() and getattr(self,'tray',None):
-            QTimer.singleShot(0,self.hide)
+        if event.type()==QEvent.WindowStateChange:
+            if hasattr(self,'zero_avatar'):
+                self.zero_avatar.portrait.sync_playback()
+            if self.isMinimized() and getattr(self,'tray',None):
+                QTimer.singleShot(0,self.hide)
+
+    def save_avatar_motion(self, enabled):
+        self.config['zero_avatar_motion'] = enabled
+        try:
+            self.write_config()
+        except OSError:
+            self.status.setText('Motion preference changed for this session. The settings file could not be saved.')
 
     def button(self, text, callback, parent, accent=False):
         b = QPushButton(text.replace('&','&&'))
@@ -439,6 +450,9 @@ class Studio(QMainWindow):
         self.button('Set up local AI',self.models_dialog,model_setup_row,True)
         self.model_setup.hide()
         chat.addWidget(self.model_setup)
+        self.zero_avatar = ZeroAvatar(self, motion=self.config.get('zero_avatar_motion', True) is not False)
+        self.zero_avatar.motion_changed.connect(self.save_avatar_motion)
+        chat.addWidget(self.zero_avatar)
         self.run_card=QFrame();self.run_card.setObjectName('runCard')
         run_card_layout=QVBoxLayout(self.run_card);run_card_layout.setContentsMargins(14,10,14,10)
         self.run_card_title=QLabel('Request received');self.run_card_title.setStyleSheet('font-weight:600;color:#dff9f2;')
@@ -1296,6 +1310,7 @@ class Studio(QMainWindow):
     def tick(self):
         if self.busy and self.started_at:
             now=time.monotonic();quiet=max(0,int(now-(self.last_observed_at or self.started_at)))
+            self.zero_avatar.progress(int(now-self.started_at), self.run_step if self.execution_kind == 'model' else 0)
             if self.execution_kind=='conversation':
                 if self.run_phase=='Waiting for reply':
                     seconds=int(now-self.started_at)
@@ -2411,6 +2426,25 @@ class Studio(QMainWindow):
             f"Restored {result['files']} file(s) from candidate backup {result['manifest']}."})
         self.persist();self.render();self.refresh_files();self.refresh_changes()
 
+    def avatar_outcome(self):
+        if self.cancel.is_set():
+            return 'Stopped'
+        if self.execution_kind == 'conversation':
+            if not self.chat_response_received:
+                return 'Reply interrupted'
+            if self.task['messages'][-1].get('finish_reason') == 'length':
+                return 'Reply is ready to continue'
+            return 'Reply complete'
+        if self.execution_kind == 'model':
+            state = self.task.get('goal_checkpoint', {}).get('state')
+            return {'completed': 'Task complete', 'awaiting answer': 'Waiting for your answer',
+                    'paused': 'Progress saved', 'stopped': 'Stopped'}.get(state, 'Run ended')
+        if self.status.text() == 'Waiting for your choice':
+            return 'Waiting for your choice'
+        if self.execution_kind == 'local' and self.status.text() in ('Ready', 'Local tool finished'):
+            return 'Task complete'
+        return 'Run ended'
+
     def set_busy(self,busy):
         if busy and not self.busy:
             self.checklist_run = self.checklist_notice = None
@@ -2441,11 +2475,14 @@ class Studio(QMainWindow):
                 explicit_stop.set();cancel.set();self.bus.event.emit('control_cancel',token)
             self.global_escape=self.execution_kind!='conversation' and self.escape_cancel.arm(escape)
             if getattr(self,'activity',None) is not None:self.activity.begin('Starting…')
+            self.zero_avatar.begin(self.execution_kind)
         if not busy:
             self.control_cancel_token=None;self.escape_cancel.disarm();self.global_escape=False
             self.end_control_session()
             if self.busy and getattr(self,'activity',None) is not None:
                 self.activity.finish('Stopped' if getattr(self,'cancel',None) is not None and self.cancel.is_set() else '')
+            if self.busy:
+                self.zero_avatar.finish(self.avatar_outcome())
             self.run_card.hide()
         self.busy=busy
         if not busy:self.refresh_route_labels()
@@ -2482,6 +2519,8 @@ class Studio(QMainWindow):
             draft=self.prompt.toPlainText().strip();queued=self.pending_prompt;self.pending_prompt=''
             self.prompt.setPlainText(queued+('\n\n'+draft if draft and draft!=queued else ''))
         self.cancel.set()
+        if self.busy and not self.zero_avatar.run_failed:
+            self.zero_avatar.display('idle', 'Stopping')
         self.status.setText('Stopping reply…' if self.execution_kind=='conversation' else
                             'Stopping media generation…' if self.execution_kind=='media' else
                             'Stopping local program…' if self.execution_kind=='local' else 'Stopping · waiting for model or running command to yield')
@@ -2490,6 +2529,8 @@ class Studio(QMainWindow):
             self.control_overlay.show_stopping();self.control_banner.setText('TalkToAi is stopping…\nWaiting for the current action to finish safely.')
 
     def handle_event(self,kind,data):
+        if self.busy and (kind == 'error' or not self.cancel.is_set()):
+            self.zero_avatar.event_received(kind, data)
         if kind in ('tool','status','result') and self.busy and getattr(self,'activity',None) is not None:
             self.activity.event_received(kind,data)
         if kind=='documents_ready':

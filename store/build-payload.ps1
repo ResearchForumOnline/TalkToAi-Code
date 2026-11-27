@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param([string]$BuildName = '9.1.1', [string]$OutputDirectory = '', [string]$AssetCollection = '')
+param([string]$BuildName = '9.1.2', [string]$OutputDirectory = '', [string]$AssetCollection = '')
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 if ($BuildName -notmatch '^\d+\.\d+\.\d+(?:-[a-zA-Z0-9]+)?$') { throw 'BuildName must identify the source release.' }
@@ -14,6 +14,7 @@ foreach ($relative in @('project.godot','main.gd','main.gd.uid','main.tscn','tes
     $sampleSource = Join-Path $root ('samples\score-arena\' + $relative)
     $samples += '--add-data', ($sampleSource + ';' + $folder)
 }
+$samples += '--add-data', ((Join-Path $root 'assets\zero-avatar') + ';assets/zero-avatar')
 python -m PyInstaller --noconfirm --noconsole --name TalkToAiCode --manifest (Join-Path $root 'store\TalkToAiCode.manifest') --collect-all playwright --collect-submodules pywinauto --hidden-import api_router --hidden-import attachment_ingest --hidden-import anthropic_stream --hidden-import activity_bar --hidden-import auto_tune --hidden-import cpp_tools --hidden-import effort --hidden-import engine_install --hidden-import file_draft --hidden-import hardware_probe --hidden-import scene_kit --hidden-import scene_lint --exclude-module numpy --exclude-module PySide6.QtWebEngineCore --exclude-module PySide6.QtWebEngineWidgets --distpath $destination --workpath $work --specpath $work @samples (Join-Path $root 'studio.py')
 if ($LASTEXITCODE -ne 0) { throw 'Store executable build failed.' }
 python (Join-Path $root 'scripts\package-project-python.py') $payload

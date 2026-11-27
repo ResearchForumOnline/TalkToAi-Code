@@ -37,7 +37,7 @@ jobs:
           test_scene_pipeline test_conversation test_chat_ui test_model_storage test_agent_zero test_asset_library test_mcp_plugins test_model_library
           test_model_library_dialog test_model_routing test_runtime_setup test_inkling_models test_inkling_runtime test_inkling_cuda test_inkling_ui test_openai_provider
           test_document_filing test_project_python test_project_checks test_chat_web test_local_tuning test_project_workers test_subagents test_chat_intent
-          test_agent_focus test_agent_focus_ui test_media_generation test_voice_transcription test_voice_ui
+          test_agent_focus test_agent_focus_ui test_media_generation test_voice_transcription test_voice_ui test_zero_avatar
 
   windows:
     needs: tests

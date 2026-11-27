@@ -238,6 +238,23 @@ def smoke(destination):
                 self.wfile.write(b'<label>Player<input aria-label="Player"></label><button aria-label="Start" onclick="document.querySelector(\'h1\').textContent=\'Hello \'+document.querySelector(\'input\').value">+</button><h1>Ready</h1><a href="/report" target="_blank">Open report</a>')
     server=None;browser=None
     try:
+        from PySide6.QtWidgets import QApplication
+        from zero_avatar import CLIPS, ZeroAvatar
+        qt_app = QApplication.instance() or QApplication([])
+        avatar = ZeroAvatar()
+        avatar.show()
+        qt_app.processEvents()
+        avatar_checks = []
+        for state in CLIPS:
+            avatar.display(state, state)
+            portrait = avatar.portrait
+            before = portrait.grab().toImage()
+            for _ in range(4):
+                portrait.advance()
+            avatar_checks.append(not portrait.still.isNull() and not portrait.sheet.isNull()
+                                 and before != portrait.grab().toImage())
+        avatar.close()
+        result['zero_live_avatar'] = all(avatar_checks)
         if os.name=='nt':
             import pywinauto
             result['computer_dependency']=pywinauto.__version__
@@ -549,6 +566,7 @@ def smoke(destination):
             result['passed'] = result['passed'] and result['windows_voice_plugins']
         if 'blender_scene_reopened' in result:
             result['passed'] = result['passed'] and result['blender_scene_reopened']
+        result['passed'] = result['passed'] and result.get('zero_live_avatar', False)
         if desktop_worker_check:result['passed']=result['passed'] and result.get('desktop_worker',False)
         if getattr(__import__('sys'),'frozen',False):result['passed']=result['passed'] and result.get('bundled_game_assets',False)
         if os.name=='nt' and getattr(__import__('sys'),'frozen',False):result['passed']=result['passed'] and result.get('per_monitor_v2',False)

@@ -24,6 +24,7 @@ def build(platform, destination):
     prefix = f'TalkToAi-Code-{version}-{label}'
     script = f'install-{platform}.sh'
     sources = ['LICENSE', 'requirements-runtime.txt', script, 'assets/store/icon-150.png']
+    sources += sorted(file.relative_to(ROOT).as_posix() for file in (ROOT / 'assets/zero-avatar').glob('*.jpg'))
     sources += sorted(file.name for file in ROOT.glob('*.py')
                       if not file.name.startswith('test_') and file.name not in EXCLUDE)
     sources += [f'samples/score-arena/{name}' for name in SAMPLE_FILES]

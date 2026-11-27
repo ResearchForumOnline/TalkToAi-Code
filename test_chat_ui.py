@@ -153,6 +153,7 @@ class ChatUITests(unittest.TestCase):
             self.submit('Help me plan tomorrow.')
             self.wait_for(received.is_set)
             self.assertTrue(w.stop.isEnabled())
+            self.assertEqual(w.zero_avatar.state, 'working')
             w.prompt.setPlainText('Where should I begin?')
             QTest.keyClick(w.prompt, Qt.Key_Return)
             QTest.mouseClick(w.send_button, Qt.LeftButton)
@@ -164,6 +165,7 @@ class ChatUITests(unittest.TestCase):
             self.assertEqual([m['role'] for m in w.task['messages']], ['user','assistant'])
             self.assertIn('Let’s start with a short list.', w.transcript.toPlainText())
             self.assertEqual(w.status.text(), '')
+            self.assertEqual(w.zero_avatar.label, 'Reply complete')
             QTest.mouseClick(w.send_button, Qt.LeftButton)
             self.wait_for(lambda: len(requests) == 2 and not w.busy)
             path, payload = requests[1]
@@ -213,6 +215,7 @@ class ChatUITests(unittest.TestCase):
         self.submit('Summarize the attached note')
         self.wait_for(lambda: not w.busy)
         self.assertIn('Couldn’t finish', w.transcript.toPlainText())
+        self.assertEqual(w.zero_avatar.label, 'This run needs attention')
         self.assertNotIn('App pause report', w.transcript.toPlainText())
         self.assertTrue(w.retry_button.isVisible())
         self.assertEqual(w.prompt.toPlainText(), '')

@@ -57,6 +57,7 @@ def pyinstaller(target, work, icon=None):
     data = [f'{ROOT / "samples/score-arena" / name}{separator}samples/score-arena' + ('/tests' if name.startswith('tests/') else '')
             for name in SAMPLES]
     data.append(f'{ROOT / "assets/store/icon-150.png"}{separator}assets/store')
+    data.append(f'{ROOT / "assets/zero-avatar"}{separator}assets/zero-avatar')
     command = [sys.executable, '-m', 'PyInstaller', '--noconfirm', '--windowed', '--name', NAME,
                '--distpath', target, '--workpath', work / 'build', '--specpath', work,
                '--collect-all', 'playwright']

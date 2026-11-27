@@ -5,11 +5,11 @@
   },
   {
     "path": ".github/workflows/portable-desktop-smoke.yml",
-    "sha256": "0c7113d6ac0faf3f2b2804d18ee48ab36e5191776d34bbed4ff97fe0f28a79a1"
+    "sha256": "cc7784b59335485adbce7981f16650c615c60b1541e413c49cdedfea1df2a023"
   },
   {
     "path": ".github/workflows/release-apps.yml",
-    "sha256": "5b144e706530bffe0d338a8321becc9010ccb43380d258946817b2f45905fd48"
+    "sha256": "474a8a373c5aced4da82f3d8bf60bcc56067fa3a026f65e89eed55be88520ad7"
   },
   {
     "path": ".gitignore",
@@ -37,7 +37,7 @@
   },
   {
     "path": "README.md",
-    "sha256": "995796538a636491e796363293045c2b36388dadd754e4dddcca0fddc3a7e0ec"
+    "sha256": "0cdac04394cacf8e27c3fb2345a36c45a4bdd844f17dd677ea19ebc143cccc23"
   },
   {
     "path": "RELEASE-NOTES.md",
@@ -53,7 +53,7 @@
   },
   {
     "path": "TalkToAi-Code.iss",
-    "sha256": "9bcf1fecde4c21aa1960e996d80a219174887819f4dd49c0bda243d7fad99e0a"
+    "sha256": "4081ff1ed71732139bfe14da34a8b714d840d6bc68a9155f1ce1c732f8803a89"
   },
   {
     "path": "activity_bar.py",
@@ -200,6 +200,10 @@
     "sha256": "6773935cb4bfa6d73393b8d3c415d9287215ce5f5c0ee1c14033eb1a02a07906"
   },
   {
+    "path": "assets/screens/studio-zero-912.png",
+    "sha256": "8a1e17b630f48faa3b283aea4be0541c1c6287c38dc8c844407912072a798892"
+  },
+  {
     "path": "assets/store/icon-150.png",
     "sha256": "d9e3154659d882260d17233989a4e1aa4d3a7f678b1f3638df85333ad262ed6f"
   },
@@ -222,6 +226,30 @@
   {
     "path": "assets/talktoai-code-hero.png",
     "sha256": "da4d5d42719a5837444a3bce471f133377e6ba3740b6ed705324405237c632ba"
+  },
+  {
+    "path": "assets/zero-avatar/complete.jpg",
+    "sha256": "6b349cadef63be7296c2fa6f74f4f687654346c56c8812a3eec0d268631fad5f"
+  },
+  {
+    "path": "assets/zero-avatar/idle.jpg",
+    "sha256": "41a41e453ddeb079b8bd1e6d491c423cae27697d787f9ac833b19bf5a0f210f5"
+  },
+  {
+    "path": "assets/zero-avatar/making.jpg",
+    "sha256": "528353d2bdde327f4f68a6d64f8141266ffa0a58164a5ed25e97fee4c878d241"
+  },
+  {
+    "path": "assets/zero-avatar/still.jpg",
+    "sha256": "df0cef9c0d2cdd79681c5a9370d3ba6aa6215b0c7a84197416cfa45e30582cd5"
+  },
+  {
+    "path": "assets/zero-avatar/waking.jpg",
+    "sha256": "6b434f15cd37c17f1956e9e94aafcd28b54819829448949b9ddf2a5623250635"
+  },
+  {
+    "path": "assets/zero-avatar/working.jpg",
+    "sha256": "3b89e478cf7a447ccd69a2a746bbefd9417ba2bea725ece697b7f3bf087f0c6a"
   },
   {
     "path": "attachment_ingest.py",
@@ -354,6 +382,10 @@
   {
     "path": "docs/DESKTOP-9.1.1.md",
     "sha256": "c480864d6950138c037940da945c992a5cdd534b52fb7c8056d1f75357900913"
+  },
+  {
+    "path": "docs/DESKTOP-9.1.2.md",
+    "sha256": "192fc43f68c2ba40815f0b79db5ee6b7ab59a13edfb23b6aa428841ff1b67a7a"
   },
   {
     "path": "docs/DEVSPACE-IDEAS-REVIEW.md",
@@ -653,7 +685,7 @@
   },
   {
     "path": "install_source.py",
-    "sha256": "83e459a2504609005b76c5a6b583209cfcdd12977b8fdede10552b7f932e793e"
+    "sha256": "e43c6128cce65ba0a643595564f89b792548a6b086398c4cd1863b31e4c173b3"
   },
   {
     "path": "installer.py",
@@ -773,7 +805,7 @@
   },
   {
     "path": "release_checks.py",
-    "sha256": "23394280901ee1bf4f753eb1cbc59d2f260d838a50ae4e26d0fada6137e53974"
+    "sha256": "85ed4244df5cd7c393d9248e24d5e2fe461e866388375737a7ac14a23519f8b0"
   },
   {
     "path": "remote_intent.py",
@@ -853,11 +885,11 @@
   },
   {
     "path": "scripts/build-desktop-app.py",
-    "sha256": "fee10d6ef3f205348c0b29087a87fed1c91da26069ff20e3685e097c10e71cdb"
+    "sha256": "bcba45e68361b89f5495411c41d2b87236db2dcf92c9a8e99d5b1608cd9904c3"
   },
   {
     "path": "scripts/build-portable-kit.py",
-    "sha256": "0c67098a1a78224454235845529da9d81601addc8a087332682054c4523cf4de"
+    "sha256": "d1ae33f9082bfce56b9c0cebce95268af072884279c285797279f907c9a699c2"
   },
   {
     "path": "scripts/package-game-assets.py",
@@ -893,15 +925,15 @@
   },
   {
     "path": "store/build-msix.ps1",
-    "sha256": "8933ce0ed396c029d00aa2e5b8fcaa143ddc5aab75cf5074d68b4b3979c1bafc"
+    "sha256": "84ee75502c2ad5da2fa015ecdd8ebe4a4f5581cb841434c2085e5c614953d318"
   },
   {
     "path": "store/build-payload.ps1",
-    "sha256": "2fe2be2f0e3a15b2c767aa30a1a81f2262faa9a32d11cda879b38844c3d5ed66"
+    "sha256": "6a48e55cccaa95f22c69a50c087002d4b4c137e2c514d886fc2b8ffacb7b2d60"
   },
   {
     "path": "studio.py",
-    "sha256": "39a50fca2712a13f951952667666ecccec22468326661e89f6b38b44c565ef40"
+    "sha256": "f58da32fc3adc99c0c27230fd4c8b372993c52195b67e18b6ef2cfccac624e18"
   },
   {
     "path": "task_checklist.py",
@@ -993,7 +1025,7 @@
   },
   {
     "path": "test_chat_ui.py",
-    "sha256": "5da0e2b0da56d02d7c4ac29dd62115aa134f722d6b3aaa6472af9b3316aea0b5"
+    "sha256": "b2de62e67f30f036590a681e76469e32cc0b3d731ab7c6bcb0ba4f31cc81b9a5"
   },
   {
     "path": "test_chat_web.py",
@@ -1288,6 +1320,10 @@
     "sha256": "3a24ac85a6e2d2cfd2957750e95590df24c5019057661221dbbf2ce932ef94bb"
   },
   {
+    "path": "test_zero_avatar.py",
+    "sha256": "c7091c956b84d7f630aba5acc87d3bcd7a337df2dfd3f4996b6a3ef5d36ca7b3"
+  },
+  {
     "path": "tool_chains.py",
     "sha256": "fac35efd10cc575c1be9797e342a2667068e440875b8b2a01d687420d8b6a861"
   },
@@ -1309,7 +1345,7 @@
   },
   {
     "path": "updates.py",
-    "sha256": "908a9b0271958cad2578fdd7d476e3f53b22dbcd119edbac9c91e8fa81ef1404"
+    "sha256": "ac97d5e655bd263d45cf69758d313df4398f7253cd39e00563ce7406601f6d1f"
   },
   {
     "path": "voice_dialog.py",
@@ -1342,5 +1378,9 @@
   {
     "path": "workspace_outputs.py",
     "sha256": "715d405e0f5fa49044b1649cb38dda66e14c194480f32b6f4d5d883b6f378698"
+  },
+  {
+    "path": "zero_avatar.py",
+    "sha256": "e25428e72c7a0de9b0cae3ff5ba791e1912fd1c5c4dcfc944984ae0ccd8b1ec6"
   }
 ]

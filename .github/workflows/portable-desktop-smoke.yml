@@ -113,6 +113,14 @@ jobs:
           tar -xzf "$archive" -C "$RUNNER_TEMP/portable-kit"
           cd "${archive%.tar.gz}"
           bash "install-$platform.sh"
+          if [[ "$platform" == macos ]]; then
+            install_dir="$data"
+          else
+            install_dir="$HOME/.local/share/talktoai-code"
+          fi
+          for clip in still idle waking working making complete; do
+            cmp "assets/zero-avatar/$clip.jpg" "$install_dir/assets/zero-avatar/$clip.jpg"
+          done
           python - "$data/config.json" <<'PY'
           import json, sys
           from pathlib import Path

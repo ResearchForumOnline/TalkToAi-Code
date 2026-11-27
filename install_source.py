@@ -16,6 +16,9 @@ for source in ROOT.glob('*.py'):
     shutil.copy2(source,target/source.name)
 shutil.copy2(ROOT/'requirements-runtime.txt',target/'requirements-runtime.txt')
 shutil.copy2(ROOT/'assets'/'store'/'icon-150.png',target/'app-icon.png')
+avatar_source = ROOT / 'assets' / 'zero-avatar'
+if avatar_source.is_dir():
+    shutil.copytree(avatar_source, target / 'assets' / 'zero-avatar', dirs_exist_ok=True)
 for relative in ('project.godot','main.gd','main.gd.uid','main.tscn','tests/score_test.gd'):
     source=ROOT/'samples'/'score-arena'/relative
     destination=target/'samples'/'score-arena'/relative

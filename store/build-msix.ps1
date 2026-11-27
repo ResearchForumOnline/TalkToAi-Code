@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Version = '1.10.1.0',
+    [string]$Version = '1.10.2.0',
     [string]$IdentityName = 'talktoai.TalkToAiCode-AICodingStudio',
     [string]$Publisher = 'CN=9B704446-6F62-4D52-954E-775436315422',
     [string]$PublisherDisplayName = 'talktoai',
