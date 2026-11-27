@@ -1025,7 +1025,7 @@
   },
   {
     "path": "test_chat_ui.py",
-    "sha256": "b2de62e67f30f036590a681e76469e32cc0b3d731ab7c6bcb0ba4f31cc81b9a5"
+    "sha256": "004ec3c13b1a31a5088afa5b195edb7a6cff490dae287a92fa7ef735be226f88"
   },
   {
     "path": "test_chat_web.py",

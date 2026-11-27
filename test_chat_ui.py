@@ -151,9 +151,8 @@ class ChatUITests(unittest.TestCase):
         w.task['project'] = str(self.root / 'removed-project')
         with patch.object(w, 'prepare_task_target') as target, patch('studio.ProjectTools') as tools, patch('studio.ProcessJobs') as jobs:
             self.submit('Help me plan tomorrow.')
-            self.wait_for(received.is_set)
+            self.wait_for(lambda: received.is_set() and w.zero_avatar.state == 'working')
             self.assertTrue(w.stop.isEnabled())
-            self.assertEqual(w.zero_avatar.state, 'working')
             w.prompt.setPlainText('Where should I begin?')
             QTest.keyClick(w.prompt, Qt.Key_Return)
             QTest.mouseClick(w.send_button, Qt.LeftButton)
